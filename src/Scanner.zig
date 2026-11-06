@@ -199,7 +199,8 @@ fn fetchByFirstCharacter(s: *Scanner, c: u8) Error!void {
         ',' => s.fetchFlowEntry(),
         '*', '&', '!' => s.fail(s.mark, "anchors, aliases and tags are not supported yet"),
         '|', '>' => s.fetchBlockScalar(),
-        '\'', '"' => s.fail(s.mark, "quoted scalars are not supported yet"),
+        '\'' => s.fetchQuotedScalar(.single_quoted),
+        '"' => s.fetchQuotedScalar(.double_quoted),
         '-', '?', ':' => s.fetchIndicatorOrPlain(c),
         '#', '@', '`', '%' => s.fail(s.mark, "found a character that cannot start any token"),
         else => s.fetchPlainOrInvalid(),
@@ -342,6 +343,13 @@ fn fetchPlainScalar(s: *Scanner) Error!void {
     try s.saveSimpleKey();
     s.simple_key_allowed = false;
     const token = try s.scanPlainScalar();
+    try s.tokens.append(s.gpa, token);
+}
+
+fn fetchQuotedScalar(s: *Scanner, style: ScalarStyle) Error!void {
+    try s.saveSimpleKey();
+    s.simple_key_allowed = false;
+    const token = try s.scanQuotedScalar(style);
     try s.tokens.append(s.gpa, token);
 }
 
@@ -561,6 +569,197 @@ fn appendFolded(arena: Allocator, folded: *std.ArrayList(u8), first: []const u8,
         try folded.appendNTimes(arena, '\n', breaks - 1);
     }
     try folded.appendSlice(arena, line);
+}
+
+// Quoted scalars
+
+/// How a quoted scalar's run of text ended.
+const TextEnd = enum { quote, blank, escaped_break };
+
+/// Scans a single- or double-quoted scalar (YAML 1.2.2, 7.3). Between
+/// lines it folds as a plain scalar does, dropping the blanks around
+/// each break; in a double-quoted one an escape is read, and a `\` at
+/// the end of a line joins it to the next with nothing between.
+fn scanQuotedScalar(s: *Scanner, style: ScalarStyle) Error!Token {
+    const start = s.mark;
+    const quote = s.ch(0);
+    s.skip();
+    const value: []const u8 = if (s.quotedAsWritten(quote)) |len| as_written: {
+        const text = s.input[s.mark.offset..][0..len];
+        s.mark.offset += len;
+        s.mark.column += std.unicode.utf8CountCodepoints(text) catch unreachable;
+        break :as_written text;
+    } else try s.scanQuotedValue(quote, start);
+    s.skip();
+    return .{ .start = start, .end = s.mark, .data = .{ .scalar = .{ .value = value, .style = style } } };
+}
+
+/// How many bytes lie between the opening quote and the closing one when
+/// the value is them as written: one line, valid UTF-8, no escape and no
+/// control character. Null when the value must be built.
+fn quotedAsWritten(s: *const Scanner, quote: u8) ?usize {
+    const rest = s.input[s.mark.offset..];
+    const len = std.mem.indexOfScalar(u8, rest, quote) orelse return null;
+    const text = rest[0..len];
+    if (quote == '\'' and len + 1 < rest.len and rest[len + 1] == '\'') return null;
+    if (quote == '"' and std.mem.indexOfScalar(u8, text, '\\') != null) return null;
+    if (hasControl(text) or !std.unicode.utf8ValidateSlice(text)) return null;
+    return len;
+}
+
+/// Whether `text` holds a control character other than a tab; a line
+/// break is one.
+fn hasControl(text: []const u8) bool {
+    for (text) |c| {
+        if (c < 0x20 and c != '\t') return true;
+    }
+    return false;
+}
+
+/// Builds a quoted scalar's value in the arena, up to its closing quote.
+fn scanQuotedValue(s: *Scanner, quote: u8, start: Mark) Error![]const u8 {
+    const arena = s.arena.allocator();
+    var value: std.ArrayList(u8) = .empty;
+    while (true) {
+        const ending = try s.scanQuotedText(arena, &value, quote, start);
+        if (ending == .quote) return value.items;
+        try s.scanQuotedBlanks(arena, &value, ending == .escaped_break, start);
+    }
+}
+
+/// Scans a quoted scalar's text up to a blank, a line break or the
+/// closing quote, unescaping as it goes.
+fn scanQuotedText(s: *Scanner, arena: Allocator, value: *std.ArrayList(u8), quote: u8, start: Mark) Error!TextEnd {
+    while (true) {
+        if (s.mark.offset >= s.input.len) return s.fail(start, "found the end of the input inside a quoted scalar");
+        const c = s.ch(0);
+        if (isBlankOrBreak(c)) return .blank;
+        // In a single-quoted scalar, '' is a quote and not the end.
+        if (c == quote and !(quote == '\'' and s.ch(1) == '\'')) return .quote;
+        if (c == '\\' and quote == '"' and isBreak(s.ch(1))) {
+            s.skip();
+            return .escaped_break;
+        }
+        try s.scanQuotedCharacter(arena, value, quote);
+    }
+}
+
+/// Appends the value of the character, escape or `''` at the next
+/// character.
+fn scanQuotedCharacter(s: *Scanner, arena: Allocator, value: *std.ArrayList(u8), quote: u8) Error!void {
+    if (s.ch(0) == '\'' and quote == '\'') {
+        try value.append(arena, '\'');
+        s.skipN(2);
+    } else if (s.ch(0) == '\\' and quote == '"') {
+        try s.scanEscape(arena, value);
+    } else {
+        try s.appendQuotedCharacter(arena, value);
+    }
+}
+
+/// Appends the next character, which must be one JSON allows in a string:
+/// a tab, or any from the space on.
+fn appendQuotedCharacter(s: *Scanner, arena: Allocator, value: *std.ArrayList(u8)) Error!void {
+    const at = s.mark.offset;
+    const len = utf8Length(s.input[at]);
+    const ok = s.input[at] >= 0x20 and at + len <= s.input.len and std.unicode.utf8ValidateSlice(s.input[at..][0..len]);
+    if (!ok) return s.fail(s.mark, "found a character that is not allowed in a quoted scalar");
+    try value.appendSlice(arena, s.input[at..][0..len]);
+    s.skip();
+}
+
+/// Reads an escape at the next character, a `\`, and appends what it
+/// stands for.
+fn scanEscape(s: *Scanner, arena: Allocator, value: *std.ArrayList(u8)) Error!void {
+    const mark = s.mark;
+    const c = s.ch(1);
+    if (escaped(c)) |bytes| {
+        try value.appendSlice(arena, bytes);
+        s.skipN(2);
+        return;
+    }
+    const digits: usize = switch (c) {
+        'x' => 2,
+        'u' => 4,
+        'U' => 8,
+        else => return s.fail(mark, "found an unknown escape in a double-quoted scalar"),
+    };
+    s.skipN(2);
+    const hex = s.input[s.mark.offset..][0..@min(digits, s.input.len - s.mark.offset)];
+    const code = parseHex(hex) orelse return s.fail(mark, "an escape needs as many hex digits as its letter says");
+    if (hex.len < digits) return s.fail(mark, "an escape needs as many hex digits as its letter says");
+    const point = std.math.cast(u21, code) orelse return s.fail(mark, "an escape names no Unicode character");
+    var buf: [4]u8 = undefined;
+    const len = std.unicode.utf8Encode(point, &buf) catch return s.fail(mark, "an escape names no Unicode character");
+    try value.appendSlice(arena, buf[0..len]);
+    s.skipN(digits);
+}
+
+/// The number `hex` spells in hex digits alone (no sign, no `_`).
+fn parseHex(hex: []const u8) ?u32 {
+    var code: u32 = 0;
+    for (hex) |c| code = code * 16 + (std.fmt.charToDigit(c, 16) catch return null);
+    return code;
+}
+
+/// What an escape of one letter after `\` stands for (YAML 1.2.2, 5.7).
+fn escaped(c: u8) ?[]const u8 {
+    return switch (c) {
+        '0' => "\x00",
+        'a' => "\x07",
+        'b' => "\x08",
+        't', '\t' => "\t",
+        'n' => "\n",
+        'v' => "\x0B",
+        'f' => "\x0C",
+        'r' => "\r",
+        'e' => "\x1B",
+        ' ' => " ",
+        '"' => "\"",
+        '/' => "/",
+        '\\' => "\\",
+        'N' => "\u{85}",
+        '_' => "\u{A0}",
+        'L' => "\u{2028}",
+        'P' => "\u{2029}",
+        else => null,
+    };
+}
+
+/// Scans the blanks after a quoted scalar's run of text. Blanks within a
+/// line are part of the value. Line breaks fold, the blanks around them
+/// dropped: one break is a space, and each after the first a line feed;
+/// after an escaped break, each is a line feed.
+fn scanQuotedBlanks(s: *Scanner, arena: Allocator, value: *std.ArrayList(u8), escaped_break: bool, start: Mark) Error!void {
+    const blanks_start = s.mark.offset;
+    while (isBlank(s.ch(0))) s.skip();
+    if (!isBreak(s.ch(0))) return value.appendSlice(arena, s.input[blanks_start..s.mark.offset]);
+    var breaks: usize = 0;
+    while (isBreak(s.ch(0))) {
+        s.skipBreak();
+        breaks += 1;
+        try s.skipQuotedIndentation(start);
+    }
+    if (breaks == 1 and !escaped_break) {
+        try value.append(arena, ' ');
+    } else {
+        try value.appendNTimes(arena, '\n', breaks - 1);
+    }
+}
+
+/// Skips the blanks that begin a quoted scalar's next line. No document
+/// marker may begin it, and in a block a line with anything on it must be
+/// indented past the block, with spaces.
+fn skipQuotedIndentation(s: *Scanner, start: Mark) Error!void {
+    if (s.atDocumentMarker("---") or s.atDocumentMarker("...")) {
+        return s.fail(s.mark, "a document marker cannot be inside a quoted scalar");
+    }
+    while (s.ch(0) == ' ') s.skip();
+    const spaces: isize = @intCast(s.mark.column);
+    while (isBlank(s.ch(0))) s.skip();
+    if (isBreak(s.ch(0)) or s.flow_level > 0 or spaces > s.indent) return;
+    if (s.mark.offset >= s.input.len) return s.fail(start, "found the end of the input inside a quoted scalar");
+    return s.fail(s.mark, "a quoted scalar's lines must be indented past its block's, with spaces");
 }
 
 // Reading

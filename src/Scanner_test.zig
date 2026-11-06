@@ -6,7 +6,8 @@
 //! `+DOC` `---` and `-DOC` `...`, `+SEQ` and `+MAP` a block collection
 //! opening and `-BLK` one ending, `[ ] { }` flow collections, `-` a block
 //! entry, `,` a flow entry, `?` a key, `:` a value, and `=` a plain
-//! scalar followed by its value, with a line feed written `\n`.
+//! scalar followed by its value, with a line feed written `\n` and a
+//! tab `\t`.
 
 const std = @import("std");
 const testing = std.testing;
@@ -41,9 +42,11 @@ fn writeToken(w: *std.Io.Writer, token: Scanner.Token) !void {
                 .literal => "|",
                 .folded => ">",
             });
-            for (scalar.value) |c| {
-                if (c == '\n') try w.writeAll("\\n") else try w.writeByte(c);
-            }
+            for (scalar.value) |c| switch (c) {
+                '\n' => try w.writeAll("\\n"),
+                '\t' => try w.writeAll("\\t"),
+                else => try w.writeByte(c),
+            };
         },
         .alias => |name| try w.print("*{s}", .{name}),
         .anchor => |name| try w.print("&{s}", .{name}),
@@ -508,4 +511,137 @@ test "next after the end gives the end again" {
     defer s.deinit();
     while ((try s.next()).data != .stream_end) {}
     try testing.expectEqual(.stream_end, std.meta.activeTag((try s.next()).data));
+}
+
+test "single-quoted: '' is a quote, lines fold" {
+    try expectTokens("'it''s'",
+        \\+STR
+        \\'it's
+        \\-STR
+    );
+    try expectTokens("' 1st non-empty\n\n 2nd non-empty \n\t3rd non-empty '",
+        \\+STR
+        \\' 1st non-empty\n2nd non-empty 3rd non-empty 
+        \\-STR
+    );
+    try expectTokens("'a # not a comment' : 'b'",
+        \\+STR
+        \\+MAP
+        \\?
+        \\'a # not a comment
+        \\:
+        \\'b
+        \\-BLK
+        \\-STR
+    );
+}
+
+test "double-quoted: every escape" {
+    const got = try dump(testing.allocator, "\"\\0\\a\\b\\t\\\t\\n\\v\\f\\r\\e\\ \\\"\\/\\\\\\N\\_\\L\\P\\x41\\u00e9\\U0001F600\"");
+    defer testing.allocator.free(got);
+    try testing.expectEqualStrings("+STR\n\"\x00\x07\x08\\t\\t\\n\x0B\x0C\r\x1B \"/\\\u{85}\u{A0}\u{2028}\u{2029}A\u{e9}\u{1F600}\n-STR\n", got);
+}
+
+test "double-quoted: folding, escaped line breaks, blanks kept before them" {
+    try expectTokens("\"folded \nto a space,\t\n \nto a line feed, or \t\\\n \\ \tnon-content\"",
+        \\+STR
+        \\"folded to a space,\nto a line feed, or \t \tnon-content
+        \\-STR
+    );
+    // An escaped tab stays at the end of a line; a plain one is dropped.
+    try expectTokens("\"3 trailing\\\t\n    tab\"",
+        \\+STR
+        \\"3 trailing\t tab
+        \\-STR
+    );
+    // After an escaped break, an empty line is a line feed.
+    try expectTokens("\"a\\\n\n  b\"",
+        \\+STR
+        \\"a\nb
+        \\-STR
+    );
+}
+
+test "quoted scalars as keys, values and entries; their marks" {
+    try expectTokens("\"k\": 'v'\n- x",
+        \\+STR
+        \\+MAP
+        \\?
+        \\"k
+        \\:
+        \\'v
+        \\-
+        \\=x
+        \\-BLK
+        \\-STR
+    );
+    var s: Scanner = .init(testing.allocator, "\"é\\n\"");
+    defer s.deinit();
+    _ = try s.next();
+    const token = try s.next();
+    try testing.expectEqualDeep(Scanner.Mark{}, token.start);
+    try testing.expectEqualDeep(Scanner.Mark{ .offset = 6, .column = 5 }, token.end);
+}
+
+test "quoted scalar errors (suite 55WF, QB6E, 5TRB, RXY3, DK95/01)" {
+    try expectTokens("\"\\.\"",
+        \\+STR
+        \\ERROR 1:2 found an unknown escape in a double-quoted scalar
+    );
+    try expectTokens("\"\\x4\"",
+        \\+STR
+        \\ERROR 1:2 an escape needs as many hex digits as its letter says
+    );
+    try expectTokens("\"\\uD800\"",
+        \\+STR
+        \\ERROR 1:2 an escape names no Unicode character
+    );
+    try expectTokens("\"\\U00110000\"",
+        \\+STR
+        \\ERROR 1:2 an escape names no Unicode character
+    );
+    try expectTokens("---\nquoted: \"a\nb\nc\"\n",
+        \\+STR
+        \\+DOC
+        \\+MAP
+        \\?
+        \\=quoted
+        \\:
+        \\ERROR 3:1 a quoted scalar's lines must be indented past its block's, with spaces
+    );
+    try expectTokens("foo: \"bar\n\tbaz\"",
+        \\+STR
+        \\+MAP
+        \\?
+        \\=foo
+        \\:
+        \\ERROR 2:2 a quoted scalar's lines must be indented past its block's, with spaces
+    );
+    try expectTokens("---\n\"\n---\n\"\n",
+        \\+STR
+        \\+DOC
+        \\ERROR 3:1 a document marker cannot be inside a quoted scalar
+    );
+    try expectTokens("---\n'\n...\n'\n",
+        \\+STR
+        \\+DOC
+        \\ERROR 3:1 a document marker cannot be inside a quoted scalar
+    );
+    try expectTokens("'unterminated",
+        \\+STR
+        \\ERROR 1:1 found the end of the input inside a quoted scalar
+    );
+    try expectTokens("\"a\x01\"",
+        \\+STR
+        \\ERROR 1:3 found a character that is not allowed in a quoted scalar
+    );
+    try expectTokens("key: \"value\"# invalid comment",
+        \\+STR
+        \\+MAP
+        \\?
+        \\=key
+        \\:
+        \\"value
+        \\ERROR 1:13 a comment must be separated from what comes before it by whitespace
+    );
 }
