@@ -29,7 +29,9 @@ const schema = @import("schema.zig");
 const Node = Composer.Node;
 const Diagnostic = Composer.Diagnostic;
 
+/// How `parseFromSlice` reads a document.
 pub const ParseOptions = struct {
+    /// How nodes with no specific tag get one.
     schema: schema.Schema = .core,
     /// What to do with a mapping's second key equal to an earlier one:
     /// refuse it, or keep it, a struct field then taking the last.
@@ -45,6 +47,7 @@ pub const ParseOptions = struct {
     diagnostic: ?*Diagnostic = null,
 };
 
+/// Reading's errors: decoding's, composing's, and construction's.
 pub const ParseError = Composer.Error || encoding.Error || error{
     /// The stream holds more than one document.
     MultipleDocuments,

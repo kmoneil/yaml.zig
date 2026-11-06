@@ -31,8 +31,11 @@ pub const Mark = struct {
     column: usize = 0,
 };
 
+/// How a scalar is written: plain, quoted either way, or a block scalar,
+/// literal (`|`) or folded (`>`).
 pub const ScalarStyle = enum { plain, single_quoted, double_quoted, literal, folded };
 
+/// A token of YAML's syntax, with the marks of its text.
 pub const Token = struct {
     start: Mark,
     end: Mark,
@@ -85,7 +88,9 @@ pub const Diagnostic = struct {
     message: []const u8 = "",
 };
 
+/// Scanning's errors.
 pub const Error = error{
+    /// The text is not YAML; `diagnostic` says where and why.
     SyntaxError,
     OutOfMemory,
     /// Collections nest deeper than `max_depth`.
@@ -158,10 +163,13 @@ line_start: usize = 0,
 line_has_token: bool = false,
 diagnostic: Diagnostic = .{},
 
+/// A scanner over `input`, UTF-8 (`encoding.toUtf8` for others). It
+/// allocates nothing until `next`.
 pub fn init(gpa: Allocator, input: []const u8) Scanner {
     return .{ .gpa = gpa, .input = input, .arena = .init(gpa) };
 }
 
+/// Frees the scanner and the scalar text it built.
 pub fn deinit(s: *Scanner) void {
     s.tokens.deinit(s.gpa);
     s.indents.deinit(s.gpa);

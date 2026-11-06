@@ -9,6 +9,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Diagnostic = @import("Scanner.zig").Diagnostic;
 
+/// The encodings a YAML stream may be in.
 pub const Encoding = enum { utf8, utf16le, utf16be, utf32le, utf32be };
 
 /// The encoding the first bytes show (the table in YAML 1.2.2, 5.2): a
@@ -43,6 +44,7 @@ fn matches(bytes: []const u8, pattern: []const u8) bool {
     return true;
 }
 
+/// Decoding's errors.
 pub const Error = error{
     /// The bytes are not valid in their encoding: a bad UTF-8 sequence, an
     /// unpaired surrogate, a code point past U+10FFFF, or a length that is

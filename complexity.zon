@@ -23,5 +23,5 @@
     },
     // Test code, the test-suite harness, tools and the build. gnarl skips
     // zig-pkg (fetched packages) and what git ignores by itself.
-    .cold = .{ "build.zig", "tools/**", "test/**", "src/*_test.zig", "src/testing/**" },
+    .cold = .{ "build.zig", "tools/**", "test/**", "examples/**", "src/*_test.zig", "src/testing/**" },
 }

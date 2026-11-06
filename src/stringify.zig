@@ -20,6 +20,7 @@ const schema = @import("schema.zig");
 const Value = @import("construct.zig").Value;
 const Event = Parser.Event;
 
+/// How `stringify` writes.
 pub const StringifyOptions = struct {
     /// Block collections, one entry a line, or flow, `[a, b]` and `{k: v}`.
     style: enum { block, flow } = .block,
@@ -32,6 +33,7 @@ pub const StringifyOptions = struct {
     emit_null_optional_fields: bool = true,
 };
 
+/// What writing can fail with: the emitter's errors.
 pub const StringifyError = Emitter.Error;
 
 /// Writes `value` as one YAML document to `writer`.

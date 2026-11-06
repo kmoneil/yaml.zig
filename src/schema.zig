@@ -17,8 +17,10 @@
 
 const std = @import("std");
 
+/// The schemas YAML 1.2.2 defines (chapter 10).
 pub const Schema = enum { failsafe, json, core };
 
+/// The tags the schemas resolve to, in full.
 pub const tag = struct {
     pub const @"null" = "tag:yaml.org,2002:null";
     pub const @"bool" = "tag:yaml.org,2002:bool";

@@ -27,9 +27,12 @@ const schema = @import("schema.zig");
 
 const Emitter = @This();
 
+/// What the emitter takes (`Parser.Event`).
 pub const Event = Parser.Event;
+/// How a scalar asks to be written (`Scanner.ScalarStyle`).
 pub const ScalarStyle = Parser.ScalarStyle;
 
+/// How the emitter lays text out.
 pub const Options = struct {
     /// Columns a level of block indentation takes, 2 to 8 (a block
     /// scalar's indentation indicator at the top is one more, and is a
@@ -40,6 +43,7 @@ pub const Options = struct {
     width: usize = 80,
 };
 
+/// Emitting's errors: the writer's, memory, and two of its own.
 pub const Error = std.Io.Writer.Error || Allocator.Error || error{
     /// An event came where the stream's grammar has no place for it.
     UnexpectedEvent,
@@ -103,10 +107,13 @@ indention: bool = true,
 /// write it first.
 open_ended: bool = false,
 
+/// An emitter writing to `writer`; `gpa` holds its stacks and the events
+/// it waits on.
 pub fn init(gpa: Allocator, writer: *std.Io.Writer, options: Options) Emitter {
     return .{ .gpa = gpa, .writer = writer, .options = options };
 }
 
+/// Frees the emitter's stacks.
 pub fn deinit(e: *Emitter) void {
     e.states.deinit(e.gpa);
     e.events.deinit(e.gpa);

@@ -24,11 +24,16 @@ const schema = @import("schema.zig");
 
 const Composer = @This();
 
+/// A place in the input (`Scanner.Mark`).
 pub const Mark = Parser.Mark;
+/// How a scalar was written (`Scanner.ScalarStyle`).
 pub const ScalarStyle = Parser.ScalarStyle;
+/// What the parser gives (`Parser.Event`).
 pub const Event = Parser.Event;
+/// Where and why composing failed (`Scanner.Diagnostic`).
 pub const Diagnostic = Parser.Diagnostic;
 
+/// Composing's errors: the parser's, and the two of composition.
 pub const Error = Parser.Error || error{
     /// An alias names no anchor before it in its document.
     UndefinedAlias,
@@ -39,6 +44,7 @@ pub const Error = Parser.Error || error{
     NotInSchema,
 };
 
+/// A node of a document's graph.
 pub const Node = struct {
     start: Mark,
     end: Mark,
@@ -71,6 +77,7 @@ pub const Node = struct {
     }
 };
 
+/// One document of the stream: its root node and how it was written.
 pub const Document = struct {
     root: *Node,
     start: Mark,
@@ -83,6 +90,7 @@ pub const Document = struct {
     tag_directives: []const Parser.Token.TagDirective,
 };
 
+/// How composition goes.
 pub const Options = struct {
     /// What to do with a mapping's second key equal to an earlier one.
     duplicate_keys: enum { refuse, keep } = .refuse,
@@ -116,6 +124,8 @@ const Frame = struct {
     keys: KeySet = .empty,
 };
 
+/// A composer over `input`, UTF-8 (`encoding.toUtf8` for others). It
+/// allocates nothing until `next`.
 pub fn init(gpa: Allocator, input: []const u8, options: Options) Composer {
     var digest: [8]u8 = undefined;
     std.crypto.hash.Blake3.hash(input, &digest, .{});
@@ -129,6 +139,7 @@ pub fn init(gpa: Allocator, input: []const u8, options: Options) Composer {
     };
 }
 
+/// Frees every node and string the composer gave.
 pub fn deinit(c: *Composer) void {
     const gpa = c.parser.scanner.gpa;
     for (c.frames.items) |*frame| frame.keys.deinit(gpa);

@@ -19,9 +19,10 @@ const std = @import("std");
 const Io = std.Io;
 const suite = @import("suite.zig");
 const check = @import("check.zig");
+const readme = @import("readme.zig");
 const roundtrip = @import("roundtrip.zig");
 
-const Command = enum { check, list, show, errors, @"show-emit" };
+const Command = enum { check, list, show, errors, @"show-emit", readme };
 
 const Options = struct {
     root: []const u8,
@@ -30,6 +31,9 @@ const Options = struct {
     quiet: bool = false,
     all: bool = false,
     case: ?[]const u8 = null,
+    /// The README whose suite table `check` holds to the tally, and
+    /// `readme` writes.
+    readme: ?[]const u8 = null,
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -59,11 +63,21 @@ pub fn main(init: std.process.Init) !void {
         .@"show-emit" => try showEmit(arena, io, root, cases, options.case.?, out),
         .check => {
             const tally = try runCheck(arena, io, root, cases, options.skip);
+            const stale = if (options.readme) |path| try readmeProblem(arena, io, path, tally) else null;
             if (!tally.ok() or !options.quiet) try check.writeTally(out, tally);
-            if (!tally.ok()) {
+            if (stale) |why| try out.print("{s}\n", .{why});
+            if (!tally.ok() or stale != null) {
                 try out.flush();
                 std.process.exit(1);
             }
+        },
+        .readme => {
+            const path = options.readme orelse fatal("suite: readme needs --readme <file>\n", .{});
+            const tally = try runCheck(arena, io, root, cases, options.skip);
+            const text = try Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(1024 * 1024));
+            const fixed = readme.rewrite(arena, text, try readme.table(arena, tally)) catch fatal("suite: {s} has no suite block\n", .{path});
+            try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = fixed });
+            try out.print("suite: wrote the suite table in {s}\n", .{path});
         },
     }
 }
@@ -82,9 +96,16 @@ fn parseArgs(args: std.process.Args) error{Usage}!Options {
             options.quiet = true;
         } else if (std.mem.eql(u8, arg, "--all")) {
             options.all = true;
+        } else if (std.mem.eql(u8, arg, "--readme")) {
+            options.readme = it.next() orelse return error.Usage;
         } else return error.Usage;
     }
     return options;
+}
+
+fn readmeProblem(arena: std.mem.Allocator, io: Io, path: []const u8, tally: check.Tally) !?[]const u8 {
+    const text = try Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(1024 * 1024));
+    return readme.problem(text, try readme.table(arena, tally));
 }
 
 fn runCheck(arena: std.mem.Allocator, io: Io, root: Io.Dir, cases: []const suite.Case, skip_path: []const u8) !check.Tally {
@@ -144,4 +165,5 @@ test {
     _ = check;
     _ = @import("json.zig");
     _ = @import("roundtrip.zig");
+    _ = readme;
 }

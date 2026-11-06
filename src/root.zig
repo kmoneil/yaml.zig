@@ -37,8 +37,11 @@ const construct = @import("construct.zig");
 pub const parseFromSlice = construct.parseFromSlice;
 /// `parseFromSlice` into an allocator freed as a whole, as an arena is.
 pub const parseFromSliceLeaky = construct.parseFromSliceLeaky;
+/// A value `parseFromSlice` read, and the arena it lives in.
 pub const Parsed = construct.Parsed;
+/// How `parseFromSlice` reads: schema, duplicate keys, limits, diagnostic.
 pub const ParseOptions = construct.ParseOptions;
+/// What reading can fail with.
 pub const ParseError = construct.ParseError;
 /// A document of any shape.
 pub const Value = construct.Value;
@@ -48,7 +51,9 @@ const stringify_mod = @import("stringify.zig");
 pub const stringify = stringify_mod.stringify;
 /// `stringify` into a new slice the caller frees.
 pub const stringifyAlloc = stringify_mod.stringifyAlloc;
+/// How `stringify` writes: style, indentation, width, null fields.
 pub const StringifyOptions = stringify_mod.StringifyOptions;
+/// What writing can fail with.
 pub const StringifyError = stringify_mod.StringifyError;
 /// Where and why parsing failed: a mark (offset, line and column, from
 /// 0) and a message.

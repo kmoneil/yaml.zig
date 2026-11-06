@@ -21,12 +21,19 @@ const Scanner = @import("Scanner.zig");
 
 const Parser = @This();
 
+/// A place in the input (`Scanner.Mark`).
 pub const Mark = Scanner.Mark;
+/// What the scanner gives (`Scanner.Token`).
 pub const Token = Scanner.Token;
+/// How a scalar was written (`Scanner.ScalarStyle`).
 pub const ScalarStyle = Scanner.ScalarStyle;
+/// Where and why parsing failed (`Scanner.Diagnostic`).
 pub const Diagnostic = Scanner.Diagnostic;
+/// The scanner's errors: the parser adds none but its own syntax errors.
 pub const Error = Scanner.Error;
 
+/// A step of the stream: a start or end of the stream, a document or a
+/// collection, a scalar, or an alias; with the marks of its text.
 pub const Event = struct {
     start: Mark,
     end: Mark,
@@ -116,10 +123,12 @@ tag_directives: std.ArrayList(Token.TagDirective) = .empty,
 after_end_marker: bool = true,
 diagnostic: Diagnostic = .{},
 
+/// A parser over `input`, UTF-8 (`encoding.toUtf8` for others).
 pub fn init(gpa: Allocator, input: []const u8) Parser {
     return .{ .scanner = .init(gpa, input) };
 }
 
+/// Frees the parser and the text its events point at.
 pub fn deinit(p: *Parser) void {
     p.states.deinit(p.scanner.gpa);
     p.tag_directives.deinit(p.scanner.gpa);

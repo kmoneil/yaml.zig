@@ -229,6 +229,8 @@ pub const Finding = struct {
 };
 
 pub const Tally = struct {
+    /// Cases each check applies to.
+    applied: std.EnumArray(Check, usize) = .initFill(0),
     passed: std.EnumArray(Check, usize) = .initFill(0),
     skipped: std.EnumArray(Check, usize) = .initFill(0),
     regressions: std.ArrayList(Finding) = .empty,
@@ -261,6 +263,7 @@ pub fn runAll(arena: Allocator, io: Io, root: Io.Dir, cases: []const suite.Case,
 }
 
 fn tallyOne(arena: Allocator, tally: *Tally, finding: Finding, listed: bool) !void {
+    tally.applied.getPtr(finding.check).* += 1;
     if (finding.problem == null and !listed) {
         tally.passed.getPtr(finding.check).* += 1;
     } else if (finding.problem != null and listed) {
