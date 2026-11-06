@@ -272,7 +272,7 @@ test "events in, YAML out: reformat a stream" {
 | Limit | Default | Where |
 | --- | ---: | --- |
 | Nodes built through aliases (a "billion laughs" document) | 1,000,000 | `ParseOptions.max_alias_nodes` |
-| Depth construction goes into a document | 1,000 | `ParseOptions.max_depth` |
+| Depth construction goes into a document | 256 | `ParseOptions.max_depth` |
 | Collections open at once in the scanner | 10,000 | `Scanner.max_depth`, `Composer.Options.max_depth` |
 | %TAG directives in a document | 64 | `ParseOptions.max_tag_directives`, `Composer.Options.max_tag_directives`, `Parser.max_tag_directives` |
 | A cyclic document built into a value | refused | `error.Cycle` |
@@ -280,8 +280,14 @@ test "events in, YAML out: reformat a stream" {
 Mapping keys and anchor names, which come from the input, are kept in
 hash maps seeded from a hash of the input, so keys built to collide
 cost what any keys do. A tag is resolved by looking through its
-document's %TAG directives, so their number is held too. Nothing recurses on the input's depth but
-construction, which is held to `max_depth`.
+document's %TAG directives, so their number is held too.
+
+Nothing recurses on the input's depth but construction, which is held
+to `max_depth`. Each level, a collection or a pointer followed, takes
+about 1.7 KiB of stack in a Debug build and 0.35 KiB in a release one,
+so the default needs under 512 KiB in Debug (a thread's default stack
+on macOS) and 128 KiB in release. On a smaller stack, lower
+`max_depth`.
 
 ## Build
 

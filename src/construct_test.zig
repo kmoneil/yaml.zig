@@ -209,6 +209,41 @@ test "limits: %TAG directives, through ParseOptions" {
     try testing.expectEqual(1, try yaml.parseFromSliceLeaky(u8, testing.allocator, "%TAG !a! x:\n--- 1\n", .{ .max_tag_directives = 1 }));
 }
 
+const Chain = struct { next: ?*const @This() = null };
+
+/// Builds the deepest documents the default options take: collections
+/// nested max_depth deep, and a struct through pointers, where each
+/// level is two (the field, and the pointer).
+fn buildDeepest(gpa: std.mem.Allocator) !void {
+    const depth = (yaml.ParseOptions{}).max_depth;
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(gpa);
+    try text.appendNTimes(gpa, '[', depth);
+    try text.append(gpa, '1');
+    try text.appendNTimes(gpa, ']', depth);
+    const value = try yaml.parseFromSlice(yaml.Value, gpa, text.items, .{});
+    value.deinit();
+
+    text.clearRetainingCapacity();
+    for (0..depth / 2) |_| try text.appendSlice(gpa, "{next: ");
+    try text.appendNTimes(gpa, '}', depth / 2);
+    const chain = try yaml.parseFromSlice(Chain, gpa, text.items, .{});
+    chain.deinit();
+}
+
+fn runBuildDeepest(result: *anyerror!void) void {
+    result.* = buildDeepest(testing.allocator);
+}
+
+test "limits: the deepest documents the defaults take build on a 512 KiB stack" {
+    // As ParseOptions.max_depth and README say. A level's frame grown
+    // past what they say crashes here, in a Debug build first.
+    var result: anyerror!void = {};
+    const thread = try std.Thread.spawn(.{ .stack_size = 512 * 1024 }, runBuildDeepest, .{&result});
+    thread.join();
+    try result;
+}
+
 test "every allocation may fail, and nothing leaks when one does" {
     try testing.checkAllAllocationFailures(testing.allocator, parseAndFree, .{});
 }

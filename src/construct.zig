@@ -44,8 +44,13 @@ pub const ParseOptions = struct {
     /// The most nodes construction builds through aliases.
     max_alias_nodes: usize = 1_000_000,
     /// The deepest construction goes into a document, and the most
-    /// collections the scanner lets be open at once.
-    max_depth: usize = 1_000,
+    /// collections the scanner lets be open at once. Construction
+    /// recurses a level for each collection and each pointer it follows,
+    /// and a level takes about 1.7 KiB of stack in a Debug build and
+    /// 0.35 KiB in a release one, more for a struct or array whose own
+    /// size is large. The default's deepest documents need under 512 KiB
+    /// in Debug (a test holds them to it) and 128 KiB in release.
+    max_depth: usize = 256,
     /// The most %TAG directives a document may have.
     max_tag_directives: usize = 64,
     /// Set to where and why parsing or construction failed.
