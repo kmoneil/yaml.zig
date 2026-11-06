@@ -3,7 +3,17 @@
     .version = "0.0.0",
     .fingerprint = 0xea31a98467e0804e, // Changing this has security and trust implications.
     .minimum_zig_version = "0.17.1",
-    .dependencies = .{},
+    .dependencies = .{
+        // yaml/yaml-test-suite's data tree at tag data-2022-01-17, pinned
+        // by its commit (a tag can move): one directory per test id. The
+        // newest data tag; main has changed no test since. Lazy, so a
+        // package depending on this one never fetches it.
+        .yaml_test_suite = .{
+            .url = "https://github.com/yaml/yaml-test-suite/archive/6e6c296ae9c9d2d5c4134b4b64d01b29ac19ff6f.tar.gz",
+            .hash = "N-V-__8AANRsAQDW5NhaTJne--X37O2KNP_maPss14w82QAh",
+            .lazy = true,
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",
