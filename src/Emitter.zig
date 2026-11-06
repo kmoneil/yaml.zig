@@ -43,12 +43,15 @@ pub const Options = struct {
     width: usize = 80,
 };
 
-/// Emitting's errors: the writer's, memory, and two of its own.
+/// Emitting's errors: the writer's, memory, and three of its own.
 pub const Error = std.Io.Writer.Error || Allocator.Error || error{
     /// An event came where the stream's grammar has no place for it.
     UnexpectedEvent,
     /// A scalar, anchor or tag is not valid UTF-8, which YAML cannot hold.
     InvalidUtf8,
+    /// An anchor, alias, tag or %TAG directive YAML cannot write: an
+    /// empty one, or an anchor with a character its name cannot hold.
+    InvalidName,
 };
 
 const State = enum {
@@ -121,8 +124,10 @@ pub fn deinit(e: *Emitter) void {
     e.* = undefined;
 }
 
-/// Writes `event`, or holds it until the events after it show how.
+/// Writes `event`, or holds it until the events after it show how. An
+/// event naming what YAML cannot write is refused before it is held.
 pub fn emit(e: *Emitter, event: Event) Error!void {
+    try checkNames(event);
     try e.events.append(e.gpa, event);
     while (!e.needMoreEvents()) {
         const next_event = e.events.items[e.head];
@@ -133,6 +138,48 @@ pub fn emit(e: *Emitter, event: Event) Error!void {
         e.events.clearRetainingCapacity();
         e.head = 0;
     }
+}
+
+/// Refuses an event whose names YAML cannot write, which would read back
+/// as other names or not at all: an anchor or alias that is empty or
+/// holds a blank, a line break, a flow indicator or a character YAML
+/// does not allow (ns-anchor-char, YAML 1.2.2, 6.9.2); an empty tag; a
+/// %TAG handle that is not `!`, `!!` or `!word!`, or an empty prefix
+/// (6.8.2.2).
+fn checkNames(event: Event) Error!void {
+    switch (event.data) {
+        .alias => |name| try checkAnchor(name),
+        .scalar => |s| try checkProperties(s.properties),
+        .sequence_start, .mapping_start => |c| try checkProperties(c.properties),
+        .document_start => |d| for (d.tag_directives) |t| {
+            if (!isTagHandle(t.handle) or t.prefix.len == 0) return error.InvalidName;
+        },
+        else => {},
+    }
+}
+
+fn checkProperties(p: Event.Properties) Error!void {
+    if (p.anchor) |anchor| try checkAnchor(anchor);
+    if (p.tag) |tag| if (tag.len == 0) return error.InvalidName;
+}
+
+fn checkAnchor(name: []const u8) Error!void {
+    if (!std.unicode.utf8ValidateSlice(name)) return error.InvalidUtf8;
+    if (name.len == 0) return error.InvalidName;
+    var i: usize = 0;
+    while (i < name.len) : (i += std.unicode.utf8ByteSequenceLength(name[i]) catch 1) {
+        if (isBlankOrBreak(name[i]) or isFlowIndicator(name[i]) or !Scanner.isPrintable(name, i)) return error.InvalidName;
+    }
+}
+
+/// `!`, `!!`, or `!`, a word of letters, digits and `-`, and `!`.
+fn isTagHandle(handle: []const u8) bool {
+    if (handle.len == 0 or handle[0] != '!' or handle[handle.len - 1] != '!') return false;
+    if (handle.len <= 2) return true;
+    for (handle[1 .. handle.len - 1]) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '-') return false;
+    }
+    return true;
 }
 
 /// Whether the event at the head waits for others: a document start for

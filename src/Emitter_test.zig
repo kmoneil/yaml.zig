@@ -273,3 +273,37 @@ test "errors: an event out of place, text that is not UTF-8" {
     for ([_]Event.Data{ .stream_start, .{ .document_start = .{ .explicit = false } } }) |data| try e2.emit(.{ .start = .{}, .end = .{}, .data = data });
     try testing.expectError(error.InvalidUtf8, e2.emit(.{ .start = .{}, .end = .{}, .data = .{ .scalar = .{ .value = "\xff", .style = .plain } } }));
 }
+
+test "errors: anchors, aliases, tags and %TAG directives YAML cannot write" {
+    const bad_anchors = [_][]const u8{ "", "a b", "x,y", "a[", "tab\there", "line\nbreak", "\u{FEFF}bom", "c1\u{86}" };
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    var e: Emitter = .init(testing.allocator, &out.writer, .{});
+    defer e.deinit();
+    for ([_]Event.Data{ .stream_start, .{ .document_start = .{ .explicit = false } }, .{ .sequence_start = .{ .flow = true } } }) |data| try e.emit(.{ .start = .{}, .end = .{}, .data = data });
+    for (bad_anchors) |name| {
+        errdefer std.debug.print("anchor: \"{f}\"\n", .{std.zig.fmtString(name)});
+        try testing.expectError(error.InvalidName, e.emit(.{ .start = .{}, .end = .{}, .data = .{ .alias = name } }));
+        try testing.expectError(error.InvalidName, e.emit(.{ .start = .{}, .end = .{}, .data = .{ .scalar = .{ .properties = .{ .anchor = name }, .value = "v", .style = .plain } } }));
+        try testing.expectError(error.InvalidName, e.emit(.{ .start = .{}, .end = .{}, .data = .{ .mapping_start = .{ .properties = .{ .anchor = name }, .flow = true } } }));
+    }
+    try testing.expectError(error.InvalidUtf8, e.emit(.{ .start = .{}, .end = .{}, .data = .{ .alias = "\xff" } }));
+    try testing.expectError(error.InvalidName, e.emit(.{ .start = .{}, .end = .{}, .data = .{ .scalar = .{ .properties = .{ .tag = "" }, .value = "v", .style = .plain } } }));
+    // Refused before it is held, so the stream goes on.
+    try e.emit(.{ .start = .{}, .end = .{}, .data = .{ .scalar = .{ .properties = .{ .anchor = "ok:é" }, .value = "v", .style = .plain } } });
+    try e.emit(.{ .start = .{}, .end = .{}, .data = .{ .alias = "ok:é" } });
+    for ([_]Event.Data{ .sequence_end, .{ .document_end = .{ .explicit = false } }, .stream_end }) |data| try e.emit(.{ .start = .{}, .end = .{}, .data = data });
+    try testing.expectEqualStrings("[&ok:é v, *ok:é]\n", out.written());
+
+    const bad_directives = [_]Parser.Token.TagDirective{
+        .{ .handle = "", .prefix = "p:" },   .{ .handle = "e", .prefix = "p:" },
+        .{ .handle = "!e", .prefix = "p:" }, .{ .handle = "!a b!", .prefix = "p:" },
+        .{ .handle = "!e!", .prefix = "" },
+    };
+    var d: Emitter = .init(testing.allocator, &out.writer, .{});
+    defer d.deinit();
+    try d.emit(.{ .start = .{}, .end = .{}, .data = .stream_start });
+    for (&bad_directives) |*directive| {
+        try testing.expectError(error.InvalidName, d.emit(.{ .start = .{}, .end = .{}, .data = .{ .document_start = .{ .explicit = true, .tag_directives = directive[0..1] } } }));
+    }
+}
