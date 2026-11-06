@@ -260,18 +260,12 @@ const Builder = struct {
     /// The composer's next step as a source, null at a collection's end:
     /// a scalar's or a begun collection's node by value in `slot`.
     fn step(b: *Builder, slot: *Node) ParseError!?Src {
-        switch (b.composer.step() catch |err| return b.composerFailed(err)) {
-            .end => return null,
-            .scalar => |n| {
-                slot.* = n;
-                return .{ .node = slot };
-            },
-            .node => |n| return .{ .node = n },
-            .begin => |n| {
-                slot.* = n;
-                return .{ .begun = slot };
-            },
-        }
+        return switch (b.composer.stepInto(slot) catch |err| return b.composerFailed(err)) {
+            .end => null,
+            .scalar => .{ .node = slot },
+            .node => |n| .{ .node = n },
+            .begin => .{ .begun = slot },
+        };
     }
 
     /// `src` whole: a begun collection composed whole, for what needs a
@@ -288,8 +282,9 @@ const Builder = struct {
     fn skip(b: *Builder, src: Src) ParseError!void {
         if (src != .begun) return;
         var open: usize = 1;
+        var slot: Node = undefined;
         while (open > 0) {
-            switch (b.composer.step() catch |err| return b.composerFailed(err)) {
+            switch (b.composer.stepInto(&slot) catch |err| return b.composerFailed(err)) {
                 .begin => open += 1,
                 .end => open -= 1,
                 .scalar, .node => {},

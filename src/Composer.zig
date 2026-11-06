@@ -257,6 +257,17 @@ pub const Step = union(enum) {
     end: Mark,
 };
 
+/// What `stepInto` read: a node by value, written in the caller's slot
+/// (a scalar or an alias, or a collection begun), as `Step` says of its
+/// own; a node composed whole; or the end of the innermost collection
+/// begun.
+pub const StepInto = union(enum) {
+    scalar,
+    node: *Node,
+    begin,
+    end: Mark,
+};
+
 /// A collection `step` has begun and not ended.
 const Stream = struct {
     mapping: bool,
@@ -301,14 +312,27 @@ fn documentStart(c: *Composer) Error!?Mark {
 /// root is read is a misuse; `endDocument` comes then. A mapping's key
 /// with an equal key before it in its mapping is `error.DuplicateKey`.
 pub fn step(c: *Composer) Error!Step {
+    var slot: Node = undefined;
+    return switch (try c.stepInto(&slot)) {
+        .scalar => .{ .scalar = slot },
+        .begin => .{ .begin = slot },
+        .node => |n| .{ .node = n },
+        .end => |mark| .{ .end = mark },
+    };
+}
+
+/// `step`, a node by value written in `slot` rather than returned: what
+/// construction reads, so a node is written once where it is read, not
+/// copied through each return on its way (t49).
+pub fn stepInto(c: *Composer, slot: *Node) Error!StepInto {
     if (c.failed) |err| return err;
-    return c.nextStep() catch |err| {
+    return c.nextStep(slot) catch |err| {
         c.failed = err;
         return err;
     };
 }
 
-fn nextStep(c: *Composer) Error!Step {
+fn nextStep(c: *Composer, slot: *Node) Error!StepInto {
     const event = try c.nextEvent();
     if (event.data == .sequence_end or event.data == .mapping_end) {
         c.endStream();
@@ -317,26 +341,32 @@ fn nextStep(c: *Composer) Error!Step {
     const stream: ?*Stream = if (c.streams.items.len > 0) &c.streams.items[c.streams.items.len - 1] else null;
     const is_key = if (stream) |s| s.mapping and s.at_key else false;
     if (stream) |s| s.at_key = s.mapping and !s.at_key;
-    const result = try c.stepOf(event, is_key);
-    if (is_key and c.options.duplicate_keys == .refuse) try c.checkStreamKey(stream.?, result);
+    const result = try c.stepOf(&event, is_key, slot);
+    if (is_key and c.options.duplicate_keys == .refuse) try c.checkStreamKey(stream.?, result, slot);
     return result;
 }
 
-/// The step `event` begins: whole, or a collection begun.
-fn stepOf(c: *Composer, event: Event, is_key: bool) Error!Step {
+/// The step `event` begins: whole, or a collection begun, a node by
+/// value written in `slot`.
+fn stepOf(c: *Composer, event: *const Event, is_key: bool, slot: *Node) Error!StepInto {
     switch (event.data) {
-        .scalar => |s| {
+        .scalar => |*s| {
             const data: Node.Data = .{ .scalar = .{ .value = s.value, .style = s.style } };
-            if (s.properties.anchor != null) return .{ .node = try c.newNode(event, s.properties, data) };
-            return .{ .scalar = .{ .start = event.start, .end = event.end, .tag = try c.resolveTag(event.start, s.properties.tag, data), .data = data } };
+            if (s.properties.anchor != null) return .{ .node = try c.newNode(event, &s.properties, data) };
+            slot.* = .{ .start = event.start, .end = event.end, .tag = try c.resolveTag(event.start, s.properties.tag, data), .data = data };
+            return .scalar;
         },
-        .alias => |name| return .{ .scalar = .{ .start = event.start, .end = event.end, .data = .{ .alias = try c.anchorNamed(event, name) } } },
-        .sequence_start, .mapping_start => |collection| {
-            if (collection.properties.anchor != null or is_key) return .{ .node = try c.composeFrom(event) };
+        .alias => |name| {
+            slot.* = .{ .start = event.start, .end = event.end, .data = .{ .alias = try c.anchorNamed(event.*, name) } };
+            return .scalar;
+        },
+        .sequence_start, .mapping_start => |*collection| {
+            if (collection.properties.anchor != null or is_key) return .{ .node = try c.composeFrom(event.*) };
             const data: Node.Data = if (event.data == .sequence_start) .{ .sequence = .{ .flow = collection.flow } } else .{ .mapping = .{ .flow = collection.flow } };
             const tag = try c.resolveTag(event.start, collection.properties.tag, data);
             try c.streams.append(c.parser.scanner.gpa, .{ .mapping = event.data == .mapping_start, .start = c.items.items.len, .kept_len = c.kept.len });
-            return .{ .begin = .{ .start = event.start, .end = event.end, .tag = tag, .data = data } };
+            slot.* = .{ .start = event.start, .end = event.end, .tag = tag, .data = data };
+            return .begin;
         },
         else => unreachable,
     }
@@ -344,10 +374,10 @@ fn stepOf(c: *Composer, event: Event, is_key: bool) Error!Step {
 
 /// Checks a key `step` read against its mapping's others, keeping it,
 /// or a copy of it, until the mapping ends.
-fn checkStreamKey(c: *Composer, stream: *Stream, key: Step) Error!void {
+fn checkStreamKey(c: *Composer, stream: *Stream, key: StepInto, slot: *const Node) Error!void {
     const gpa = c.parser.scanner.gpa;
     const node = switch (key) {
-        .scalar => |n| try c.kept.push(gpa, n),
+        .scalar => try c.kept.push(gpa, slot.*),
         .node => |n| n,
         .begin, .end => unreachable,
     };
@@ -408,10 +438,11 @@ fn composeFrom(c: *Composer, first: Event) Error!*Node {
     var event = first;
     while (true) : (event = try c.nextEvent()) {
         const done = switch (event.data) {
-            .scalar => |s| try c.newNode(event, s.properties, .{ .scalar = .{ .value = s.value, .style = s.style } }),
-            .alias => |name| try c.aliasNode(event, name),
-            .sequence_start => |s| try c.open(event, s.properties, .{ .sequence = .{ .flow = s.flow } }),
-            .mapping_start => |s| try c.open(event, s.properties, .{ .mapping = .{ .flow = s.flow } }),
+            // The event read where it is, not copied to each call (t49).
+            .scalar => |*s| try c.newNode(&event, &s.properties, .{ .scalar = .{ .value = s.value, .style = s.style } }),
+            .alias => |name| try c.aliasNode(&event, name),
+            .sequence_start => |*s| try c.open(&event, &s.properties, .{ .sequence = .{ .flow = s.flow } }),
+            .mapping_start => |*s| try c.open(&event, &s.properties, .{ .mapping = .{ .flow = s.flow } }),
             .sequence_end, .mapping_end => try c.close(event.end),
             else => unreachable,
         };
@@ -423,7 +454,7 @@ fn composeFrom(c: *Composer, first: Event) Error!*Node {
 }
 
 /// A node for `event`, its tag resolved and its anchor recorded.
-fn newNode(c: *Composer, event: Event, properties: Event.Properties, data: Node.Data) Error!*Node {
+fn newNode(c: *Composer, event: *const Event, properties: *const Event.Properties, data: Node.Data) Error!*Node {
     const node = try c.arena.allocator().create(Node);
     const tag = if (data == .alias) null else try c.resolveTag(event.start, properties.tag, data);
     node.* = .{ .start = event.start, .end = event.end, .tag = tag, .anchor = properties.anchor, .data = data };
@@ -455,8 +486,8 @@ fn resolveTag(c: *Composer, mark: Mark, written: ?[]const u8, data: Node.Data) E
     };
 }
 
-fn aliasNode(c: *Composer, event: Event, name: []const u8) Error!*Node {
-    return c.newNode(event, .{}, .{ .alias = try c.anchorNamed(event, name) });
+fn aliasNode(c: *Composer, event: *const Event, name: []const u8) Error!*Node {
+    return c.newNode(event, &.{}, .{ .alias = try c.anchorNamed(event.*, name) });
 }
 
 /// The node the anchor `name` names, for the alias `event`.
@@ -468,7 +499,7 @@ fn anchorNamed(c: *Composer, event: Event, name: []const u8) Error!*Node {
 }
 
 /// Opens a collection; returns null, as it is not done yet.
-fn open(c: *Composer, event: Event, properties: Event.Properties, data: Node.Data) Error!?*Node {
+fn open(c: *Composer, event: *const Event, properties: *const Event.Properties, data: Node.Data) Error!?*Node {
     const node = try c.newNode(event, properties, data);
     try c.frames.append(c.parser.scanner.gpa, .{ .node = node, .start = c.items.items.len });
     return null;
