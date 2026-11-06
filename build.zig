@@ -65,6 +65,25 @@ pub fn build(b: *std.Build) void {
         suite_step.dependOn(&verbose.step);
     }
 
+    // `zig build bench [-- records [runs]]` (tools/bench.zig, karte t46):
+    // each stage's median time, allocations, bytes and peak over a
+    // generated document, the library built ReleaseFast whatever
+    // -Doptimize says, as a consumer ships it. Not in `test`: its numbers
+    // are read, not checked.
+    const bench_yaml = b.createModule(.{ .root_source_file = b.path("src/root.zig"), .target = target, .optimize = .fast });
+    const bench = b.addExecutable(.{ .name = "bench", .root_module = b.createModule(.{
+        .root_source_file = b.path("tools/bench.zig"),
+        .target = target,
+        .optimize = .fast,
+        .imports = &.{.{ .name = "yaml", .module = bench_yaml }},
+    }) });
+    const run_bench = b.addRunArtifact(bench);
+    run_bench.addPassthruArgs();
+    run_bench.has_side_effects = true;
+    b.step("bench", "Time each stage and count its allocations (-- records runs)").dependOn(&run_bench.step);
+    // It is compiled by `test`, so an API change cannot leave it broken.
+    test_step.dependOn(&bench.step);
+
     // The security catalog (test/security/CATALOG.md): every covered row
     // names a test that exists, and every `security: ...` test is in a
     // row. It reads files the build does not track: always run it.
