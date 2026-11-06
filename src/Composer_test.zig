@@ -4,6 +4,7 @@
 const std = @import("std");
 const testing = std.testing;
 const Composer = @import("Composer.zig");
+const yaml_schema = @import("schema.zig");
 const Node = Composer.Node;
 
 /// Composes `input`'s first document; the composer stays alive with it.
@@ -172,12 +173,73 @@ test "a deep document composes without recursion" {
     defer testing.allocator.free(input);
     @memset(input[0..depth], '[');
     @memset(input[depth..], ']');
-    var c: Composer = .init(testing.allocator, input, .{});
+    var c: Composer = .init(testing.allocator, input, .{ .max_depth = depth + 1 });
     defer c.deinit();
     var node = try first(&c);
     var levels: usize = 1;
     while (node.data.sequence.items.len > 0) : (levels += 1) node = node.data.sequence.items[0];
     try testing.expectEqual(depth, levels);
+}
+
+test "the depth limit comes through with its diagnostic" {
+    var c: Composer = .init(testing.allocator, "[[[[1]]]]", .{ .max_depth = 2 });
+    defer c.deinit();
+    try testing.expectError(error.DepthLimit, c.next());
+    try testing.expectEqual(2, c.diagnostic.mark.column);
+}
+
+const bits = 10;
+const mask = (@as(u64, 1) << bits) - 1;
+
+/// `count` names that all fall in one of 1,024 buckets under a fixed
+/// seed, as an attacker who knew the seed would choose them: by std's
+/// string hash (Wyhash, seed 0) for anchor names, or by the composer's
+/// key hash at seed 0 for keys.
+fn collidingNames(gpa: std.mem.Allocator, count: usize, comptime as_keys: bool) ![][]const u8 {
+    const names = try gpa.alloc([]const u8, count);
+    var found: usize = 0;
+    var i: usize = 0;
+    while (found < count) : (i += 1) {
+        var buf: [16]u8 = undefined;
+        const name = try std.fmt.bufPrint(&buf, "k{d}", .{i});
+        const key: Node = .{ .start = .{}, .end = .{}, .tag = yaml_schema.tag.str, .data = .{ .scalar = .{ .value = name, .style = .plain } } };
+        const hash = if (as_keys) Composer.hashKey(&key, 0) else std.hash.Wyhash.hash(0, name);
+        if (hash & mask != 0) continue;
+        names[found] = try gpa.dupe(u8, name);
+        found += 1;
+    }
+    return names;
+}
+
+/// How many of the 1,024 buckets `hashes` fall in.
+fn buckets(gpa: std.mem.Allocator, hashes: []const u64) !usize {
+    var seen: std.AutoHashMapUnmanaged(u64, void) = .empty;
+    for (hashes) |h| try seen.put(gpa, h & mask, {});
+    return seen.count();
+}
+
+test "keys and anchors built to collide under a fixed seed spread under the composer's" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const keys = try collidingNames(a, 400, true);
+    const anchors = try collidingNames(a, 400, false);
+    var input: std.ArrayList(u8) = .empty;
+    for (keys, anchors) |key, anchor| try input.print(a, "{s}: &{s} v\n", .{ key, anchor });
+    var c: Composer = .init(testing.allocator, input.items, .{});
+    defer c.deinit();
+    const root = try first(&c);
+    var key_hashes: [400]u64 = undefined;
+    var anchor_hashes: [400]u64 = undefined;
+    for (root.data.mapping.pairs, anchors, 0..) |pair, anchor, i| {
+        try testing.expectEqual(0, Composer.hashKey(pair.key, 0) & mask);
+        key_hashes[i] = c.keyHash(pair.key);
+        anchor_hashes[i] = c.anchorHash(anchor);
+    }
+    // 400 random hashes fill about 330 of 1,024 buckets; one is what the
+    // fixed seed gives. Allow a wide margin either side of random.
+    try testing.expect(try buckets(a, &key_hashes) > 250);
+    try testing.expect(try buckets(a, &anchor_hashes) > 250);
 }
 
 test "syntax errors come through with their diagnostic" {

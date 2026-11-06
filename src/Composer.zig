@@ -88,6 +88,8 @@ pub const Options = struct {
     duplicate_keys: enum { refuse, keep } = .refuse,
     /// How nodes with no specific tag get one.
     schema: schema.Schema = .core,
+    /// The most collections open at once (`Scanner.max_depth`).
+    max_depth: usize = 10_000,
 };
 
 /// How much of two nodes equality and hashing look at before giving up:
@@ -117,8 +119,10 @@ const Frame = struct {
 pub fn init(gpa: Allocator, input: []const u8, options: Options) Composer {
     var digest: [8]u8 = undefined;
     std.crypto.hash.Blake3.hash(input, &digest, .{});
+    var parser: Parser = .init(gpa, input);
+    parser.scanner.max_depth = options.max_depth;
     return .{
-        .parser = .init(gpa, input),
+        .parser = parser,
         .options = options,
         .arena = .init(gpa),
         .seed = std.mem.readInt(u64, &digest, .little),
@@ -169,7 +173,7 @@ pub fn next(c: *Composer) Error!?Document {
 
 fn nextEvent(c: *Composer) Error!Event {
     return c.parser.next() catch |err| {
-        if (err == error.SyntaxError) c.diagnostic = c.parser.diagnostic;
+        if (err != error.OutOfMemory) c.diagnostic = c.parser.diagnostic;
         return err;
     };
 }
@@ -368,6 +372,24 @@ fn hashWithin(hasher: *std.hash.Wyhash, node: *const Node, budget: *usize) void 
         .mapping => |m| hasher.update(std.mem.asBytes(&m.pairs.len)),
         .alias => unreachable,
     }
+}
+
+/// The hash the composer's key sets give `key`: seeded from the input,
+/// so keys chosen to collide under another seed spread like any others.
+pub fn keyHash(c: *const Composer, key: *const Node) u64 {
+    return hashNode(key, c.seed);
+}
+
+/// The hash of `key` under `seed`, which the composer's key sets use with
+/// a seed from the input. Public so a test can find keys that collide
+/// under a seed of its choosing.
+pub fn hashKey(key: *const Node, seed: u64) u64 {
+    return hashNode(key, seed);
+}
+
+/// The hash the composer's anchor table gives `name`.
+pub fn anchorHash(c: *const Composer, name: []const u8) u64 {
+    return SeededStrings.hash(.{ .seed = c.seed }, name);
 }
 
 const KeyContext = struct {

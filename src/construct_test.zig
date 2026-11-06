@@ -143,7 +143,10 @@ test "limits: a cycle, an alias bomb, depth" {
     // Aliases used a few times are fine.
     const reused = try yaml.parseFromSliceLeaky(yaml.Value, arena.allocator(), "a: &x [1, 2]\nb: *x\nc: *x\n", .{ .max_alias_nodes = 6 });
     try testing.expectEqual(2, reused.get("c").?.sequence.len);
-    try expectFailure(yaml.Value, "[[[[[[1]]]]]]", .{ .max_depth = 3 }, error.DepthLimit, 1, 5);
+    // The scanner stops the fourth collection.
+    try expectFailure(yaml.Value, "[[[[[[1]]]]]]", .{ .max_depth = 3 }, error.DepthLimit, 1, 4);
+    // Aliases nest deeper than the text: construction stops them.
+    try expectFailure(yaml.Value, "a: &a [[1]]\nb: [[*a]]\n", .{ .max_depth = 4 }, error.DepthLimit, 1, 9);
 }
 
 fn parseAndFree(allocator: std.mem.Allocator) !void {

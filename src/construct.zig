@@ -37,7 +37,8 @@ pub const ParseOptions = struct {
     ignore_unknown_fields: bool = false,
     /// The most nodes construction builds through aliases.
     max_alias_nodes: usize = 1_000_000,
-    /// The deepest construction goes into a document.
+    /// The deepest construction goes into a document, and the most
+    /// collections the scanner lets be open at once.
     max_depth: usize = 1_000,
     /// Set to where and why parsing or construction failed.
     diagnostic: ?*Diagnostic = null,
@@ -94,7 +95,11 @@ pub fn parseFromSliceLeaky(comptime T: type, allocator: Allocator, input: []cons
 }
 
 fn build(comptime T: type, result: Allocator, scratch: Allocator, input: []const u8, options: ParseOptions) ParseError!T {
-    var composer: Composer = .init(scratch, input, .{ .schema = options.schema, .duplicate_keys = options.duplicate_keys });
+    var composer: Composer = .init(scratch, input, .{
+        .schema = options.schema,
+        .duplicate_keys = options.duplicate_keys,
+        .max_depth = options.max_depth,
+    });
     defer composer.deinit();
     const document = try composeOne(&composer, options);
     var builder: Builder = .{ .allocator = result, .scratch = scratch, .options = options };

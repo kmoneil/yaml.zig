@@ -506,6 +506,32 @@ test "marks: offsets, lines and columns, columns in characters" {
     try testing.expectEqualDeep(Scanner.Mark{ .offset = 6, .line = 1, .column = 0 }, entry.start);
 }
 
+test "depth: flow and block collections count toward max_depth" {
+    const cases = [_]struct { []const u8, usize }{
+        .{ "[[[[x]]]]", 3 },
+        .{ "a:\n b:\n  c:\n   d: x\n", 3 },
+        // The sequence, `[` and `{` are three: the second `[` is a fourth.
+        .{ "- [{a: [x]}]", 7 },
+    };
+    for (cases) |case| {
+        var s: Scanner = .init(testing.allocator, case[0]);
+        defer s.deinit();
+        s.max_depth = 3;
+        const err = while (true) {
+            const token = s.next() catch |err| break err;
+            if (token.data == .stream_end) break error.TestUnexpectedResult;
+        };
+        try testing.expectEqual(error.DepthLimit, err);
+        try testing.expectEqual(case[1], s.diagnostic.mark.column);
+        try testing.expectEqualStrings("collections nest deeper than max_depth", s.diagnostic.message);
+    }
+    // At the limit, not past it.
+    var s: Scanner = .init(testing.allocator, "[[[x]]]");
+    defer s.deinit();
+    s.max_depth = 3;
+    while ((try s.next()).data != .stream_end) {}
+}
+
 test "next after the end gives the end again" {
     var s: Scanner = .init(testing.allocator, "a");
     defer s.deinit();

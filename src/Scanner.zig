@@ -82,7 +82,12 @@ pub const Diagnostic = struct {
     message: []const u8 = "",
 };
 
-pub const Error = error{ SyntaxError, OutOfMemory };
+pub const Error = error{
+    SyntaxError,
+    OutOfMemory,
+    /// Collections nest deeper than `max_depth`.
+    DepthLimit,
+};
 
 /// Where a simple key may begin, one for each flow level.
 const SimpleKey = struct {
@@ -134,6 +139,10 @@ stale_floor: usize = 0,
 flow_level: usize = 0,
 /// A tab was in the whitespace just before the next token, on its line.
 tab_before: bool = false,
+/// The most collections, block and flow, open at once. Nothing recurses
+/// on depth, but each level holds memory, so a megabyte of `[` would hold
+/// a hundred or so.
+max_depth: usize = 10_000,
 /// The last token was a JSON-like node (a quoted scalar or a flow
 /// collection), after which a `:` in a flow collection is a value
 /// indicator even with no blank after it: `{"a":b}`.
@@ -392,6 +401,7 @@ fn fetchDocumentIndicator(s: *Scanner, data: Token.Data) Error!void {
 }
 
 fn fetchFlowCollectionStart(s: *Scanner, data: Token.Data) Error!void {
+    try s.checkDepth(s.mark);
     // The collection may be a simple key: `[a, b]: c`.
     try s.saveSimpleKey();
     try s.simple_keys.append(s.gpa, .{ .flow_mapping = data == .flow_mapping_start });
@@ -636,6 +646,7 @@ fn rollIndent(s: *Scanner, column: usize, number: ?usize, data: Token.Data, mark
     const col: isize = @intCast(column);
     if (s.indent >= col) return;
     if (after_tab) return s.fail(mark, "a tab character cannot indent a block collection");
+    try s.checkDepth(mark);
     try s.indents.append(s.gpa, s.indent);
     s.indent = col;
     const token: Token = .{ .start = mark, .end = mark, .data = data };
@@ -1228,6 +1239,13 @@ fn skipBreak(s: *Scanner) void {
     s.mark.column = 0;
     s.line_start = s.mark.offset;
     s.line_has_token = false;
+}
+
+/// Refuses a collection opening at `mark` past `max_depth`.
+fn checkDepth(s: *Scanner, mark: Mark) Error!void {
+    if (s.flow_level + s.indents.items.len < s.max_depth) return;
+    s.diagnostic = .{ .mark = mark, .message = "collections nest deeper than max_depth" };
+    return error.DepthLimit;
 }
 
 fn fail(s: *Scanner, mark: Mark, message: []const u8) error{SyntaxError} {

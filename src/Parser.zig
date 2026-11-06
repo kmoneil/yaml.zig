@@ -160,7 +160,7 @@ pub fn next(p: *Parser) Error!Event {
 fn peek(p: *Parser) Error!Token {
     if (p.peeked) |token| return token;
     const token = p.scanner.next() catch |err| {
-        if (err == error.SyntaxError) p.diagnostic = p.scanner.diagnostic;
+        if (err != error.OutOfMemory) p.diagnostic = p.scanner.diagnostic;
         return err;
     };
     p.peeked = token;
