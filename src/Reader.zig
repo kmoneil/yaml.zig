@@ -286,8 +286,11 @@ fn documentEnd(r: *Reader) Error!void {
 /// a blank, a line break or the end after it.
 fn atMarker(r: *const Reader, comptime marker: []const u8) bool {
     if (r.s.mark.column != 0 or !std.mem.startsWith(u8, r.s.input[r.s.mark.offset..], marker)) return false;
+    // As the scanner's: its `ch` gives a NUL byte as 0, as it does the
+    // end, so `---` and a NUL is a marker too (found by the reader fuzz
+    // target).
     const c = r.s.ch(3);
-    return r.s.mark.offset + 3 >= r.s.input.len or chars.isBlankOrBreak(c);
+    return c == 0 or chars.isBlankOrBreak(c);
 }
 
 /// Whether a directive (`%`) begins the line at the cursor.
@@ -428,7 +431,18 @@ fn blockPlain(r: *Reader, place: Place, start: Mark, col: isize, props: ?Props) 
     const value = r.s.input[start.offset..end.offset];
     const token: Scanner.Token = .{ .start = start, .end = end, .data = .{ .scalar = .{ .value = value, .style = .plain } } };
     if (r.atValue()) return r.firstKey(place, start, col, token, props);
-    if (r.s.ch(0) != '#' and r.plainContinues()) return error.Unsupported;
+    if (r.s.ch(0) != '#' and r.plainContinues()) return r.blockPlainLines(start, props);
+    try r.emitScalarWith(token, props);
+    r.pop();
+}
+
+/// A plain scalar of more than one line, read again from its `start` by
+/// the scanner, which folds its lines. A `:` after it on its last line
+/// would make a key of more than one line: the parser's.
+fn blockPlainLines(r: *Reader, start: Mark, props: ?Props) Error!void {
+    r.s.mark = start;
+    const token = r.s.scanPlainScalar() catch |err| return unsupported(err);
+    if (r.atValue() and r.s.mark.line == token.end.line) return error.Unsupported;
     try r.emitScalarWith(token, props);
     r.pop();
 }
@@ -695,7 +709,7 @@ fn lineContinuesPlain(input: []const u8, line_start: usize, i: usize, indent_col
 fn atMarkerText(input: []const u8, i: usize) bool {
     const rest = input[i..];
     if (!std.mem.startsWith(u8, rest, "---") and !std.mem.startsWith(u8, rest, "...")) return false;
-    return rest.len == 3 or chars.isBlankOrBreak(rest[3]);
+    return rest.len == 3 or rest[3] == 0 or chars.isBlankOrBreak(rest[3]);
 }
 
 /// How many bytes the line break at `i` takes: `\r\n` two.

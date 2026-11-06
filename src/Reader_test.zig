@@ -73,6 +73,13 @@ test "anchors, aliases and tags" {
     try expectWhole("&root\nk: v\n");
 }
 
+test "plain scalars of more lines" {
+    try expectWhole("a: one\n  two\n\n  three\nb: x\n");
+    try expectWhole("- first\n  second # c\n- third\n");
+    try expectWhole("just\na scalar\n");
+    try expectWhole("k: &a !!str v\n  w\n");
+}
+
 test "flow collections on one line" {
     try expectWhole("tags: [alpha, beta, \"gamma 0\"]\nenv: {A: \"x\", B: 'y'}\nn: [[1, 2], {}, []]\nk: {a, b: , : c}\n");
 }
@@ -104,7 +111,7 @@ test "what it hands over: forms it does not read yet, and errors" {
     try expectHandedOver("a: &x &y 1\n");
     try expectHandedOver("{&a k: v}\n");
     try expectHandedOver("? a\n: b\n");
-    try expectHandedOver("a: b\n  c\n");
+    try expectHandedOver("a b\nc: d\n");
     try expectHandedOver("[a,\n b]\n");
     try expectHandedOver("[a]: b\n");
     try expectHandedOver("a:\tb\n");
@@ -114,7 +121,6 @@ test "what it hands over: forms it does not read yet, and errors" {
     try expectHandedOver("a: [b\n");
     try expectHandedOver("- a\nb: c\n");
     try expectHandedOver("a: 'b\n");
-    try expectHandedOver("a\nb\n");
     try expectHandedOver("--- a: b\n");
     try expectHandedOver("--- - a\n");
     try expectHandedOver("... a\n");
@@ -123,4 +129,7 @@ test "what it hands over: forms it does not read yet, and errors" {
     // `...` only once it has read the token after, here a comment with a
     // byte that is not UTF-8.
     try expectHandedOver("--- a\n--- |\n b\n...\n# \xBB\n");
+    // `---` and a NUL byte is a marker to the scanner, which reads a NUL
+    // as it does the end.
+    try expectHandedOver("\n---\x00 |\n  b\n...\n'# c\n\n");
 }

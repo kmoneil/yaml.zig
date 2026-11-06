@@ -21,8 +21,8 @@
 //! scanners (`ch`, `skip`, `skipBreak`, `skipComment`, `scanPlainLine`,
 //! `scanQuotedScalar`, `scanBlockScalar`, `indicatorEnds`,
 //! `atDocumentMarkerLine`, `atAnchorCharacter`, `expectPropertyEnd`,
-//! `scanVerbatimTag`, `scanShorthandTag`): they are pub for it, and are
-//! not the token API.
+//! `scanVerbatimTag`, `scanShorthandTag`, `scanPlainScalar`): they are
+//! pub for it, and are not the token API.
 //!
 //! Not threadsafe.
 
@@ -886,7 +886,7 @@ fn skipByteOrderMark(s: *Scanner) void {
 /// Scans a plain scalar: its lines folded into one value, a single line
 /// break between two lines read as a space and each further one kept.
 /// In a block, a line less indented than the block's content ends it.
-fn scanPlainScalar(s: *Scanner) Error!Token {
+pub fn scanPlainScalar(s: *Scanner) Error!Token {
     const start = s.mark;
     var end = s.mark;
     var folded: std.ArrayList(u8) = .empty;
