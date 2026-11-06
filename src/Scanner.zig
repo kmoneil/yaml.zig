@@ -789,7 +789,11 @@ fn skipComment(s: *Scanner) Error!void {
     if (s.mark.column > 0 and !isBlankOrBreak(s.input[s.mark.offset - 1])) {
         return s.fail(s.mark, "a comment must be separated from what comes before it by whitespace");
     }
-    while (!isBreakOrEnd(s.ch(0))) try s.skipPrintable();
+    while (true) {
+        s.skipTextRun();
+        if (isBreakOrEnd(s.ch(0))) break;
+        try s.skipPrintable();
+    }
 }
 
 /// Skips a byte order mark where a document may begin: the start of a
@@ -831,7 +835,11 @@ fn scanPlainScalar(s: *Scanner) Error!Token {
 /// between them, and sets `end` after its last word.
 fn scanPlainLine(s: *Scanner, end: *Mark) Error!void {
     while (true) {
-        while (!isBlankOrBreakOrEnd(s.ch(0)) and !s.plainEndsHere()) try s.skipPrintable();
+        while (true) {
+            s.skipPlainRun();
+            if (isBlankOrBreakOrEnd(s.ch(0)) or s.plainEndsHere()) break;
+            try s.skipPrintable();
+        }
         end.* = s.mark;
         while (isBlank(s.ch(0))) s.skip();
         // A blank and then `#` starts a comment.
@@ -1248,10 +1256,7 @@ fn scanBlockLine(s: *Scanner, block: *BlockScalar) Error!void {
     // does the end, is a character to refuse. Stopping at one left the
     // scanner where the line began, at content again: it looped forever
     // (found by fuzzing, t43).
-    while (s.mark.offset < s.input.len and !isBreak(s.ch(0))) {
-        if (!isPrintable(s.input, s.mark.offset)) return s.fail(s.mark, "found a character that is not allowed in YAML");
-        s.skip();
-    }
+    try s.skipLineText();
     try block.value.appendSlice(arena, s.input[line_start..s.mark.offset]);
     // The line is not empty, so the input's end implies its break.
     block.leading_break = true;
@@ -1288,6 +1293,52 @@ fn skip(s: *Scanner) void {
 fn skipPrintable(s: *Scanner) Error!void {
     if (!isPrintable(s.input, s.mark.offset)) return s.fail(s.mark, "found a character that is not allowed in YAML");
     s.skip();
+}
+
+/// Moves to the end of a block scalar's line, its text all characters
+/// YAML allows, a run of ASCII at a time where it can.
+fn skipLineText(s: *Scanner) Error!void {
+    while (s.mark.offset < s.input.len and !isBreak(s.ch(0))) {
+        s.skipTextRun();
+        if (s.mark.offset >= s.input.len or isBreak(s.ch(0))) return;
+        if (!isPrintable(s.input, s.mark.offset)) return s.fail(s.mark, "found a character that is not allowed in YAML");
+        s.skip();
+    }
+}
+
+/// Moves past a run of plain scalar text the scanner need not read a
+/// character at a time: ASCII, printable, and able neither to end the
+/// scalar nor to begin a comment, so all but a blank, a `:`, a control,
+/// a byte past ASCII, and in a flow collection a flow indicator. Most of
+/// a document is such runs; one character at a time they were a quarter
+/// of construction's time (t46).
+fn skipPlainRun(s: *Scanner) void {
+    const flow = s.flow_level > 0;
+    var i: usize = s.mark.offset;
+    while (i < s.input.len) : (i += 1) {
+        const c = s.input[i];
+        if (c <= ' ' or c >= 0x7F or c == ':' or (flow and isFlowIndicator(c))) break;
+    }
+    s.advanceAscii(i);
+}
+
+/// Moves past a run of a comment's or a block scalar line's text that is
+/// ASCII and printable, a tab included, to the first character the
+/// caller must read alone: a line break, a control, a byte past ASCII.
+fn skipTextRun(s: *Scanner) void {
+    var i: usize = s.mark.offset;
+    while (i < s.input.len) : (i += 1) {
+        const c = s.input[i];
+        if ((c < ' ' and c != '\t') or c >= 0x7F) break;
+    }
+    s.advanceAscii(i);
+}
+
+/// Moves to `offset`, past ASCII alone on the line: a character a byte.
+fn advanceAscii(s: *Scanner, offset: usize) void {
+    const n: u32 = @intCast(offset - s.mark.offset);
+    s.mark.offset += n;
+    s.mark.column += n;
 }
 
 fn skipN(s: *Scanner, n: usize) void {
