@@ -21,6 +21,9 @@ pub const Parser = @import("Parser.zig");
 /// Events to a graph of nodes, a document at a time.
 pub const Composer = @import("Composer.zig");
 
+/// Events to YAML text.
+pub const Emitter = @import("Emitter.zig");
+
 /// How nodes with no specific tag get one: the failsafe, JSON and core
 /// schemas, and the values their scalars hold.
 pub const schema = @import("schema.zig");
@@ -55,4 +58,5 @@ test {
     _ = @import("schema_test.zig");
     _ = @import("construct_test.zig");
     _ = @import("encoding_test.zig");
+    _ = @import("Emitter_test.zig");
 }

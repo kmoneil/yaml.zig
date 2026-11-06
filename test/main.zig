@@ -19,8 +19,9 @@ const std = @import("std");
 const Io = std.Io;
 const suite = @import("suite.zig");
 const check = @import("check.zig");
+const roundtrip = @import("roundtrip.zig");
 
-const Command = enum { check, list, show, errors };
+const Command = enum { check, list, show, errors, @"show-emit" };
 
 const Options = struct {
     root: []const u8,
@@ -55,6 +56,7 @@ pub fn main(init: std.process.Init) !void {
         },
         .show => try show(arena, io, root, cases, options.case.?, out),
         .errors => try check.writeRejections(arena, io, root, cases, out),
+        .@"show-emit" => try showEmit(arena, io, root, cases, options.case.?, out),
         .check => {
             const tally = try runCheck(arena, io, root, cases, options.skip);
             if (!tally.ok() or !options.quiet) try check.writeTally(out, tally);
@@ -75,7 +77,7 @@ fn parseArgs(args: std.process.Args) error{Usage}!Options {
     while (it.next()) |arg| {
         if (std.meta.stringToEnum(Command, arg)) |command| {
             options.command = command;
-            if (command == .show) options.case = it.next() orelse return error.Usage;
+            if (command == .show or command == .@"show-emit") options.case = it.next() orelse return error.Usage;
         } else if (std.mem.eql(u8, arg, "--quiet")) {
             options.quiet = true;
         } else if (std.mem.eql(u8, arg, "--all")) {
@@ -89,7 +91,7 @@ fn runCheck(arena: std.mem.Allocator, io: Io, root: Io.Dir, cases: []const suite
     const text = try Io.Dir.cwd().readFileAlloc(io, skip_path, arena, .limited(1024 * 1024));
     var bad_line: usize = 0;
     const skips = check.SkipList.parse(arena, text, &bad_line) catch |err| switch (err) {
-        error.BadSkipLine => fatal("suite: {s}:{d}: a line is `<check> <case>`, the check one of: events, error, json\n", .{ skip_path, bad_line }),
+        error.BadSkipLine => fatal("suite: {s}:{d}: a line is `<check> <case>`, the check one of: events, error, json, roundtrip\n", .{ skip_path, bad_line }),
         else => return err,
     };
     return check.runAll(arena, io, root, cases, skips);
@@ -107,6 +109,18 @@ fn show(arena: std.mem.Allocator, io: Io, root: Io.Dir, cases: []const suite.Cas
     const parsed = try check.parse(input, out);
     if (parsed.rejection) |r| try out.print("{s}\n", .{try r.describe(arena)});
     if (parsed.problem()) |problem| try out.print("{s}\n", .{problem});
+}
+
+fn showEmit(arena: std.mem.Allocator, io: Io, root: Io.Dir, cases: []const suite.Case, name: []const u8, out: *Io.Writer) !void {
+    const case = for (cases) |case| {
+        if (std.mem.eql(u8, case.name, name)) break case;
+    } else fatal("suite: no case is named {s}\n", .{name});
+    const input = try check.readCaseFile(arena, io, root, case, "in.yaml");
+    try out.print("=== {s}: {s}\n--- in.yaml\n{s}\n", .{ case.name, case.title, input });
+    if (case.has.contains(.out_yaml)) try out.print("--- out.yaml\n{s}\n", .{try check.readCaseFile(arena, io, root, case, "out.yaml")});
+    try out.writeAll("--- emitted by this library\n");
+    try out.writeAll(roundtrip.emit(arena, input) catch |err| @errorName(err));
+    if (try roundtrip.compare(arena, input)) |problem| try out.print("--- round trip: {s}\n", .{problem});
 }
 
 fn fatal(comptime format: []const u8, args: anytype) noreturn {
@@ -129,4 +143,5 @@ test {
     _ = suite;
     _ = check;
     _ = @import("json.zig");
+    _ = @import("roundtrip.zig");
 }

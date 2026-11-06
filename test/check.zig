@@ -17,6 +17,7 @@ const Allocator = std.mem.Allocator;
 const yaml = @import("yaml");
 const suite = @import("suite.zig");
 const json = @import("json.zig");
+const roundtrip = @import("roundtrip.zig");
 
 pub const Check = enum {
     /// `in.yaml` parses to the events `test.event` holds.
@@ -26,12 +27,16 @@ pub const Check = enum {
     /// `in.yaml`'s documents, composed under the core schema, are the JSON
     /// documents `in.json` holds (json.zig).
     json,
+    /// `in.yaml`'s events, emitted, read back to the same documents
+    /// (roundtrip.zig).
+    roundtrip,
 
     pub fn applies(check: Check, case: suite.Case) bool {
         return switch (check) {
             .events => case.has.contains(.event) and !case.has.contains(.@"error"),
             .@"error" => case.has.contains(.@"error"),
             .json => case.has.contains(.json) and !case.has.contains(.@"error"),
+            .roundtrip => !case.has.contains(.@"error"),
         };
     }
 };
@@ -46,6 +51,7 @@ pub fn run(arena: Allocator, io: Io, root: Io.Dir, case: suite.Case, check: Chec
             try readCaseFile(arena, io, root, case, "in.yaml"),
             try readCaseFile(arena, io, root, case, "in.json"),
         ),
+        .roundtrip => roundtrip.compare(arena, try readCaseFile(arena, io, root, case, "in.yaml")),
     };
 }
 
