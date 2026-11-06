@@ -89,7 +89,7 @@ fn runCheck(arena: std.mem.Allocator, io: Io, root: Io.Dir, cases: []const suite
     const text = try Io.Dir.cwd().readFileAlloc(io, skip_path, arena, .limited(1024 * 1024));
     var bad_line: usize = 0;
     const skips = check.SkipList.parse(arena, text, &bad_line) catch |err| switch (err) {
-        error.BadSkipLine => fatal("suite: {s}:{d}: a line is `<check> <case>`, the check one of: events, error\n", .{ skip_path, bad_line }),
+        error.BadSkipLine => fatal("suite: {s}:{d}: a line is `<check> <case>`, the check one of: events, error, json\n", .{ skip_path, bad_line }),
         else => return err,
     };
     return check.runAll(arena, io, root, cases, skips);
@@ -128,4 +128,5 @@ fn usage() error{Usage} {
 test {
     _ = suite;
     _ = check;
+    _ = @import("json.zig");
 }

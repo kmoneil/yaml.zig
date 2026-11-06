@@ -3,7 +3,8 @@
 //!
 //! A check either applies to a case or not (the events check, to a case
 //! that has `test.event` and is valid YAML; the error check, to one that
-//! is not), and passes or fails. Each parse runs on an allocator that
+//! is not; the json check, to a valid one with `in.json`), and passes or
+//! fails. Each parse runs on an allocator that
 //! checks for leaks, and a leak fails the check. The skip
 //! list (test/suite-skip.txt, one `<check> <case>` a line) names the
 //! checks known to fail. A check that fails and is not listed is a
@@ -15,17 +16,22 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const yaml = @import("yaml");
 const suite = @import("suite.zig");
+const json = @import("json.zig");
 
 pub const Check = enum {
     /// `in.yaml` parses to the events `test.event` holds.
     events,
     /// `in.yaml` is not valid YAML, and parsing it ends in a syntax error.
     @"error",
+    /// `in.yaml`'s documents, composed under the core schema, are the JSON
+    /// documents `in.json` holds (json.zig).
+    json,
 
     pub fn applies(check: Check, case: suite.Case) bool {
         return switch (check) {
             .events => case.has.contains(.event) and !case.has.contains(.@"error"),
             .@"error" => case.has.contains(.@"error"),
+            .json => case.has.contains(.json) and !case.has.contains(.@"error"),
         };
     }
 };
@@ -35,6 +41,11 @@ pub fn run(arena: Allocator, io: Io, root: Io.Dir, case: suite.Case, check: Chec
     return switch (check) {
         .events => checkEvents(arena, io, root, case),
         .@"error" => checkError(arena, io, root, case),
+        .json => json.compare(
+            arena,
+            try readCaseFile(arena, io, root, case, "in.yaml"),
+            try readCaseFile(arena, io, root, case, "in.json"),
+        ),
     };
 }
 
