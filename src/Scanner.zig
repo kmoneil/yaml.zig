@@ -125,6 +125,10 @@ arena: std.heap.ArenaAllocator,
 /// Tokens scanned and not yet handed out start at `head`.
 tokens: std.ArrayList(Token) = .empty,
 head: usize = 0,
+/// The token at `head` is settled: no possible simple key begins at it,
+/// so `peekToken` gives it again without fetching. Nothing but a skip
+/// changes that, and a skip clears it.
+head_settled: bool = false,
 /// How many tokens `next` has handed out.
 tokens_parsed: usize = 0,
 /// Where the scanner is in the stream: before its start, scanning, its
@@ -192,7 +196,16 @@ pub fn next(s: *Scanner) Error!Token {
 /// parser reads (t49). It stays as it is until the next `peekToken` or
 /// `next`; `skipToken` moves past it and leaves it be. Called again
 /// before `skipToken`, the same token. Errors as `next`.
-pub fn peekToken(s: *Scanner) Error!*const Token {
+pub inline fn peekToken(s: *Scanner) Error!*const Token {
+    // The parser peeks a token two or three times before it moves past
+    // it: those after the first take this, inlined, and do not pay for
+    // the call that fetches, whose frame saves every register (t49).
+    if (s.head_settled) return &s.tokens.items[s.head];
+    return s.peekSettling();
+}
+
+/// `peekToken` when the head is not known settled: fetches what it needs.
+noinline fn peekSettling(s: *Scanner) Error!*const Token {
     if (s.failed) |err| return err;
     return s.settleHead() catch |err| {
         s.failed = err;
@@ -210,6 +223,7 @@ pub fn skipToken(s: *Scanner) void {
     }
     s.head += 1;
     s.tokens_parsed += 1;
+    s.head_settled = false;
 }
 
 /// The token at the head of the queue, settled: from a state no error
@@ -223,6 +237,7 @@ fn settleHead(s: *Scanner) Error!*const Token {
         s.head = 0;
     }
     try s.fetchMoreTokens();
+    s.head_settled = true;
     return &s.tokens.items[s.head];
 }
 
@@ -323,7 +338,7 @@ fn fetchBlockScalar(s: *Scanner) Error!void {
     try s.removeSimpleKey();
     s.simple_key_allowed = true;
     const token = try s.scanBlockScalar(if (s.ch(0) == '|') .literal else .folded);
-    try s.tokens.append(s.gpa, token);
+    try s.pushToken(token);
 }
 
 /// Whether the indicator at the next character stands alone: a blank,
@@ -531,7 +546,7 @@ fn fetchPlainScalar(s: *Scanner) Error!void {
     try s.saveSimpleKey();
     s.simple_key_allowed = false;
     const token = try s.scanPlainScalar();
-    try s.tokens.append(s.gpa, token);
+    try s.pushToken(token);
 }
 
 const AnchorKind = enum { anchor, alias };
@@ -674,7 +689,7 @@ fn fetchQuotedScalar(s: *Scanner, style: ScalarStyle) Error!void {
     try s.saveSimpleKey();
     s.simple_key_allowed = false;
     const token = try s.scanQuotedScalar(style);
-    try s.tokens.append(s.gpa, token);
+    try s.pushToken(token);
     s.after_json_node = true;
 }
 
@@ -686,7 +701,19 @@ fn appendIndicator(s: *Scanner, data: Token.Data) Error!void {
 }
 
 fn append(s: *Scanner, data: Token.Data, start: Mark, end: Mark) Error!void {
-    try s.tokens.append(s.gpa, .{ .start = start, .end = end, .data = data });
+    try s.pushToken(.{ .start = start, .end = end, .data = data });
+}
+
+/// Puts `token` at the end of the queue. Inlined to a check and a store:
+/// the queue grows in a call of its own, as ArrayList.append, not
+/// inlined, saved every register to make room on each token (t49).
+inline fn pushToken(s: *Scanner, token: Token) Error!void {
+    if (s.tokens.items.len == s.tokens.capacity) try s.growTokens();
+    s.tokens.appendAssumeCapacity(token);
+}
+
+noinline fn growTokens(s: *Scanner) Error!void {
+    try s.tokens.ensureUnusedCapacity(s.gpa, 1);
 }
 
 /// Puts `token` `ahead` places after the head of the queue.
@@ -712,7 +739,7 @@ fn rollIndent(s: *Scanner, column: usize, number: ?usize, data: Token.Data, mark
     if (number) |n| {
         try s.insert(n - s.tokens_parsed, token);
     } else {
-        try s.tokens.append(s.gpa, token);
+        try s.pushToken(token);
     }
 }
 
