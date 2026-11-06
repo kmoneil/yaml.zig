@@ -248,3 +248,22 @@ test "syntax errors come through with their diagnostic" {
     try testing.expectError(error.SyntaxError, c.next());
     try testing.expect(c.diagnostic.message.len > 0);
 }
+
+test "after an error, each next gives it again" {
+    const cases = .{
+        .{ "{a: 1, a: 2, b: [x, y]}\n", error.DuplicateKey, Composer.Options{} },
+        .{ "[*nowhere, [x]]\n", error.UndefinedAlias, Composer.Options{} },
+        .{ "[x, [y]]\n", error.NotInSchema, Composer.Options{ .schema = .json } },
+        .{ "[a, [b, c\n", error.SyntaxError, Composer.Options{} },
+        .{ "[[[[1]]], 2]\n", error.DepthLimit, Composer.Options{ .max_depth = 2 } },
+    };
+    inline for (cases) |case| {
+        var c: Composer = .init(testing.allocator, case[0], case[2]);
+        defer c.deinit();
+        try testing.expectError(case[1], c.next());
+        const diagnostic = c.diagnostic;
+        try testing.expectError(case[1], c.next());
+        try testing.expectError(case[1], c.next());
+        try testing.expectEqual(diagnostic.mark, c.diagnostic.mark);
+    }
+}

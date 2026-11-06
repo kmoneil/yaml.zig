@@ -117,6 +117,8 @@ frames: std.ArrayList(Frame) = .empty,
 anchors: std.HashMapUnmanaged([]const u8, *Node, SeededStrings, std.hash_map.default_max_load_percentage) = .empty,
 /// The seed of every hash map, from a hash of the input.
 seed: u64,
+/// The error `next` failed with, which every later call gives again.
+failed: ?Error = null,
 diagnostic: Diagnostic = .{},
 
 const Frame = struct {
@@ -155,8 +157,19 @@ pub fn deinit(c: *Composer) void {
 }
 
 /// The stream's next document, or null after its last. On an error,
-/// `diagnostic` says what and where.
+/// `diagnostic` says what and where, and the composer cannot go on:
+/// each later call gives the same error.
 pub fn next(c: *Composer) Error!?Document {
+    if (c.failed) |err| return err;
+    return c.nextDocument() catch |err| {
+        c.failed = err;
+        return err;
+    };
+}
+
+/// `next`, which expects the parser between documents: after an error
+/// it is not, and this must not be called again.
+fn nextDocument(c: *Composer) Error!?Document {
     var start: Event.DocumentStart = undefined;
     var start_mark: Mark = undefined;
     while (true) {
