@@ -65,6 +65,14 @@ test "documents: markers, several, empty, ended" {
     try expectWhole("key:\n- a\n---\n");
 }
 
+test "anchors, aliases and tags" {
+    try expectWhole("base: &b {x: 1}\nother: *b\nlist:\n- &i item\n- *i\n");
+    try expectWhole("a: !!str 1\nb: !local x\nc: !<tag:e.com,2000:t> y\nd: ! z\n");
+    try expectWhole("m: &m\n  k: v\ns: !!seq\n- a\ne: &e\nf: &f !!null\n");
+    try expectWhole("- &a\n- !!map\n  k: v\n- [&x 1, *x, !!str 2, &y ]\n");
+    try expectWhole("&root\nk: v\n");
+}
+
 test "flow collections on one line" {
     try expectWhole("tags: [alpha, beta, \"gamma 0\"]\nenv: {A: \"x\", B: 'y'}\nn: [[1, 2], {}, []]\nk: {a, b: , : c}\n");
 }
@@ -90,8 +98,11 @@ test "the bench's records" {
 
 test "what it hands over: forms it does not read yet, and errors" {
     try expectHandedOver("%YAML 1.2\n---\na\n");
-    try expectHandedOver("a: &x 1\nb: *x\n");
-    try expectHandedOver("a: !!str 1\n");
+    try expectHandedOver("&a key: v\n");
+    try expectHandedOver("*a : v\n");
+    try expectHandedOver("a: !e!x 1\n");
+    try expectHandedOver("a: &x &y 1\n");
+    try expectHandedOver("{&a k: v}\n");
     try expectHandedOver("? a\n: b\n");
     try expectHandedOver("a: b\n  c\n");
     try expectHandedOver("[a,\n b]\n");

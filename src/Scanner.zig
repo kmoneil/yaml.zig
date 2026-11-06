@@ -20,8 +20,9 @@
 //! The reader (Reader.zig) reads with this file's character-level
 //! scanners (`ch`, `skip`, `skipBreak`, `skipComment`, `scanPlainLine`,
 //! `scanQuotedScalar`, `scanBlockScalar`, `indicatorEnds`,
-//! `atDocumentMarkerLine`): they are pub for it, and are not the token
-//! API.
+//! `atDocumentMarkerLine`, `atAnchorCharacter`, `expectPropertyEnd`,
+//! `scanVerbatimTag`, `scanShorthandTag`): they are pub for it, and are
+//! not the token API.
 //!
 //! Not threadsafe.
 
@@ -597,7 +598,7 @@ fn fetchAnchor(s: *Scanner, kind: AnchorKind) Error!void {
     }, start, s.mark);
 }
 
-fn atAnchorCharacter(s: *const Scanner) bool {
+pub fn atAnchorCharacter(s: *const Scanner) bool {
     const c = s.ch(0);
     if (isBlankOrBreakOrEnd(c) or isFlowIndicator(c)) return false;
     return isPrintable(s.input, s.mark.offset);
@@ -605,7 +606,7 @@ fn atAnchorCharacter(s: *const Scanner) bool {
 
 /// A node's property (an anchor or a tag) or an alias ends at a blank, a
 /// line break or the end, or in a flow collection a flow indicator.
-fn expectPropertyEnd(s: *Scanner) Error!void {
+pub fn expectPropertyEnd(s: *Scanner) Error!void {
     const c = s.ch(0);
     if (isBlankOrBreakOrEnd(c) or (s.flow_level > 0 and isFlowIndicator(c))) return;
     return s.fail(s.mark, "an anchor, alias or tag must be followed by whitespace");
@@ -622,7 +623,7 @@ fn fetchTag(s: *Scanner) Error!void {
     try s.append(.{ .tag = tag }, start, s.mark);
 }
 
-fn scanVerbatimTag(s: *Scanner) Error!Token.Tag {
+pub fn scanVerbatimTag(s: *Scanner) Error!Token.Tag {
     const start = s.mark;
     s.skipN(2);
     const uri = try s.scanUri(.uri);
@@ -631,7 +632,7 @@ fn scanVerbatimTag(s: *Scanner) Error!Token.Tag {
     return .{ .handle = "", .suffix = uri };
 }
 
-fn scanShorthandTag(s: *Scanner) Error!Token.Tag {
+pub fn scanShorthandTag(s: *Scanner) Error!Token.Tag {
     const start = s.mark;
     s.skip();
     if (s.atPropertyEnd()) return .{ .handle = "!", .suffix = "" };

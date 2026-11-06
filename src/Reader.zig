@@ -23,6 +23,7 @@ const Scanner = @import("Scanner.zig");
 const Parser = @import("Parser.zig");
 const chars = @import("chars.zig");
 const encoding = @import("encoding.zig");
+const schema = @import("schema.zig");
 
 const Reader = @This();
 
@@ -171,8 +172,20 @@ noinline fn growEvents(r: *Reader) Error!void {
 
 /// A scalar token's event.
 fn emitScalar(r: *Reader, token: Scanner.Token) Error!void {
+    try r.emitScalarWith(token, null);
+}
+
+/// A scalar token's event, with the properties before it, if any.
+fn emitScalarWith(r: *Reader, token: Scanner.Token, props: ?Props) Error!void {
     const scalar = token.data.scalar;
-    try r.emit(token.start, token.end, .{ .scalar = .{ .value = scalar.value, .style = scalar.style } });
+    try r.emit(startOf(props, token.start), token.end, .{ .scalar = .{ .properties = propertiesOf(props), .value = scalar.value, .style = scalar.style } });
+}
+
+/// An empty scalar with properties and nothing after them: its marks are
+/// theirs.
+fn emitEmptyWith(r: *Reader, props: Props) Error!void {
+    try r.emit(props.start, props.end, .{ .scalar = .{ .properties = props.properties, .value = "", .style = .plain } });
+    r.pop();
 }
 
 /// An empty plain scalar at `mark`, as a node with no content is.
@@ -339,10 +352,43 @@ fn blockEndMark(r: *const Reader) Mark {
 /// A block node at the cursor, `place` saying what may begin there. The
 /// state to return to when it ends is pushed.
 fn blockNode(r: *Reader, place: Place) Error!void {
+    if (r.s.ch(0) == '*') return r.blockAlias();
+    const props = try r.scanProps() orelse return r.blockContent(place, null);
+    if (r.atBlockNodeEnd()) return r.propsBelow(place, props);
+    // On their line only a scalar, a flow collection or a block scalar
+    // follow them here: a key after them, or an alias, is the parser's.
+    if (r.s.ch(0) == '*' or r.atIndicator('-')) return error.Unsupported;
+    return r.blockContent(.value_inline, props);
+}
+
+/// After properties that end their line: what they belong to is on the
+/// lines after, past the block's column, or a sequence at its key's
+/// column; else it is an empty scalar.
+fn propsBelow(r: *Reader, place: Place, props: Props) Error!void {
+    try r.skipToToken();
+    if (r.atBlockEnd()) return r.emitEmptyWith(props);
+    if (r.column() == r.indent()) {
+        if (place != .entry and r.atIndicator('-')) {
+            try r.emit(props.start, props.end, .{ .sequence_start = .{ .properties = props.properties, .flow = false } });
+            r.state = .indentless_sequence_entry;
+            return;
+        }
+        // The block's next entry, key or `:`: the node is empty.
+        if (!r.atIndicator('-') and !r.atIndicator(':') and !try r.keyAhead()) return error.Unsupported;
+        return r.emitEmptyWith(props);
+    }
+    switch (r.s.ch(0)) {
+        '&', '!', '*' => return error.Unsupported,
+        else => return r.blockContent(.entry, props),
+    }
+}
+
+/// A block node's content at the cursor, `props` before it.
+fn blockContent(r: *Reader, place: Place, props: ?Props) Error!void {
     const start = r.s.mark;
     const col = r.column();
     const ind = r.indent();
-    if (r.s.ch(0) == '-' and r.s.indicatorEnds()) {
+    if (r.atIndicator('-')) {
         if (place == .value_inline) return error.Unsupported;
         if (place == .value_below and col == ind) {
             try r.emit(start, start, .{ .sequence_start = .{ .flow = false } });
@@ -351,58 +397,137 @@ fn blockNode(r: *Reader, place: Place) Error!void {
         }
         if (col <= ind) return error.Unsupported;
         try r.openBlock(col);
-        try r.emit(start, start, .{ .sequence_start = .{ .flow = false } });
+        try r.emit(startOf(props, start), start, .{ .sequence_start = .{ .properties = propertiesOf(props), .flow = false } });
         r.state = .block_sequence_entry;
         return;
     }
     switch (r.s.ch(0)) {
-        '|', '>' => return r.blockScalar(),
-        '[', '{' => return r.flowStart(),
-        '"', '\'' => return r.blockQuoted(place, start, col),
-        else => return r.blockPlain(place, start, col),
+        '|', '>' => return r.blockScalar(props),
+        '[', '{' => return r.flowStart(props),
+        '"', '\'' => return r.blockQuoted(place, start, col, props),
+        else => return r.blockPlain(place, start, col, props),
     }
 }
 
+/// An alias in a block, not a key.
+fn blockAlias(r: *Reader) Error!void {
+    const start = r.s.mark;
+    const name = try r.scanName();
+    const end = r.s.mark;
+    r.skipBlanks();
+    if (!r.atBlockNodeEnd()) return error.Unsupported;
+    try r.emit(start, end, .{ .alias = name });
+    r.pop();
+}
+
 /// A plain scalar in a block, or the first key of a block mapping.
-fn blockPlain(r: *Reader, place: Place, start: Mark, col: isize) Error!void {
+fn blockPlain(r: *Reader, place: Place, start: Mark, col: isize, props: ?Props) Error!void {
     if (!r.atPlainStart()) return error.Unsupported;
     var end: Mark = undefined;
     r.s.scanPlainLine(&end) catch return error.Unsupported;
     const value = r.s.input[start.offset..end.offset];
     const token: Scanner.Token = .{ .start = start, .end = end, .data = .{ .scalar = .{ .value = value, .style = .plain } } };
-    if (r.atValue()) return r.firstKey(place, start, col, token);
+    if (r.atValue()) return r.firstKey(place, start, col, token, props);
     if (r.s.ch(0) != '#' and r.plainContinues()) return error.Unsupported;
-    try r.emitScalar(token);
+    try r.emitScalarWith(token, props);
     r.pop();
 }
 
 /// A quoted scalar in a block, or the first key of a block mapping.
-fn blockQuoted(r: *Reader, place: Place, start: Mark, col: isize) Error!void {
+fn blockQuoted(r: *Reader, place: Place, start: Mark, col: isize, props: ?Props) Error!void {
     const token = r.s.scanQuotedScalar(if (r.s.ch(0) == '\'') .single_quoted else .double_quoted) catch |err| return unsupported(err);
     r.skipBlanks();
     if (r.atValue()) {
         if (token.end.line != start.line) return error.Unsupported;
-        return r.firstKey(place, start, col, token);
+        return r.firstKey(place, start, col, token, props);
     }
     if (!r.atBlockNodeEnd()) return error.Unsupported;
-    try r.emitScalar(token);
+    try r.emitScalarWith(token, props);
     r.pop();
 }
 
 /// Opens a block mapping at `col` with `key` its first key, the cursor
-/// at the key's `:`.
-fn firstKey(r: *Reader, place: Place, start: Mark, col: isize, key: Scanner.Token) Error!void {
+/// at the key's `:`; `props`, on the lines before, are the mapping's.
+fn firstKey(r: *Reader, place: Place, start: Mark, col: isize, key: Scanner.Token, props: ?Props) Error!void {
     if (place == .value_inline or col <= r.indent() or !r.keyFits(start)) return error.Unsupported;
     try r.openBlock(col);
-    try r.emit(start, start, .{ .mapping_start = .{ .flow = false } });
+    try r.emit(startOf(props, start), start, .{ .mapping_start = .{ .properties = propertiesOf(props), .flow = false } });
     try r.emitScalar(key);
     r.state = .block_mapping_value;
 }
 
-fn blockScalar(r: *Reader) Error!void {
+fn blockScalar(r: *Reader, props: ?Props) Error!void {
     const token = r.s.scanBlockScalar(if (r.s.ch(0) == '|') .literal else .folded) catch |err| return unsupported(err);
-    try r.emitScalar(token);
+    try r.emitScalarWith(token, props);
     r.pop();
+}
+
+// Properties and aliases
+
+/// A node's properties, read ahead of its content: an anchor and a tag,
+/// the tag resolved as the parser does, and where they lie.
+const Props = struct {
+    properties: Event.Properties = .{},
+    start: Mark,
+    end: Mark,
+};
+
+fn startOf(props: ?Props, start: Mark) Mark {
+    return if (props) |p| p.start else start;
+}
+
+fn propertiesOf(props: ?Props) Event.Properties {
+    return if (props) |p| p.properties else .{};
+}
+
+/// The properties at the cursor, an anchor and a tag in either order, on
+/// one line, and the blanks after them; null with none. A second anchor
+/// or tag is the parser's.
+fn scanProps(r: *Reader) Error!?Props {
+    if (r.s.ch(0) != '&' and r.s.ch(0) != '!') return null;
+    var props: Props = .{ .start = r.s.mark, .end = r.s.mark };
+    while (true) {
+        switch (r.s.ch(0)) {
+            '&' => {
+                if (props.properties.anchor != null) return error.Unsupported;
+                props.properties.anchor = try r.scanName();
+            },
+            '!' => {
+                if (props.properties.tag != null) return error.Unsupported;
+                props.properties.tag = try r.scanTag();
+            },
+            else => return props,
+        }
+        props.end = r.s.mark;
+        r.skipBlanks();
+    }
+}
+
+/// An anchor's or an alias's name, after its `&` or `*`.
+fn scanName(r: *Reader) Error![]const u8 {
+    r.s.skip();
+    const start = r.s.mark.offset;
+    while (r.s.atAnchorCharacter()) r.s.skip();
+    const name = r.s.input[start..r.s.mark.offset];
+    if (name.len == 0) return error.Unsupported;
+    r.s.expectPropertyEnd() catch |err| return unsupported(err);
+    return name;
+}
+
+/// A tag, resolved as the parser does against the default handles: one
+/// with a handle a %TAG directive must give is the parser's.
+fn scanTag(r: *Reader) Error![]const u8 {
+    const tag = (if (r.s.ch(1) == '<') r.s.scanVerbatimTag() else r.s.scanShorthandTag()) catch |err| return unsupported(err);
+    r.s.expectPropertyEnd() catch |err| return unsupported(err);
+    if (tag.handle.len == 0) return tag.suffix;
+    if (tag.suffix.len == 0) return "!";
+    const prefix: []const u8 = if (std.mem.eql(u8, tag.handle, "!"))
+        "!"
+    else if (std.mem.eql(u8, tag.handle, "!!"))
+        schema.core_prefix
+    else
+        return error.Unsupported;
+    return std.mem.concat(r.s.arena.allocator(), u8, &.{ prefix, tag.suffix });
 }
 
 fn blockSequenceEntry(r: *Reader) Error!void {
@@ -583,15 +708,16 @@ fn breakLength(input: []const u8, i: usize) usize {
 /// Opens a flow collection at the cursor. One the reader cannot read to
 /// its end on this line, or that is followed by a `:` (a key), is
 /// unsupported.
-fn flowStart(r: *Reader) Error!void {
+fn flowStart(r: *Reader, props: ?Props) Error!void {
     const close = r.flowCloseOnLine() orelse return error.Unsupported;
     if (!r.flowEndsNode(close + 1)) return error.Unsupported;
     if (r.blocks.items.len + r.s.flow_level >= r.s.max_depth) return error.Unsupported;
     const mapping = r.s.ch(0) == '{';
-    const start = r.s.mark;
+    const start = startOf(props, r.s.mark);
+    const collection: Event.Collection = .{ .properties = propertiesOf(props), .flow = true };
     r.s.skip();
     r.s.flow_level += 1;
-    try r.emit(start, r.s.mark, if (mapping) .{ .mapping_start = .{ .flow = true } } else .{ .sequence_start = .{ .flow = true } });
+    try r.emit(start, r.s.mark, if (mapping) .{ .mapping_start = collection } else .{ .sequence_start = collection });
     r.state = if (mapping) .flow_mapping_first_key else .flow_sequence_first_entry;
 }
 
@@ -702,7 +828,7 @@ fn flowMappingKey(r: *Reader, first: bool) Error!void {
     }
     switch (r.s.ch(0)) {
         '}' => return r.flowEnd(.mapping_end),
-        '?', '[', '{' => return error.Unsupported,
+        '?', '[', '{', '&', '!', '*' => return error.Unsupported,
         else => {},
     }
     if (r.s.ch(0) == ':' and r.s.indicatorEnds()) {
@@ -733,14 +859,29 @@ fn flowMappingValue(r: *Reader, empty: bool) Error!void {
 /// A node in a flow collection: a scalar, or a collection opened. One a
 /// `:` follows, a key where none may be, is unsupported.
 fn flowNode(r: *Reader) Error!void {
+    if (r.s.ch(0) == '*') {
+        const start = r.s.mark;
+        const name = try r.scanName();
+        const end = r.s.mark;
+        try r.skipFlowSpace();
+        if (!r.atFlowNodeEnd()) return error.Unsupported;
+        try r.emit(start, end, .{ .alias = name });
+        r.pop();
+        return;
+    }
+    const props = try r.scanProps();
+    if (props) |p| {
+        if (r.atFlowNodeEnd()) return r.emitEmptyWith(p);
+        if (r.s.ch(0) == '*') return error.Unsupported;
+    }
     switch (r.s.ch(0)) {
-        '[', '{' => return r.flowStart(),
+        '[', '{' => return r.flowStart(props),
         else => {},
     }
     const token = try r.flowScalar();
     try r.skipFlowSpace();
     if (!r.atFlowNodeEnd()) return error.Unsupported;
-    try r.emitScalar(token);
+    try r.emitScalarWith(token, props);
     r.pop();
 }
 
