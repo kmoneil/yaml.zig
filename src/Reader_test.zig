@@ -1,0 +1,98 @@
+//! The reader's tests: inputs it reads to their end, its events the
+//! parser's, and inputs it hands over.
+
+const std = @import("std");
+const testing = std.testing;
+const Reader = @import("Reader.zig");
+
+/// The reader reads `input` to its end, its events the parser's.
+fn expectWhole(input: []const u8) !void {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const result = try Reader.compare(testing.allocator, arena.allocator(), input);
+    if (result.problem) |problem| {
+        std.debug.print("{s}\n", .{problem});
+        return error.TestUnexpectedResult;
+    }
+    try testing.expect(result.whole);
+}
+
+/// The reader hands `input` over, its events up to then the parser's.
+fn expectHandedOver(input: []const u8) !void {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const result = try Reader.compare(testing.allocator, arena.allocator(), input);
+    if (result.problem) |problem| {
+        std.debug.print("{s}\n", .{problem});
+        return error.TestUnexpectedResult;
+    }
+    try testing.expect(!result.whole);
+}
+
+test "block collections, nested and compact, a sequence at its key's column" {
+    try expectWhole("a: 1\nb:\n  - x\n  - y: z\n    w: v\nc:\n- p\n- q\nd: e\n");
+    try expectWhole("- - a\n  - b\n- c: d\n  e: f\n-\n- g\n");
+    try expectWhole("a:\nb: c\n: d\n");
+}
+
+test "scalars: plain, quoted, block, empty; comments" {
+    try expectWhole("# head\na: 'x y'   # tail\nb: \"q\\tr\"\nc: |\n  lit\n  eral\nd: >-\n  fol\n  ded\n\ne:\n");
+    try expectWhole("just a scalar");
+    try expectWhole("");
+    try expectWhole("# only a comment\n");
+    // Found by the reader fuzz target: a last line of a comment and no
+    // line break ends the blocks past its column there.
+    try expectWhole("a: 1\nb:\n  - - y: z\n#");
+}
+
+test "found by the reader fuzz target" {
+    // A sequence at its key's column ends only at a token the parser
+    // could read: here a plain scalar with a byte that is not UTF-8.
+    try expectHandedOver("a: 1\nb:\n-  - x\n  -\xC2 y: z\n\n");
+    // A quote in a plain scalar opens no quoted one: the `}` closes the
+    // flow collection, and the `: ` after it makes it a key.
+    try expectHandedOver("- [a, {b: c}, \"d\", null'key}: e']\n- ?: k\n  : v\n\n");
+    // A blank in a plain scalar does not end it: the quote after it is
+    // in the scalar too.
+    try expectHandedOver("- [a, {b: c}, \"d\",:y '}: e']\n-k\n  : v\n\n");
+}
+
+test "flow collections on one line" {
+    try expectWhole("tags: [alpha, beta, \"gamma 0\"]\nenv: {A: \"x\", B: 'y'}\nn: [[1, 2], {}, []]\nk: {a, b: , : c}\n");
+}
+
+test "the bench's records" {
+    try expectWhole(
+        \\- name: service-0
+        \\  id: 0
+        \\  ratio: 0.0
+        \\  enabled: true
+        \\  tags: [alpha, beta, "gamma 0"]
+        \\  owner: ~
+        \\  description: >
+        \\    A folded description of service 0
+        \\    across two lines.
+        \\  ports:
+        \\    - 80
+        \\    - 443
+        \\  env: {A: "x", B: 'y'}
+        \\
+    );
+}
+
+test "what it hands over: forms it does not read yet, and errors" {
+    try expectHandedOver("--- a\n");
+    try expectHandedOver("a: &x 1\nb: *x\n");
+    try expectHandedOver("a: !!str 1\n");
+    try expectHandedOver("? a\n: b\n");
+    try expectHandedOver("a: b\n  c\n");
+    try expectHandedOver("[a,\n b]\n");
+    try expectHandedOver("[a]: b\n");
+    try expectHandedOver("a:\tb\n");
+    try expectHandedOver("\xEF\xBB\xBFa: b\n");
+    // Errors.
+    try expectHandedOver("a: b: c\n");
+    try expectHandedOver("a: [b\n");
+    try expectHandedOver("- a\nb: c\n");
+    try expectHandedOver("a: 'b\n");
+}

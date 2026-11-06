@@ -21,6 +21,11 @@ pub const Parser = @import("Parser.zig");
 /// Events to a graph of nodes, a document at a time.
 pub const Composer = @import("Composer.zig");
 
+/// YAML text to the parser's events in one pass, for the YAML most
+/// documents are: the composer's fast path, which hands what it does not
+/// read to the parser.
+pub const Reader = @import("Reader.zig");
+
 /// Events to YAML text.
 pub const Emitter = @import("Emitter.zig");
 
@@ -77,6 +82,7 @@ test {
     std.testing.refAllDecls(@This());
     _ = @import("Scanner_test.zig");
     _ = @import("Parser_test.zig");
+    _ = @import("Reader_test.zig");
     _ = @import("Composer_test.zig");
     _ = @import("schema_test.zig");
     _ = @import("construct_test.zig");

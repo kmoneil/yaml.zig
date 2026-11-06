@@ -13,6 +13,8 @@ by `zig build test`:
 | error: each invalid input refused | 94 | 94 |
 | json: each valid input's documents against its in.json | 279 | 279 |
 | roundtrip: each valid input emitted and read back the same | 308 | 308 |
+| reader: the reader's events are the parser's, as far as it reads | 402 | 402 |
+| whole: each valid input the reader reads to its end | 308 | 106 |
 
 (yaml-test-suite data-2022-01-17; written by `zig build suite -- readme`.)
 <!-- /suite -->

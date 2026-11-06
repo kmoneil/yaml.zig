@@ -21,6 +21,8 @@ fn describe(c: check.Check) []const u8 {
         .@"error" => "each invalid input refused",
         .json => "each valid input's documents against its in.json",
         .roundtrip => "each valid input emitted and read back the same",
+        .reader => "the reader's events are the parser's, as far as it reads",
+        .whole => "each valid input the reader reads to its end",
     };
 }
 

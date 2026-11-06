@@ -30,6 +30,12 @@ pub const Check = enum {
     /// `in.yaml`'s events, emitted, read back to the same documents
     /// (roundtrip.zig).
     roundtrip,
+    /// The reader's events (yaml.Reader) are the parser's, marks and all,
+    /// as far as it reads before handing the stream over.
+    reader,
+    /// The reader reads a valid `in.yaml` to its end, handing nothing over.
+    /// The cases it does not read yet are skipped: the list of its work.
+    whole,
 
     pub fn applies(check: Check, case: suite.Case) bool {
         return switch (check) {
@@ -37,6 +43,8 @@ pub const Check = enum {
             .@"error" => case.has.contains(.@"error"),
             .json => case.has.contains(.json) and !case.has.contains(.@"error"),
             .roundtrip => !case.has.contains(.@"error"),
+            .reader => true,
+            .whole => !case.has.contains(.@"error"),
         };
     }
 };
@@ -52,7 +60,19 @@ pub fn run(arena: Allocator, io: Io, root: Io.Dir, case: suite.Case, check: Chec
             try readCaseFile(arena, io, root, case, "in.json"),
         ),
         .roundtrip => roundtrip.compare(arena, try readCaseFile(arena, io, root, case, "in.yaml")),
+        .reader, .whole => checkReader(arena, try readCaseFile(arena, io, root, case, "in.yaml"), check),
     };
+}
+
+/// The reader held to the parser on `input`, on an allocator of its own
+/// that checks for leaks.
+fn checkReader(arena: Allocator, input: []const u8, check: Check) !?[]const u8 {
+    var safe: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
+    const result = try yaml.Reader.compare(safe.allocator(), arena, input);
+    if (safe.deinit() > 0) return "leaked memory (the allocator printed where it was allocated)";
+    if (result.problem) |problem| return problem;
+    if (check == .whole and !result.whole) return "the reader handed the stream to the parser";
+    return null;
 }
 
 pub fn readCaseFile(arena: Allocator, io: Io, root: Io.Dir, case: suite.Case, file: []const u8) ![]u8 {

@@ -17,6 +17,12 @@
 //! as it reads (one line, no escapes); otherwise it is built in the
 //! scanner's arena, so it lives until `deinit`.
 //!
+//! The reader (Reader.zig) reads with this file's character-level
+//! scanners (`ch`, `skip`, `skipBreak`, `skipComment`, `scanPlainLine`,
+//! `scanQuotedScalar`, `scanBlockScalar`, `indicatorEnds`,
+//! `atDocumentMarkerLine`): they are pub for it, and are not the token
+//! API.
+//!
 //! Not threadsafe.
 
 const std = @import("std");
@@ -366,7 +372,7 @@ fn fetchBlockScalar(s: *Scanner) Error!void {
 /// Whether the indicator at the next character stands alone: a blank,
 /// a line break or the end follows it, or in a flow collection a flow
 /// indicator does. Otherwise `-`, `?` and `:` start a plain scalar.
-fn indicatorEnds(s: *const Scanner) bool {
+pub fn indicatorEnds(s: *const Scanner) bool {
     const c = s.ch(1);
     return isBlankOrBreakOrEnd(c) or (s.flow_level > 0 and isFlowIndicator(c));
 }
@@ -854,7 +860,7 @@ fn skipSeparation(s: *Scanner) Error!void {
 
 /// Skips a comment to its line break. A comment needs whitespace before
 /// it: `a#b` is a plain scalar, and `"a"#b` is an error.
-fn skipComment(s: *Scanner) Error!void {
+pub fn skipComment(s: *Scanner) Error!void {
     // A line's start counts as whitespace, after a byte order mark too.
     if (s.mark.column > 0 and !isBlankOrBreak(s.input[s.mark.offset - 1])) {
         return s.fail(s.mark, "a comment must be separated from what comes before it by whitespace");
@@ -903,7 +909,7 @@ fn scanPlainScalar(s: *Scanner) Error!Token {
 
 /// Moves over one line of a plain scalar, its words and the blanks
 /// between them, and sets `end` after its last word.
-fn scanPlainLine(s: *Scanner, end: *Mark) Error!void {
+pub fn scanPlainLine(s: *Scanner, end: *Mark) Error!void {
     while (true) {
         while (true) {
             s.skipPlainRun();
@@ -984,7 +990,7 @@ const TextEnd = enum { quote, blank, escaped_break };
 /// lines it folds as a plain scalar does, dropping the blanks around
 /// each break; in a double-quoted one an escape is read, and a `\` at
 /// the end of a line joins it to the next with nothing between.
-fn scanQuotedScalar(s: *Scanner, style: ScalarStyle) Error!Token {
+pub fn scanQuotedScalar(s: *Scanner, style: ScalarStyle) Error!Token {
     const start = s.mark;
     const quote = s.ch(0);
     s.skip();
@@ -1199,7 +1205,7 @@ const BlockScalar = struct {
 /// a blank. The chomping indicator says what of the last line break and
 /// the empty lines after it stays: none (`-`), the break (no indicator),
 /// or all (`+`).
-fn scanBlockScalar(s: *Scanner, style: ScalarStyle) Error!Token {
+pub fn scanBlockScalar(s: *Scanner, style: ScalarStyle) Error!Token {
     const start = s.mark;
     s.skip();
     const header = try s.scanBlockHeader();
@@ -1336,13 +1342,13 @@ fn scanBlockLine(s: *Scanner, block: *BlockScalar) Error!void {
 // Reading
 
 /// The byte `ahead` places past the next one, or 0 past the end.
-fn ch(s: *const Scanner, ahead: usize) u8 {
+pub fn ch(s: *const Scanner, ahead: usize) u8 {
     const i = s.mark.offset + ahead;
     return if (i < s.input.len) s.input[i] else 0;
 }
 
 /// Whether a line begins here with a document marker.
-fn atDocumentMarkerLine(s: *const Scanner) bool {
+pub fn atDocumentMarkerLine(s: *const Scanner) bool {
     return s.mark.column == 0 and (s.atDocumentMarker("---") or s.atDocumentMarker("..."));
 }
 
@@ -1354,7 +1360,7 @@ fn atDocumentMarker(s: *const Scanner, marker: []const u8) bool {
 }
 
 /// Moves past one character (not a line break).
-fn skip(s: *Scanner) void {
+pub fn skip(s: *Scanner) void {
     s.mark.offset = @intCast(@min(s.mark.offset + utf8Length(s.ch(0)), s.input.len));
     s.mark.column += 1;
 }
@@ -1416,7 +1422,7 @@ fn skipN(s: *Scanner, n: usize) void {
 }
 
 /// Moves past a line break: `\r\n`, `\n` or `\r`.
-fn skipBreak(s: *Scanner) void {
+pub fn skipBreak(s: *Scanner) void {
     s.mark.offset += if (s.ch(0) == '\r' and s.ch(1) == '\n') 2 else 1;
     s.mark.line += 1;
     s.mark.column = 0;

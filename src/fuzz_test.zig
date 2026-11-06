@@ -15,6 +15,8 @@
 //!   fails only as documented, with no leak, and what it builds is
 //!   written by stringify and read back the same.
 //! - emit: what parses, emitted, reads back to the same documents.
+//! - reader: the reader's events are the parser's, marks and all, as far
+//!   as it reads, and where the parser fails the reader has handed over.
 //!
 //! `zig build test` replays a fixed set of draws for each; `zig build
 //! fuzz --fuzz` fuzzes them.
@@ -39,6 +41,22 @@ test "fuzz: typed: a struct of every kind of field built, stringified and read b
 
 test "fuzz: emit: what parses, emitted, reads back the same" {
     try fuzzing.run({}, fuzzEmit, 300);
+}
+
+test "fuzz: reader: its events are the parser's, as far as it reads" {
+    try fuzzing.run({}, fuzzReader, 400);
+}
+
+fn fuzzReader(_: void, d: *Draw) !void {
+    var arena_state: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const input = try drawInput(d, arena);
+    const result = try yaml.Reader.compare(testing.allocator, arena, input);
+    if (result.problem) |problem| {
+        std.debug.print("input:\n{s}\n{s}\n", .{ input, problem });
+        return error.ReaderDiffers;
+    }
 }
 
 // Inputs
