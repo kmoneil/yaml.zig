@@ -3,6 +3,7 @@
 //!     suite <suite-dir> --skip <file> [check] [--quiet]
 //!     suite <suite-dir> --skip <file> list [--all]
 //!     suite <suite-dir> --skip <file> show <case>
+//!     suite <suite-dir> --skip <file> errors
 //!
 //! `check` runs every check on every case it applies to against the skip
 //! list (check.zig), prints how many pass and what does not go as the
@@ -10,14 +11,16 @@
 //! passes, or a list entry that names nothing. `--quiet` prints only
 //! that. `list` counts the cases and what they hold, `--all` each case
 //! too. `show` prints one case: its input, its events, and this
-//! library's.
+//! library's. `errors` prints where each invalid case is rejected, by
+//! the scanner or the parser, and whether the events before that are
+//! the suite's.
 
 const std = @import("std");
 const Io = std.Io;
 const suite = @import("suite.zig");
 const check = @import("check.zig");
 
-const Command = enum { check, list, show };
+const Command = enum { check, list, show, errors };
 
 const Options = struct {
     root: []const u8,
@@ -51,6 +54,7 @@ pub fn main(init: std.process.Init) !void {
             try suite.writeSummary(out, cases);
         },
         .show => try show(arena, io, root, cases, options.case.?, out),
+        .errors => try check.writeRejections(arena, io, root, cases, out),
         .check => {
             const tally = try runCheck(arena, io, root, cases, options.skip);
             if (!tally.ok() or !options.quiet) try check.writeTally(out, tally);
@@ -85,7 +89,7 @@ fn runCheck(arena: std.mem.Allocator, io: Io, root: Io.Dir, cases: []const suite
     const text = try Io.Dir.cwd().readFileAlloc(io, skip_path, arena, .limited(1024 * 1024));
     var bad_line: usize = 0;
     const skips = check.SkipList.parse(arena, text, &bad_line) catch |err| switch (err) {
-        error.BadSkipLine => fatal("suite: {s}:{d}: a line is `<check> <case>`, the check one of: events\n", .{ skip_path, bad_line }),
+        error.BadSkipLine => fatal("suite: {s}:{d}: a line is `<check> <case>`, the check one of: events, error\n", .{ skip_path, bad_line }),
         else => return err,
     };
     return check.runAll(arena, io, root, cases, skips);
@@ -100,7 +104,9 @@ fn show(arena: std.mem.Allocator, io: Io, root: Io.Dir, cases: []const suite.Cas
     if (case.has.contains(.@"error")) try out.writeAll("--- (the suite has this input fail)\n");
     if (case.has.contains(.event)) try out.print("--- test.event\n{s}", .{try check.readCaseFile(arena, io, root, case, "test.event")});
     try out.writeAll("--- events from this library\n");
-    if (try check.writeEvents(arena, input, out)) |problem| try out.print("{s}\n", .{problem});
+    const parsed = try check.parse(input, out);
+    if (parsed.rejection) |r| try out.print("{s}\n", .{try r.describe(arena)});
+    if (parsed.problem()) |problem| try out.print("{s}\n", .{problem});
 }
 
 fn fatal(comptime format: []const u8, args: anytype) noreturn {
@@ -113,6 +119,7 @@ fn usage() error{Usage} {
         \\usage: suite <suite-dir> --skip <file> [check] [--quiet]
         \\       suite <suite-dir> --skip <file> list [--all]
         \\       suite <suite-dir> --skip <file> show <case>
+        \\       suite <suite-dir> --skip <file> errors
         \\
     , .{});
     return error.Usage;

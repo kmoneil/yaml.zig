@@ -2,7 +2,9 @@
 //! skip list that ratchets them.
 //!
 //! A check either applies to a case or not (the events check, to a case
-//! that has `test.event` and is valid YAML), and passes or fails. The skip
+//! that has `test.event` and is valid YAML; the error check, to one that
+//! is not), and passes or fails. Each parse runs on an allocator that
+//! checks for leaks, and a leak fails the check. The skip
 //! list (test/suite-skip.txt, one `<check> <case>` a line) names the
 //! checks known to fail. A check that fails and is not listed is a
 //! regression; one that is listed and passes must come off the list. So a
@@ -17,10 +19,13 @@ const suite = @import("suite.zig");
 pub const Check = enum {
     /// `in.yaml` parses to the events `test.event` holds.
     events,
+    /// `in.yaml` is not valid YAML, and parsing it ends in a syntax error.
+    @"error",
 
     pub fn applies(check: Check, case: suite.Case) bool {
         return switch (check) {
             .events => case.has.contains(.event) and !case.has.contains(.@"error"),
+            .@"error" => case.has.contains(.@"error"),
         };
     }
 };
@@ -29,6 +34,7 @@ pub const Check = enum {
 pub fn run(arena: Allocator, io: Io, root: Io.Dir, case: suite.Case, check: Check) !?[]const u8 {
     return switch (check) {
         .events => checkEvents(arena, io, root, case),
+        .@"error" => checkError(arena, io, root, case),
     };
 }
 
@@ -41,26 +47,108 @@ fn checkEvents(arena: Allocator, io: Io, root: Io.Dir, case: suite.Case) !?[]con
     const input = try readCaseFile(arena, io, root, case, "in.yaml");
     const want = try readCaseFile(arena, io, root, case, "test.event");
     var got: Io.Writer.Allocating = .init(arena);
-    if (try writeEvents(arena, input, &got.writer)) |problem| return problem;
+    const parsed = try parse(input, &got.writer);
+    if (parsed.problem()) |problem| return problem;
+    if (parsed.rejection) |r| return try r.describe(arena);
     return firstDifference(arena, want, got.written());
 }
 
-/// Writes the events `input` parses to, in the suite's notation, and
-/// returns null; or stops at a syntax error and returns where and what.
-pub fn writeEvents(arena: Allocator, input: []const u8, w: *Io.Writer) !?[]const u8 {
-    var parser: yaml.Parser = .init(arena, input);
-    defer parser.deinit();
-    while (true) {
+fn checkError(arena: Allocator, io: Io, root: Io.Dir, case: suite.Case) !?[]const u8 {
+    const input = try readCaseFile(arena, io, root, case, "in.yaml");
+    var discard: Io.Writer.Discarding = .init(&.{});
+    const parsed = try parse(input, &discard.writer);
+    if (parsed.problem()) |problem| return problem;
+    if (parsed.rejection == null) return "parsed to the end, where the suite has a syntax error";
+    return null;
+}
+
+/// Where and why parsing stopped short.
+pub const Rejection = struct {
+    /// The scanner found the error, or the parser did.
+    stage: enum { scanner, parser },
+    mark: yaml.Scanner.Mark,
+    message: []const u8,
+
+    pub fn describe(r: Rejection, arena: Allocator) ![]const u8 {
+        return std.fmt.allocPrint(arena, "{s} error at {d}:{d}: {s}", .{ @tagName(r.stage), r.mark.line + 1, r.mark.column + 1, r.message });
+    }
+};
+
+/// How parsing an input went.
+pub const Parsed = struct {
+    /// Null when it parsed to the end of the stream.
+    rejection: ?Rejection = null,
+    leaked: bool = false,
+    /// It gave far more events than its length allows: a parser that has
+    /// stopped moving.
+    runaway: bool = false,
+
+    /// What went wrong besides a syntax error, if anything.
+    pub fn problem(p: Parsed) ?[]const u8 {
+        if (p.runaway) return "gave more events than the input can hold: the parser is not moving";
+        if (p.leaked) return "leaked memory (the allocator printed where it was allocated)";
+        return null;
+    }
+};
+
+/// Parses `input`, writing its events in the suite's notation, on an
+/// allocator of its own that checks for leaks.
+pub fn parse(input: []const u8, w: *Io.Writer) !Parsed {
+    var debug: std.heap.DebugAllocator(.{}) = .init;
+    var parsed: Parsed = .{};
+    {
+        var parser: yaml.Parser = .init(debug.allocator(), input);
+        defer parser.deinit();
+        parsed.rejection = try parseInto(&parser, input.len, w, &parsed.runaway);
+    }
+    parsed.leaked = debug.deinit() == .leak;
+    return parsed;
+}
+
+fn parseInto(parser: *yaml.Parser, len: usize, w: *Io.Writer, runaway: *bool) !?Rejection {
+    // Each event takes at least a byte, but for a few around each node.
+    const most = 8 * len + 64;
+    var count: usize = 0;
+    while (count < most) : (count += 1) {
         const event = parser.next() catch |err| switch (err) {
-            error.SyntaxError => {
-                const d = parser.diagnostic;
-                return try std.fmt.allocPrint(arena, "error at {d}:{d}: {s}", .{ d.mark.line + 1, d.mark.column + 1, d.message });
-            },
+            error.SyntaxError => return rejection(parser),
             else => return err,
         };
         try yaml.Parser.writeTestEvent(w, event);
         if (event.data == .stream_end) return null;
     }
+    runaway.* = true;
+    return null;
+}
+
+fn rejection(parser: *const yaml.Parser) Rejection {
+    // The scanner cannot go on after an error, so one it found is the one.
+    const by_scanner = parser.scanner.diagnostic.message.len > 0;
+    return .{
+        .stage = if (by_scanner) .scanner else .parser,
+        .mark = parser.diagnostic.mark,
+        .message = parser.diagnostic.message,
+    };
+}
+
+/// For `zig build suite -- errors`: each invalid case, where this library
+/// rejects it, and whether the events before that are the suite's.
+pub fn writeRejections(arena: Allocator, io: Io, root: Io.Dir, cases: []const suite.Case, w: *Io.Writer) !void {
+    var same: usize = 0;
+    var count: usize = 0;
+    for (cases) |case| {
+        if (!case.has.contains(.@"error")) continue;
+        count += 1;
+        const input = try readCaseFile(arena, io, root, case, "in.yaml");
+        var got: Io.Writer.Allocating = .init(arena);
+        const parsed = try parse(input, &got.writer);
+        const want = if (case.has.contains(.event)) try readCaseFile(arena, io, root, case, "test.event") else "";
+        const prefix_same = std.mem.eql(u8, want, got.written());
+        if (prefix_same) same += 1;
+        const what = if (parsed.rejection) |r| try r.describe(arena) else "NOT REJECTED";
+        try w.print("{s:<7} {s:<14} {s}\n", .{ case.name, if (prefix_same) "events same" else "events differ", what });
+    }
+    try w.print("{d} invalid cases; the events before the error are the suite's in {d}\n", .{ count, same });
 }
 
 /// Null when `want` and `got` are the same; otherwise the first line
@@ -181,6 +269,19 @@ pub fn writeTally(w: *Io.Writer, tally: Tally) Io.Writer.Error!void {
         try w.print("STALE test/suite-skip.txt names `{s}`, which is no check of a case\n", .{entry});
     }
     if (tally.regressions.items.len > 0) try w.writeAll("`zig build suite -- show <case>` prints a case's input and both event streams.\n");
+}
+
+test "parse: a rejection's stage and place, and a clean parse" {
+    var discard: Io.Writer.Discarding = .init(&.{});
+    const by_scanner = (try parse("\"open", &discard.writer)).rejection.?;
+    try testing.expectEqual(.scanner, by_scanner.stage);
+    try testing.expectEqual(0, by_scanner.mark.column);
+    const by_parser = (try parse("[a] b", &discard.writer)).rejection.?;
+    try testing.expectEqual(.parser, by_parser.stage);
+    try testing.expectEqual(4, by_parser.mark.column);
+    const clean = try parse("a: b", &discard.writer);
+    try testing.expectEqual(null, clean.rejection);
+    try testing.expect(!clean.leaked and !clean.runaway);
 }
 
 const testing = std.testing;
