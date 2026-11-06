@@ -45,6 +45,26 @@ pub fn build(b: *std.Build) void {
     fix_docs.addPassthruArgs();
     b.step("doc-examples", "Check the examples in README.md against examples/ (-- --fix: rewrite them)").dependOn(&fix_docs.step);
 
+    // The `yaml` command (src/cli): `zig build` installs it in zig-out/bin.
+    // Its tests: its parts', and the command run end to end (test/cli.zig).
+    const cli = b.addExecutable(.{ .name = "yaml", .root_module = b.createModule(.{
+        .root_source_file = b.path("src/cli/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "yaml", .module = mod }},
+    }) });
+    b.installArtifact(cli);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = cli.root_module })).step);
+    const cli_options = b.addOptions();
+    cli_options.addOptionPath("yaml_exe", cli.getEmittedBin());
+    const cli_test = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("test/cli.zig"),
+        .target = target,
+        .optimize = optimize,
+    }) });
+    cli_test.root_module.addOptions("test_options", cli_options);
+    test_step.dependOn(&b.addRunArtifact(cli_test).step);
+
     // The API reference, from the doc comments: zig-out/docs/index.html.
     const lib = b.addLibrary(.{ .name = "yaml", .root_module = mod });
     const docs = b.addInstallDirectory(.{ .source_dir = lib.getEmittedDocs(), .install_dir = .prefix, .install_subdir = "docs" });

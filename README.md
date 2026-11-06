@@ -319,6 +319,43 @@ test "events in, YAML out: reformat a stream" {
 }
 ```
 
+## The `yaml` command
+
+`zig build` installs `yaml` in `zig-out/bin`: the library as a tool, to
+check YAML files, read a value out of one, and convert between YAML and
+JSON.
+
+```console
+$ yaml check config.yaml deploy.yaml
+deploy.yaml:2:1: a mapping cannot have two equal keys
+a: 2
+^
+$ yaml get '.servers[0].name' config.yaml
+web
+$ yaml get --json .flags config.yaml
+{"debug":true,"ratio":0.5}
+$ yaml json stream.yaml
+{"a":1}
+["x","y"]
+$ yaml from-json data.json > data.yaml
+```
+
+- `yaml check FILE...` reads every document of each file, and reports
+  each file that is not YAML as `file:line:column: message`, the line,
+  and a caret under the column (a duplicate key is one). `--format json`
+  writes the findings as a JSON array instead.
+- `yaml get PATH FILE` prints the value at a path, `.` for the whole
+  document, `.key`, `.["a key"]`, `[n]` in any order, as YAML or with
+  `--json` as JSON. `--document N` picks one of a stream's documents.
+- `yaml json FILE` prints each document as JSON, one a line, or indented
+  with `--indent N`; `yaml from-json FILE` prints JSON as YAML.
+- `yaml events FILE` prints the events a file reads to, in the
+  yaml-test-suite's notation.
+- `--schema`, `--duplicate-keys keep` and `--max-depth` set the library's
+  options; a file named `-` is standard input. The exit status is 0 on
+  success, 1 when a file is not YAML (or a path has no value), 2 on a
+  usage error or a file that could not be read. `yaml --help` says all.
+
 ## What it reads
 
 - YAML 1.2.2, all of it: block and flow collections, the five scalar
