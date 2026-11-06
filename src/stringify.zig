@@ -7,7 +7,9 @@
 //! (std's array hash maps, yaml.ArrayHashMap) a mapping of its keys to
 //! its values, and a `Value` what it holds. A string or an
 //! enum's name is plain when a reader would read the plain text back as
-//! a string, and quoted when not (`"true"`, `"123"`, `""`); a value of a
+//! a string, and quoted when not (`"true"`, `"123"`, `""`), a YAML 1.1
+//! reader as well (`"yes"`, `"on"`, `"1:20"`, `"2001-12-14"`:
+//! `schema.yaml11Typed`); a value of a
 //! non-exhaustive enum with no name is its number; a float
 //! always has a point or an exponent, so `1.0` does not read back as an
 //! integer, and its infinities and NaN are `.inf`, `-.inf` and `.nan`.
@@ -100,11 +102,13 @@ const Stringifier = struct {
     }
 
     /// Text that must read back as a string: plain unless a reader would
-    /// read the plain text as something else.
+    /// read the plain text as something else, YAML 1.2's or YAML 1.1's
+    /// (`yes`, `on`, `1:20`, `2001-12-14`): a 1.1 reader such as PyYAML
+    /// reads a file written here too often to write those plain.
     fn string(s: *Stringifier, text: []const u8) StringifyError!void {
         const as_plain = schema.resolvePlain(.core, text) orelse schema.tag.str;
-        const style: Parser.ScalarStyle = if (std.mem.eql(u8, as_plain, schema.tag.str)) .plain else .single_quoted;
-        try s.scalar(text, style);
+        const plain = std.mem.eql(u8, as_plain, schema.tag.str) and !schema.yaml11Typed(text);
+        try s.scalar(text, if (plain) .plain else .single_quoted);
     }
 
     fn format(s: *Stringifier, comptime fmt: []const u8, args: anytype) StringifyError!void {

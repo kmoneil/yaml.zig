@@ -10,7 +10,7 @@ test "write a value as YAML, and read it back" {
     const release: Release = .{
         .version = "1.10", // would read back as a number if written plain
         .stable = true,
-        .notes = &.{ "faster", "yes" }, // and yes stays a string too
+        .notes = &.{ "faster", "yes" }, // and so would yes, to YAML 1.1 readers
     };
 
     const text = try yaml.stringifyAlloc(std.testing.allocator, release, .{});
@@ -20,7 +20,7 @@ test "write a value as YAML, and read it back" {
         \\stable: true
         \\notes:
         \\- faster
-        \\- yes
+        \\- 'yes'
         \\
     , text);
 

@@ -114,13 +114,13 @@ null
 ```
 
 `yaml from-json FILE` prints a JSON file as YAML, quoting a string only
-where it must:
+where a reader would read it as something else, a YAML 1.1 reader too:
 
 ```console
 $ yaml from-json data.json
 name: x
-on: yes
-n:
+'on': 'yes'
+'n':
 - 1
 - 2.5
 - null
@@ -130,10 +130,11 @@ n:
 ## YAML 1.2, not 1.1
 
 `yaml` reads YAML 1.2: only `true` and `false` are booleans, and `yes`,
-`no`, `on`, `off` are strings, as above. Tools that read YAML 1.1
-(PyYAML, older libraries) read those four as booleans, `010` as octal 8
-and `1:20` as 80. When a file is read by such a tool too, quote those
-values.
+`no`, `on`, `off`, `y`, `n` are strings. Tools that read YAML 1.1
+(PyYAML, older libraries) read those as booleans, `1:20` as 80, `1_000`
+as 1000 and `2001-12-14` as a date. `yaml` writes them quoted, as above,
+so either reads a string; in a file you write by hand, quote them too
+when such a tool may read it.
 
 ## Exit status
 

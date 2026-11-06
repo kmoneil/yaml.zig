@@ -58,6 +58,81 @@ pub fn tagOf(c: Core) []const u8 {
     };
 }
 
+/// Whether YAML 1.1's tag resolution, as PyYAML and other 1.1 readers
+/// apply it, reads the plain scalar `text` as something other than a
+/// string: a boolean (`y`, `yes`, `on`, `off` and the rest, in their
+/// cases), an integer in binary (`0b101`), with `_` (`1_000`) or
+/// sexagesimal (`1:20`), a float with `_` or sexagesimal, a date or a
+/// timestamp (`2001-12-14`), or the merge key `<<`. For text the core
+/// schema reads as a string, writing it plain is right for YAML 1.2 and
+/// wrong for those readers: the "Norway problem", `no` read as false.
+pub fn yaml11Typed(text: []const u8) bool {
+    if (std.mem.eql(u8, text, "<<")) return true;
+    for (yaml11_booleans) |word| {
+        if (std.mem.eql(u8, text, word)) return true;
+    }
+    return yaml11Number(text) or yaml11Date(text);
+}
+
+const yaml11_booleans = [_][]const u8{
+    "y",    "Y",    "yes",  "Yes",   "YES",   "n",     "N",  "no", "No", "NO",
+    "true", "True", "TRUE", "false", "False", "FALSE", "on", "On", "ON", "off",
+    "Off",  "OFF",
+};
+
+/// An integer or float in a form YAML 1.1 has and 1.2's core schema has
+/// not: binary, with `_`, or sexagesimal (`1:20`, `1:20.5`).
+fn yaml11Number(text: []const u8) bool {
+    const digits = if (text.len > 0 and (text[0] == '-' or text[0] == '+')) text[1..] else text;
+    if (std.mem.startsWith(u8, digits, "0b")) return digits.len > 2 and allIn(digits[2..], "01_");
+    if (digits.len == 0 or !std.ascii.isDigit(digits[0]) or !allIn(digits, "0123456789_:.")) return false;
+    if (std.mem.findScalar(u8, digits, '_') != null) return std.mem.count(u8, digits, ".") <= 1;
+    return sexagesimal(digits);
+}
+
+/// Whether every byte of `text` is one of `set`.
+fn allIn(text: []const u8, set: []const u8) bool {
+    for (text) |c| {
+        if (std.mem.findScalar(u8, set, c) == null) return false;
+    }
+    return true;
+}
+
+/// Whether `digits`, of digits, `:` and `.`, is sexagesimal: a `:`, each
+/// part after one one or two digits below 60, and at most one `.`, after
+/// the last.
+fn sexagesimal(digits: []const u8) bool {
+    const last_colon = std.mem.findScalarLast(u8, digits, ':') orelse return false;
+    const dot = std.mem.findScalar(u8, digits, '.') orelse digits.len;
+    if (dot < last_colon or std.mem.count(u8, digits, ".") > 1) return false;
+    var parts = std.mem.splitScalar(u8, digits[0..dot], ':');
+    _ = parts.next();
+    while (parts.next()) |part| {
+        if (part.len == 0 or part.len > 2) return false;
+        const n = std.fmt.parseInt(u8, part, 10) catch return false;
+        if (n >= 60) return false;
+    }
+    return true;
+}
+
+/// A date or timestamp YAML 1.1 reads, `2001-12-14` or with a time after
+/// a `T` or blanks: four digits, `-`, one or two, `-`, one or two.
+fn yaml11Date(text: []const u8) bool {
+    if (text.len < 8 or !allIn(text[0..4], "0123456789")) return false;
+    var i: usize = 4;
+    if (!datePart(text, &i) or !datePart(text, &i)) return false;
+    return i == text.len or std.mem.findScalar(u8, "Tt \t", text[i]) != null;
+}
+
+/// A `-` and one or two digits at `i.*`, `i.*` left after them.
+fn datePart(text: []const u8, i: *usize) bool {
+    if (i.* >= text.len or text[i.*] != '-') return false;
+    i.* += 1;
+    const start = i.*;
+    while (i.* < text.len and i.* - start < 2 and std.ascii.isDigit(text[i.*])) i.* += 1;
+    return i.* > start;
+}
+
 /// The tag a plain scalar with no tag resolves to, or null when the
 /// schema has none for it (the JSON schema's error).
 pub fn resolvePlain(schema: Schema, value: []const u8) ?[]const u8 {

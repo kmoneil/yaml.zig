@@ -45,7 +45,7 @@ const cases = [_]Case{
     // json and from-json
     .{ .argv = &.{ "json", "stream.yaml" }, .exit = 0, .stdout = "{\"a\":1}\n[\"x\",\"y\"]\nnull\n" },
     .{ .argv = &.{ "json", "--indent", "2", "alias.yaml" }, .exit = 0, .stdout = "{\n  \"base\": {\n    \"k\": \"v\"\n  },\n  \"use\": {\n    \"k\": \"v\"\n  }\n}\n" },
-    .{ .argv = &.{ "from-json", "data.json" }, .exit = 0, .stdout = "name: x\non: yes\nn:\n- 1\n- 2.5\n- null\n- true\n" },
+    .{ .argv = &.{ "from-json", "data.json" }, .exit = 0, .stdout = "name: x\n'on': 'yes'\n'n':\n- 1\n- 2.5\n- null\n- true\n" },
     // events
     .{ .argv = &.{ "events", "alias.yaml" }, .exit = 0, .stdout = "+STR\n+DOC\n+MAP\n=VAL :base\n+MAP {} &b\n=VAL :k\n=VAL :v\n-MAP\n=VAL :use\n=ALI *b\n-MAP\n-DOC\n-STR\n" },
     .{ .argv = &.{ "events", "bad.yaml" }, .exit = 1, .stdout = "+STR\n+DOC\n+MAP\n=VAL :list\n+SEQ []\n=VAL :1\n", .stderr = "bad.yaml:2:1: a flow collection's lines must be indented past its block's, with spaces\nnext: 3\n^\n" },
