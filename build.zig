@@ -54,6 +54,11 @@ pub fn build(b: *std.Build) void {
         .imports = &.{.{ .name = "yaml", .module = mod }},
     }) });
     b.installArtifact(cli);
+    // `zig build run -- check config.yaml`: the command, built and run,
+    // with the arguments after `--`.
+    const run_cli = b.addRunArtifact(cli);
+    run_cli.addPassthruArgs();
+    b.step("run", "Run the yaml command: zig build run -- check FILE... (-- --help for all)").dependOn(&run_cli.step);
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = cli.root_module })).step);
     const cli_options = b.addOptions();
     cli_options.addOptionPath("yaml_exe", cli.getEmittedBin());
