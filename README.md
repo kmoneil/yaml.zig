@@ -296,6 +296,10 @@ on macOS) and 128 KiB in release. On a smaller stack, lower
   fuzz targets, zigvet and gnarl. zigvet and gnarl come from the PATH
   (github.com/kmoneil/zigvet, github.com/kmoneil/gnarl; gnarl at the
   release `complexity.zon` names).
+- `zig build test-release`: the unit tests, the examples and the suite
+  with the library built ReleaseSafe and ReleaseFast, where a panic in
+  Debug is one or undefined behaviour; `zig build test test-release`
+  runs all three modes.
 - `zig build suite`: the suite's counts; `-- show <case>`,
   `-- show-emit <case>`, `-- errors`, `-- list [--all]`, `-- readme`.
 - `zig build fuzz`: the fuzz targets' seeded runs, `--fuzz` to fuzz.

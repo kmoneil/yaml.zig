@@ -10,21 +10,23 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const tests = b.addTest(.{ .root_module = mod });
     const test_step = b.step("test", "Run tests, zigvet and gnarl");
-    test_step.dependOn(&b.addRunArtifact(tests).step);
+    const harness = addTests(b, test_step, target, optimize, mod);
 
-    // The examples README.md shows, each a test in examples/, and
-    // tools/doc_examples.zig, which fails when the README's copy of one
-    // differs from its file. `zig build doc-examples -- --fix` rewrites
-    // the README's copies from the files.
-    const examples_mod = b.createModule(.{
-        .root_source_file = b.path("examples/all.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{.{ .name = "yaml", .module = mod }},
-    });
-    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = examples_mod })).step);
+    // The same tests with yaml built ReleaseSafe and ReleaseFast. A
+    // consumer builds this library in the mode it ships; in ReleaseFast
+    // `unreachable`, overflow and a cast out of range are undefined, not
+    // a panic, and ReleaseSafe is where they still panic. `zig build test
+    // test-release` runs all three.
+    const release_step = b.step("test-release", "Run the unit tests, examples and suite with yaml built ReleaseSafe and ReleaseFast");
+    for ([_]std.builtin.Optimize{ .safe, .fast }) |mode| {
+        const release_mod = b.createModule(.{ .root_source_file = b.path("src/root.zig"), .target = target, .optimize = mode });
+        _ = addTests(b, release_step, target, mode, release_mod);
+    }
+
+    // tools/doc_examples.zig fails when the README's copy of an example
+    // differs from its file in examples/. `zig build doc-examples --
+    // --fix` rewrites the README's copies from the files.
     const doc_examples = b.addExecutable(.{ .name = "doc-examples", .root_module = b.createModule(.{
         .root_source_file = b.path("tools/doc_examples.zig"),
         .target = b.graph.host,
@@ -55,30 +57,12 @@ pub fn build(b: *std.Build) void {
     const fuzz_tests = b.addTest(.{ .root_module = mod, .filters = &.{fuzz_filter}, .use_llvm = true });
     b.step("fuzz", "Replay the fuzz targets' seeded draws (--fuzz to fuzz)").dependOn(&b.addRunArtifact(fuzz_tests).step);
 
-    // The yaml-test-suite harness (test/main.zig) over the suite's data
-    // tree (build.zig.zon's yaml_test_suite, a lazy dependency), held to
-    // test/suite-skip.txt. `zig build test` fails on a regression or a
-    // listed check that now passes; `zig build suite` prints the counts.
-    // Only this repo's own build asks for the data, so a package that
-    // depends on this one never fetches it.
-    const suite_mod = b.createModule(.{
-        .root_source_file = b.path("test/main.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{.{ .name = "yaml", .module = mod }},
-    });
-    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = suite_mod })).step);
+    // `zig build suite` prints the yaml-test-suite's counts (addTests).
     const suite_step = b.step("suite", "Run the yaml-test-suite, print the counts (-- list [--all], -- show <case>)");
-    if (b.isRoot()) {
-        if (b.lazyDependency("yaml_test_suite", .{})) |suite_data| {
-            const harness = b.addExecutable(.{ .name = "suite", .root_module = suite_mod });
-            const verbose = suiteRun(b, harness, suite_data);
-            verbose.addPassthruArgs();
-            suite_step.dependOn(&verbose.step);
-            const quiet = suiteRun(b, harness, suite_data);
-            quiet.addArgs(&.{ "check", "--quiet" });
-            test_step.dependOn(&quiet.step);
-        }
+    if (harness) |h| {
+        const verbose = suiteRun(b, h, suiteData(b).?);
+        verbose.addPassthruArgs();
+        suite_step.dependOn(&verbose.step);
     }
 
     // zigvet (github.com/kmoneil/zigvet) reports code the compiler accepts
@@ -104,6 +88,45 @@ pub fn build(b: *std.Build) void {
 
     const fmt = b.addFmt(.{ .paths = &.{ b.path("build.zig"), b.path("src"), b.path("test"), b.path("tools"), b.path("examples") } });
     b.step("fmt", "Format the Zig in build.zig, src/, test/, tools/ and examples/").dependOn(&fmt.step);
+}
+
+/// The tests of yaml built in `optimize`, as `yaml` is, as steps `step`
+/// depends on: its unit tests; the examples README.md shows, each a test
+/// in examples/; and the yaml-test-suite harness (test/main.zig), its
+/// own tests and its check over the suite's data held to
+/// test/suite-skip.txt, failing on a regression or a listed check that
+/// now passes. Returns the harness, null when the data is not fetched.
+fn addTests(b: *std.Build, step: *std.Build.Step, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, yaml: *std.Build.Module) ?*std.Build.Step.Compile {
+    step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = yaml })).step);
+    const examples_mod = b.createModule(.{
+        .root_source_file = b.path("examples/all.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "yaml", .module = yaml }},
+    });
+    step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = examples_mod })).step);
+    const suite_mod = b.createModule(.{
+        .root_source_file = b.path("test/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "yaml", .module = yaml }},
+    });
+    step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = suite_mod })).step);
+    const suite_data = suiteData(b) orelse return null;
+    const harness = b.addExecutable(.{ .name = "suite", .root_module = suite_mod });
+    const quiet = suiteRun(b, harness, suite_data);
+    quiet.addArgs(&.{ "check", "--quiet" });
+    step.dependOn(&quiet.step);
+    return harness;
+}
+
+/// The yaml-test-suite's data tree (build.zig.zon's yaml_test_suite, a
+/// lazy dependency), or null until it is fetched. Only this repo's own
+/// build asks for it, so a package that depends on this one never
+/// fetches it.
+fn suiteData(b: *std.Build) ?*std.Build.Dependency {
+    if (!b.isRoot()) return null;
+    return b.lazyDependency("yaml_test_suite", .{});
 }
 
 /// A run of the suite harness over the suite's data, held to the skip list.
