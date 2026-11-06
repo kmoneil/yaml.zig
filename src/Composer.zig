@@ -114,6 +114,11 @@ options: Options,
 arena: std.heap.ArenaAllocator,
 /// The open collections, innermost last.
 frames: std.ArrayList(Frame) = .empty,
+/// The open collections' items, innermost last: one stack on the gpa, so
+/// a collection's grow in no list of its own, each growth leaving the
+/// old buffer in the arena; closing one copies its items there once, at
+/// their length (t46).
+items: std.ArrayList(*Node) = .empty,
 /// Key sets of closed mappings, emptied, for the next large mapping: one
 /// made and freed a mapping was two allocations each (t46).
 spare_key_sets: std.ArrayList(KeySet) = .empty,
@@ -126,8 +131,9 @@ diagnostic: Diagnostic = .{},
 
 const Frame = struct {
     node: *Node,
-    /// A sequence's items, or a mapping's keys and values in turn.
-    items: std.ArrayList(*Node) = .empty,
+    /// Where its items begin in `items`: a sequence's items, or a
+    /// mapping's keys and values in turn.
+    start: usize,
     /// A large mapping's keys, for finding a duplicate.
     keys: KeySet = .empty,
 };
@@ -153,6 +159,7 @@ pub fn deinit(c: *Composer) void {
     const gpa = c.parser.scanner.gpa;
     for (c.frames.items) |*frame| frame.keys.deinit(gpa);
     c.frames.deinit(gpa);
+    c.items.deinit(gpa);
     for (c.spare_key_sets.items) |*keys| keys.deinit(gpa);
     c.spare_key_sets.deinit(gpa);
     c.anchors.deinit(gpa);
@@ -272,7 +279,7 @@ fn aliasNode(c: *Composer, event: Event, name: []const u8) Error!*Node {
 /// Opens a collection; returns null, as it is not done yet.
 fn open(c: *Composer, event: Event, properties: Event.Properties, data: Node.Data) Error!?*Node {
     const node = try c.newNode(event, properties, data);
-    try c.frames.append(c.parser.scanner.gpa, .{ .node = node });
+    try c.frames.append(c.parser.scanner.gpa, .{ .node = node, .start = c.items.items.len });
     return null;
 }
 
@@ -282,11 +289,13 @@ fn close(c: *Composer, end: Mark) Error!*Node {
     defer c.recycle(&frame.keys);
     const node = frame.node;
     node.end = end;
+    const items = c.items.items[frame.start..];
     switch (node.data) {
-        .sequence => |*s| s.items = frame.items.items,
-        .mapping => |*m| m.pairs = try pairsOf(c.arena.allocator(), frame.items.items),
+        .sequence => |*s| s.items = try c.arena.allocator().dupe(*Node, items),
+        .mapping => |*m| m.pairs = try pairsOf(c.arena.allocator(), items),
         else => unreachable,
     }
+    c.items.shrinkRetainingCapacity(frame.start);
     return node;
 }
 
@@ -300,9 +309,9 @@ fn pairsOf(arena: Allocator, items: []const *Node) Allocator.Error![]Node.Pair {
 /// value; a key is checked against the mapping's others.
 fn attach(c: *Composer, node: *Node) Error!void {
     const frame = &c.frames.items[c.frames.items.len - 1];
-    const is_key = frame.node.data == .mapping and frame.items.items.len % 2 == 0;
+    const is_key = frame.node.data == .mapping and (c.items.items.len - frame.start) % 2 == 0;
     if (is_key and c.options.duplicate_keys == .refuse) try c.checkKey(frame, node);
-    try frame.items.append(c.arena.allocator(), node);
+    try c.items.append(c.parser.scanner.gpa, node);
 }
 
 /// A mapping with this many keys or fewer is searched key by key; past
@@ -310,7 +319,7 @@ fn attach(c: *Composer, node: *Node) Error!void {
 const linear_keys = 8;
 
 fn checkKey(c: *Composer, frame: *Frame, key: *Node) Error!void {
-    const items = frame.items.items;
+    const items = c.items.items[frame.start..];
     const count = items.len / 2;
     const gpa = c.parser.scanner.gpa;
     const ctx: KeyContext = .{ .seed = c.seed };
