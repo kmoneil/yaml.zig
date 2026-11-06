@@ -252,7 +252,9 @@ fn newNode(c: *Composer, event: Event, properties: Event.Properties, data: Node.
 /// kind, its style and the schema give it.
 fn resolveTag(c: *Composer, mark: Mark, written: ?[]const u8, data: Node.Data) Error![]const u8 {
     if (written) |tag| {
-        if (!std.mem.eql(u8, tag, "!")) return tag;
+        // A core tag written out, `!!int`, is given as the schema's own
+        // text, so `schema.core` finds it by its pointer.
+        if (!std.mem.eql(u8, tag, "!")) return if (schema.core(tag)) |which| schema.tagOf(which) else tag;
     }
     return switch (data) {
         .sequence => schema.tag.seq,

@@ -293,15 +293,15 @@ const Builder = struct {
 
     fn buildBool(b: *const Builder, node: *const Node) ParseError!bool {
         const text = try b.scalarOf(node, "a boolean");
-        if (!hasTag(node, schema.tag.bool)) return b.failExpected(node, "a boolean");
+        if (!hasTag(node, .bool)) return b.failExpected(node, "a boolean");
         return schema.parseBool(text) orelse b.failExpected(node, "a boolean");
     }
 
     fn buildInt(b: *const Builder, comptime T: type, node: *const Node) ParseError!T {
         const text = try b.scalarOf(node, "an integer");
         // `build` saw that the text is an integer: null here is too big.
-        if (hasTag(node, schema.tag.int)) return schema.parseIntAs(T, text) orelse b.tooBig(T, node, text);
-        if (hasTag(node, schema.tag.float)) {
+        if (hasTag(node, .int)) return schema.parseIntAs(T, text) orelse b.tooBig(T, node, text);
+        if (hasTag(node, .float)) {
             const x = schema.parseFloat(text) orelse return b.failExpected(node, "an integer");
             if (@trunc(x) != x or !std.math.isFinite(x)) return b.fail(node, error.UnexpectedType, "expected an integer, found a fraction");
             if (!wholeFits(T, x)) return b.tooBig(T, node, text);
@@ -345,11 +345,11 @@ const Builder = struct {
 
     fn buildFloat(b: *const Builder, comptime T: type, node: *const Node) ParseError!T {
         const text = try b.scalarOf(node, "a number");
-        if (hasTag(node, schema.tag.float)) {
+        if (hasTag(node, .float)) {
             const x = schema.parseFloat(text) orelse return b.failExpected(node, "a number");
             return @floatCast(x);
         }
-        if (hasTag(node, schema.tag.int)) {
+        if (hasTag(node, .int)) {
             const n = schema.parseInt(text) orelse return b.fail(node, error.Overflow, "the integer does not fit");
             return @floatFromInt(n);
         }
@@ -359,7 +359,7 @@ const Builder = struct {
     fn buildEnum(b: *const Builder, comptime T: type, node: *const Node) ParseError!T {
         const text = try b.scalarOf(node, "a name");
         if (std.meta.stringToEnum(T, text)) |e| return e;
-        if (hasTag(node, schema.tag.int)) {
+        if (hasTag(node, .int)) {
             const n = schema.parseInt(text) orelse return b.fail(node, error.Overflow, "the integer does not fit");
             const Tag = @typeInfo(T).@"enum".tag_type;
             const raw = std.math.cast(Tag, n) orelse return b.fail(node, error.UnexpectedType, "no value of the enum has this number");
@@ -563,16 +563,17 @@ const Builder = struct {
     }
 
     fn scalarValue(b: *const Builder, node: *const Node, text: []const u8) ParseError!Value {
-        if (hasTag(node, schema.tag.null)) return .null;
-        if (hasTag(node, schema.tag.bool)) {
-            if (schema.parseBool(text)) |v| return .{ .bool = v };
-        } else if (hasTag(node, schema.tag.int)) {
-            if (schema.parseInt(text)) |n| {
-                if (std.math.cast(i64, n)) |i| return .{ .integer = i };
-            }
-            return .{ .number_string = try b.allocator.dupe(u8, text) };
-        } else if (hasTag(node, schema.tag.float)) {
-            if (schema.parseFloat(text)) |x| return .{ .float = x };
+        switch (schema.core(node.tag orelse "") orelse .str) {
+            .null => return .null,
+            .bool => if (schema.parseBool(text)) |v| return .{ .bool = v },
+            .int => {
+                if (schema.parseInt(text)) |n| {
+                    if (std.math.cast(i64, n)) |i| return .{ .integer = i };
+                }
+                return .{ .number_string = try b.allocator.dupe(u8, text) };
+            },
+            .float => if (schema.parseFloat(text)) |x| return .{ .float = x },
+            .str, .seq, .map => {},
         }
         return .{ .string = try b.allocator.dupe(u8, text) };
     }
@@ -691,11 +692,14 @@ const Found = struct {
     }
 
     fn writeScalar(w: *std.Io.Writer, tag: []const u8, text: []const u8) std.Io.Writer.Error!void {
-        if (std.mem.eql(u8, tag, schema.tag.null)) return w.writeAll("null");
-        if (std.mem.eql(u8, tag, schema.tag.bool)) return w.print("the boolean {s}", .{text});
-        if (std.mem.eql(u8, tag, schema.tag.int)) return w.print("the integer {s}", .{text});
-        if (std.mem.eql(u8, tag, schema.tag.float)) return w.print("the float {s}", .{text});
-        if (!std.mem.eql(u8, tag, schema.tag.str)) return w.print("a scalar tagged {f}", .{Shown{ .text = tag }});
+        switch (schema.core(tag) orelse return w.print("a scalar tagged {f}", .{Shown{ .text = tag }})) {
+            .null => return w.writeAll("null"),
+            .bool => return w.print("the boolean {s}", .{text}),
+            .int => return w.print("the integer {s}", .{text}),
+            .float => return w.print("the float {s}", .{text}),
+            .seq, .map => return w.print("a scalar tagged {f}", .{Shown{ .text = tag }}),
+            .str => {},
+        }
         const shown = cutUtf8(text, 40);
         try w.print("the string \"{f}\"{s}", .{ Shown{ .text = shown }, if (shown.len < text.len) "..." else "" });
     }
@@ -806,18 +810,21 @@ fn editDistance(a: []const u8, b: []const u8) usize {
 /// What a scalar with one of the core scalar tags must be, as
 /// `checkScalar` says it.
 fn tagSays(tag: []const u8) []const u8 {
-    if (std.mem.eql(u8, tag, schema.tag.null)) return "null";
-    if (std.mem.eql(u8, tag, schema.tag.bool)) return "a boolean";
-    if (std.mem.eql(u8, tag, schema.tag.int)) return "an integer";
-    return "a float";
+    return switch (schema.core(tag).?) {
+        .null => "null",
+        .bool => "a boolean",
+        .int => "an integer",
+        else => "a float",
+    };
 }
 
-fn hasTag(node: *const Node, tag: []const u8) bool {
-    return std.mem.eql(u8, node.tag orelse return false, tag);
+/// Whether `node`'s tag is the core tag `which`.
+fn hasTag(node: *const Node, which: schema.Core) bool {
+    return schema.core(node.tag orelse return false) == which;
 }
 
 fn isNull(node: *const Node) bool {
-    return node.target().data == .scalar and hasTag(node.target(), schema.tag.null);
+    return node.target().data == .scalar and hasTag(node.target(), .null);
 }
 
 /// A document of any shape. Scalars by their resolved tag: null, a

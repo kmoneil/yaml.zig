@@ -35,6 +35,29 @@ pub const tag = struct {
     pub const map = core_prefix ++ "map";
 };
 
+/// The core schema's tags as values, to tell a tag without its text.
+pub const Core = enum { null, bool, int, float, str, seq, map };
+
+/// The core tag `t` is, if it is one. The composer gives each node with
+/// one these constants' own text, so comparing pointers finds it; any
+/// other text is compared as text. Comparing tags as text was a tenth
+/// of construction's time (t46).
+pub fn core(t: []const u8) ?Core {
+    inline for (@typeInfo(Core).@"enum".field_names) |name| {
+        const s: []const u8 = @field(tag, name);
+        if (t.ptr == s.ptr and t.len == s.len) return @field(Core, name);
+    }
+    if (!std.mem.startsWith(u8, t, core_prefix)) return null;
+    return std.meta.stringToEnum(Core, t[core_prefix.len..]);
+}
+
+/// The text of the core tag `c`: one of `tag`'s constants.
+pub fn tagOf(c: Core) []const u8 {
+    return switch (c) {
+        inline else => |which| @field(tag, @tagName(which)),
+    };
+}
+
 /// The tag a plain scalar with no tag resolves to, or null when the
 /// schema has none for it (the JSON schema's error).
 pub fn resolvePlain(schema: Schema, value: []const u8) ?[]const u8 {
@@ -54,10 +77,19 @@ fn resolveJson(value: []const u8) ?[]const u8 {
 }
 
 fn resolveCore(value: []const u8) []const u8 {
-    if (isCoreNull(value)) return tag.null;
-    if (parseCoreBool(value) != null) return tag.bool;
-    if (isCoreInt(value)) return tag.int;
-    if (isCoreFloat(value)) return tag.float;
+    // Each form but the empty null begins with one of a few characters:
+    // any other first character is a string's, known without comparing
+    // the forms one by one (t46).
+    if (value.len == 0) return tag.null;
+    switch (value[0]) {
+        'n', 'N', '~' => if (isCoreNull(value)) return tag.null,
+        't', 'T', 'f', 'F' => if (parseCoreBool(value) != null) return tag.bool,
+        '0'...'9', '+', '-', '.' => {
+            if (isCoreInt(value)) return tag.int;
+            if (isCoreFloat(value)) return tag.float;
+        },
+        else => {},
+    }
     return tag.str;
 }
 
@@ -173,26 +205,30 @@ pub fn parseBool(value: []const u8) ?bool {
 /// boolean, an integer or a float, one of the core schema's forms of it
 /// (which hold the JSON schema's); for any other tag, any text.
 pub fn fitsTag(scalar_tag: []const u8, value: []const u8) bool {
-    if (std.mem.eql(u8, scalar_tag, tag.null)) return isCoreNull(value);
-    if (std.mem.eql(u8, scalar_tag, tag.bool)) return parseCoreBool(value) != null;
-    if (std.mem.eql(u8, scalar_tag, tag.int)) return isCoreInt(value);
-    if (std.mem.eql(u8, scalar_tag, tag.float)) return isCoreFloat(value);
-    return true;
+    return switch (core(scalar_tag) orelse return true) {
+        .null => isCoreNull(value),
+        .bool => parseCoreBool(value) != null,
+        .int => isCoreInt(value),
+        .float => isCoreFloat(value),
+        .str, .seq, .map => true,
+    };
 }
 
 /// Whether two scalars with the same tag have the same value: by number
 /// for an integer or a float, by truth for a boolean, always for null,
 /// and by text for anything else.
 pub fn equalValues(scalar_tag: []const u8, a: []const u8, b: []const u8) bool {
-    if (std.mem.eql(u8, scalar_tag, tag.null)) return true;
-    if (std.mem.eql(u8, scalar_tag, tag.bool)) return sameOrText(parseBool(a), parseBool(b), a, b);
-    if (std.mem.eql(u8, scalar_tag, tag.int)) return sameOrText(parseInt(a), parseInt(b), a, b);
-    if (std.mem.eql(u8, scalar_tag, tag.float)) {
-        const x = parseFloat(a) orelse return std.mem.eql(u8, a, b);
-        const y = parseFloat(b) orelse return false;
-        return x == y;
-    }
-    return std.mem.eql(u8, a, b);
+    return switch (core(scalar_tag) orelse .str) {
+        .null => true,
+        .bool => sameOrText(parseBool(a), parseBool(b), a, b),
+        .int => sameOrText(parseInt(a), parseInt(b), a, b),
+        .float => {
+            const x = parseFloat(a) orelse return std.mem.eql(u8, a, b);
+            const y = parseFloat(b) orelse return false;
+            return x == y;
+        },
+        .str, .seq, .map => std.mem.eql(u8, a, b),
+    };
 }
 
 fn sameOrText(x: anytype, y: @TypeOf(x), a: []const u8, b: []const u8) bool {
@@ -203,17 +239,16 @@ fn sameOrText(x: anytype, y: @TypeOf(x), a: []const u8, b: []const u8) bool {
 /// Feeds `hasher` a scalar's value as `equalValues` sees it, so equal
 /// values hash the same.
 pub fn hashValue(hasher: *std.hash.Wyhash, scalar_tag: []const u8, value: []const u8) void {
-    if (std.mem.eql(u8, scalar_tag, tag.null)) return;
-    if (std.mem.eql(u8, scalar_tag, tag.bool)) {
-        if (parseBool(value)) |b| return hasher.update(&.{@intFromBool(b)});
-    } else if (std.mem.eql(u8, scalar_tag, tag.int)) {
-        if (parseInt(value)) |n| return hasher.update(std.mem.asBytes(&n));
-    } else if (std.mem.eql(u8, scalar_tag, tag.float)) {
+    switch (core(scalar_tag) orelse .str) {
+        .null => return,
+        .bool => if (parseBool(value)) |b| return hasher.update(&.{@intFromBool(b)}),
+        .int => if (parseInt(value)) |n| return hasher.update(std.mem.asBytes(&n)),
         // 0.0 and -0.0 are equal; NaN equals nothing, so any hash will do.
-        if (parseFloat(value)) |x| {
+        .float => if (parseFloat(value)) |x| {
             const v: f64 = if (x == 0) 0 else x;
             return hasher.update(std.mem.asBytes(&v));
-        }
+        },
+        .str, .seq, .map => {},
     }
     hasher.update(value);
 }
