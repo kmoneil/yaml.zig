@@ -116,7 +116,6 @@ scanner: Scanner,
 state: State = .stream_start,
 /// The states to return to as nodes end.
 states: std.ArrayList(State) = .empty,
-peeked: ?Token = null,
 /// The current document's %TAG directives.
 tag_directives: std.ArrayList(Token.TagDirective) = .empty,
 /// The stream has just begun, or the last document ended with `...`:
@@ -171,19 +170,19 @@ pub fn next(p: *Parser) Error!Event {
 
 // Tokens
 
-fn peek(p: *Parser) Error!Token {
-    if (p.peeked) |token| return token;
-    const token = p.scanner.next() catch |err| {
+/// The next token, in the scanner's queue: valid until the next `peek`,
+/// so a mark wanted after one is taken before it.
+fn peek(p: *Parser) Error!*const Token {
+    return p.scanner.peekToken() catch |err| {
         if (err != error.OutOfMemory) p.diagnostic = p.scanner.diagnostic;
         return err;
     };
-    p.peeked = token;
-    return token;
 }
 
-/// Drops the token `peek` gave.
+/// Moves past the token `peek` gave; it stays readable until the next
+/// `peek`.
 fn skip(p: *Parser) void {
-    p.peeked = null;
+    p.scanner.skipToken();
 }
 
 fn push(p: *Parser, state: State) Error!void {
@@ -268,7 +267,7 @@ fn parseDirectives(p: *Parser) Error!?Token.Version {
     }
 }
 
-fn parseDirective(p: *Parser, token: Token, version: *?Token.Version) Error!void {
+fn parseDirective(p: *Parser, token: *const Token, version: *?Token.Version) Error!void {
     switch (token.data) {
         .version_directive => |v| {
             if (version.* != null) return p.fail(token.start, "a document may have one %YAML directive");
@@ -300,19 +299,20 @@ fn parseDocumentContent(p: *Parser) Error!Event {
 
 fn parseDocumentEnd(p: *Parser) Error!Event {
     const token = try p.peek();
+    const start = token.start;
     const explicit = token.data == .document_end;
-    var end = token.start;
+    var end = start;
     if (explicit) {
         p.skip();
         end = token.end;
         const after = try p.peek();
-        if (after.start.line == token.start.line and after.data != .stream_end) {
+        if (after.start.line == start.line and after.data != .stream_end) {
             return p.fail(after.start, "nothing may follow '...' on its line but a comment");
         }
     }
     p.after_end_marker = explicit;
     p.state = .document_start;
-    return event(token.start, end, .{ .document_end = .{ .explicit = explicit } });
+    return event(start, end, .{ .document_end = .{ .explicit = explicit } });
 }
 
 // Nodes
@@ -331,11 +331,12 @@ fn parseNode(p: *Parser, context: NodeContext) Error!Event {
         p.pop();
         return event(first.start, first.end, .{ .alias = first.data.alias });
     }
-    var end = first.start;
+    const first_start = first.start;
+    var end = first_start;
     const properties = try p.parseProperties(&end);
     const token = try p.peek();
     if (token.data == .alias) return p.fail(token.start, "an alias cannot have an anchor or a tag: it is a node already");
-    const start = if (properties.anchor != null or properties.tag != null) first.start else token.start;
+    const start = if (properties.anchor != null or properties.tag != null) first_start else token.start;
     if (context.indentless_sequence and token.data == .block_entry) {
         p.state = .indentless_sequence_entry;
         return event(start, end, .{ .sequence_start = .{ .properties = properties, .flow = false } });
@@ -350,7 +351,7 @@ fn parseNode(p: *Parser, context: NodeContext) Error!Event {
 
 /// The event that begins a node's content at `token`, or null if the
 /// token holds none.
-fn parseNodeContent(p: *Parser, context: NodeContext, token: Token, start: Mark, properties: Event.Properties) Error!?Event {
+fn parseNodeContent(p: *Parser, context: NodeContext, token: *const Token, start: Mark, properties: Event.Properties) Error!?Event {
     const collection: Event.Collection = .{ .properties = properties, .flow = true };
     var block = collection;
     block.flow = false;
@@ -436,11 +437,12 @@ fn parseBlockSequenceEntry(p: *Parser) Error!Event {
     const token = try p.peek();
     switch (token.data) {
         .block_entry => {
+            const end = token.end;
             p.skip();
             const after = try p.peek();
             if (after.data == .block_entry or after.data == .block_end) {
                 p.state = .block_sequence_entry;
-                return emptyScalar(token.end);
+                return emptyScalar(end);
             }
             try p.push(.block_sequence_entry);
             return p.parseNode(.{ .block = true });
@@ -462,12 +464,13 @@ fn parseIndentlessSequenceEntry(p: *Parser) Error!Event {
         p.pop();
         return event(token.start, token.start, .sequence_end);
     }
+    const end = token.end;
     p.skip();
     const after = try p.peek();
     switch (after.data) {
         .block_entry, .key, .value, .block_end => {
             p.state = .indentless_sequence_entry;
-            return emptyScalar(token.end);
+            return emptyScalar(end);
         },
         else => {
             try p.push(.indentless_sequence_entry);
@@ -480,11 +483,12 @@ fn parseBlockMappingKey(p: *Parser) Error!Event {
     const token = try p.peek();
     switch (token.data) {
         .key => {
+            const end = token.end;
             p.skip();
             const after = try p.peek();
             if (after.data == .key or after.data == .value or after.data == .block_end) {
                 p.state = .block_mapping_value;
-                return emptyScalar(token.end);
+                return emptyScalar(end);
             }
             try p.push(.block_mapping_value);
             return p.parseNode(.{ .block = true, .indentless_sequence = true });
@@ -509,11 +513,12 @@ fn parseBlockMappingValue(p: *Parser) Error!Event {
         p.state = .block_mapping_key;
         return emptyScalar(token.start);
     }
+    const end = token.end;
     p.skip();
     const after = try p.peek();
     if (after.data == .key or after.data == .value or after.data == .block_end) {
         p.state = .block_mapping_key;
-        return emptyScalar(token.end);
+        return emptyScalar(end);
     }
     try p.push(.block_mapping_key);
     return p.parseNode(.{ .block = true, .indentless_sequence = true });

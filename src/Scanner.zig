@@ -183,26 +183,47 @@ pub fn deinit(s: *Scanner) void {
 /// `diagnostic` says what and where, and the scanner cannot go on: each
 /// later call gives the same error.
 pub fn next(s: *Scanner) Error!Token {
+    const token = (try s.peekToken()).*;
+    s.skipToken();
+    return token;
+}
+
+/// The next token where the scanner keeps it, not copied: what the
+/// parser reads (t49). It stays as it is until the next `peekToken` or
+/// `next`; `skipToken` moves past it and leaves it be. Called again
+/// before `skipToken`, the same token. Errors as `next`.
+pub fn peekToken(s: *Scanner) Error!*const Token {
     if (s.failed) |err| return err;
-    return s.nextToken() catch |err| {
+    return s.settleHead() catch |err| {
         s.failed = err;
         return err;
     };
 }
 
-/// `next`, from a state no error has left half-changed.
-fn nextToken(s: *Scanner) Error!Token {
-    if (s.stream == .end_given) return .{ .start = s.mark, .end = s.mark, .data = .stream_end };
-    try s.fetchMoreTokens();
-    const token = s.tokens.items[s.head];
+/// Moves past the token `peekToken` gave. Past `stream_end` it stays:
+/// `stream_end` again.
+pub fn skipToken(s: *Scanner) void {
+    if (s.stream == .end_given) return;
+    if (s.tokens.items[s.head].data == .stream_end) {
+        s.stream = .end_given;
+        return;
+    }
     s.head += 1;
     s.tokens_parsed += 1;
+}
+
+/// The token at the head of the queue, settled: from a state no error
+/// has left half-changed. A queue all handed out is emptied here, not
+/// in `skipToken`, so the token skipped stays readable until now (and a
+/// safe build's clearing marks it undefined after).
+fn settleHead(s: *Scanner) Error!*const Token {
+    if (s.stream == .end_given) return &s.tokens.items[s.head];
     if (s.head == s.tokens.items.len) {
         s.tokens.clearRetainingCapacity();
         s.head = 0;
     }
-    if (token.data == .stream_end) s.stream = .end_given;
-    return token;
+    try s.fetchMoreTokens();
+    return &s.tokens.items[s.head];
 }
 
 /// Fetches until the token at the head of the queue is settled: there is
