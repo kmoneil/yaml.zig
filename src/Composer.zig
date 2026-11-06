@@ -133,6 +133,9 @@ kept: NodeStack = .{},
 /// Key sets of closed mappings, emptied, for the next large mapping: one
 /// made and freed a mapping was two allocations each (t46).
 spare_key_sets: std.ArrayList(KeySet) = .empty,
+/// How many key sets there are, kept or in use: `spare_key_sets` has room
+/// for each, made when the set is, so keeping one never allocates.
+key_sets: usize = 0,
 anchors: std.HashMapUnmanaged([]const u8, *Node, SeededStrings, std.hash_map.default_max_load_percentage) = .empty,
 /// The seed of every hash map, from a hash of the input.
 seed: u64,
@@ -502,8 +505,6 @@ fn checkKey(c: *Composer, frame: *Frame, key: *Node) Error!void {
 /// `items` from the first: key by key up to linear_keys, past it in
 /// `set`.
 fn checkKeyAmong(c: *Composer, items: []const *Node, stride: usize, set: *KeySet, key: *Node) Error!void {
-    const gpa = c.parser.scanner.gpa;
-    const ctx: KeyContext = .{ .seed = c.seed };
     if (items.len / stride < linear_keys) {
         var i: usize = 0;
         while (i < items.len) : (i += stride) {
@@ -511,13 +512,27 @@ fn checkKeyAmong(c: *Composer, items: []const *Node, stride: usize, set: *KeySet
         }
         return;
     }
-    if (set.count() == 0) {
-        if (set.capacity() == 0) set.* = c.spare_key_sets.pop() orelse .empty;
-        var i: usize = 0;
-        while (i < items.len) : (i += stride) try set.putContext(gpa, items[i], {}, ctx);
-    }
-    const entry = try set.getOrPutContext(gpa, key, ctx);
+    if (set.count() == 0) try c.fillKeySet(items, stride, set);
+    const entry = try set.getOrPutContext(c.parser.scanner.gpa, key, .{ .seed = c.seed });
     if (entry.found_existing) return c.duplicate(key);
+}
+
+/// Puts a mapping's keys so far, every `stride`th of `items`, in `set`,
+/// a spare one if one is kept.
+fn fillKeySet(c: *Composer, items: []const *Node, stride: usize, set: *KeySet) Error!void {
+    const gpa = c.parser.scanner.gpa;
+    if (set.capacity() == 0) {
+        if (c.spare_key_sets.pop()) |spare| {
+            set.* = spare;
+        } else {
+            // Room to keep it once its mapping ends, made while an error
+            // can still be returned.
+            try c.spare_key_sets.ensureTotalCapacity(gpa, c.key_sets + 1);
+            c.key_sets += 1;
+        }
+    }
+    var i: usize = 0;
+    while (i < items.len) : (i += stride) try set.putContext(gpa, items[i], {}, .{ .seed = c.seed });
 }
 
 /// Nodes that live until the collection keeping them ends: the keys
@@ -548,12 +563,12 @@ const NodeStack = struct {
     }
 };
 
-/// Keeps a closed mapping's key set, emptied, for the next large one; or
-/// frees it if there is no room to keep it.
+/// Keeps a closed mapping's key set, emptied, for the next large one, in
+/// the room made for it when it was made.
 fn recycle(c: *Composer, keys: *KeySet) void {
     if (keys.capacity() == 0) return;
     keys.clearRetainingCapacity();
-    c.spare_key_sets.append(c.parser.scanner.gpa, keys.*) catch keys.deinit(c.parser.scanner.gpa);
+    c.spare_key_sets.appendAssumeCapacity(keys.*);
 }
 
 fn duplicate(c: *Composer, key: *const Node) Error {

@@ -103,13 +103,16 @@ test "errors, each with where it is" {
     try expectFailure(S, "b: true\n", .{}, error.MissingField, 1, 1);
     try expectFailure(S, "a: 1\nc: 2\n", .{}, error.UnknownField, 2, 1);
     try expectFailure(S, "a: 1\na: 2\n", .{}, error.DuplicateKey, 2, 1);
-    try expectFailure(S, "a: [1\n", .{}, error.SyntaxError, 2, 1);
+    // Built as it is read (t47), so a syntax error found before the value.
+    try expectFailure(S, "a: \"1\n", .{}, error.SyntaxError, 1, 4);
     try expectFailure(S, "--- {a: 1}\n--- {a: 2}\n", .{}, error.MultipleDocuments, 2, 1);
     try expectFailure([]const u8, "~", .{}, error.UnexpectedType, 1, 1);
     try expectFailure([2]u8, "[1, 2, 3]", .{}, error.UnexpectedType, 1, 1);
     try expectFailure(Level, "loud", .{}, error.UnexpectedType, 1, 1);
-    try expectFailure(u8, "a: *nowhere", .{}, error.UndefinedAlias, 1, 4);
-    try expectFailure(u8, "[x, y]", .{ .schema = .json }, error.NotInSchema, 1, 2);
+    // Into types that read as far as the errors: built as it is read
+    // (t47), a type that fails earlier fails first.
+    try expectFailure(struct { a: u8 }, "a: *nowhere", .{}, error.UndefinedAlias, 1, 4);
+    try expectFailure([]const []const u8, "[x, y]", .{ .schema = .json }, error.NotInSchema, 1, 2);
 }
 
 test "a float into an integer: up to the type's edge, and not past it" {
@@ -288,6 +291,30 @@ test "a type's own yamlParse: its messages may hold braces" {
     try expectLine(struct { run: Braced }, "run: x\n", "1:6: run: not {this} either");
 }
 
+test "built as it is read: aliases to earlier items, cycles, duplicate keys, skipped values" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // An alias in a later item to a node an earlier one anchored: the
+    // anchored node is held whole, the rest read and let go.
+    const shared = try yaml.parseFromSliceLeaky(yaml.Value, a, "- {conf: &c {k: 1, l: [2]}}\n- {conf: *c}\n- {conf: *c, more: [*c]}\n", .{});
+    try testing.expectEqual(2, shared.sequence[1].get("conf").?.get("l").?.sequence[0].integer);
+    try testing.expectEqual(1, shared.sequence[2].get("more").?.sequence[0].get("k").?.integer);
+    const Item = struct { conf: struct { k: u8, l: []const u16 } };
+    const typed = try yaml.parseFromSliceLeaky([]const Item, a, "- conf: &c {k: 1, l: [2]}\n- conf: *c\n", .{});
+    try testing.expectEqual(2, typed[1].conf.l[0]);
+    // An alias inside the node it names, below a mapping read as it comes.
+    try expectFailure(yaml.Value, "{a: &r [x, *r]}", .{}, error.Cycle, 1, 12);
+    // Duplicate keys in mappings read as they come, the root's and deeper.
+    try expectFailure(yaml.Value, "a: 1\nb: 2\na: 3\n", .{}, error.DuplicateKey, 3, 1);
+    try expectFailure(struct { a: u8, b: u8 }, "a: 1\nb: 2\na: 3\n", .{}, error.DuplicateKey, 3, 1);
+    try expectFailure([]const yaml.Value, "- {x: 1, y: 2, x: 3}\n", .{}, error.DuplicateKey, 1, 16);
+    // An unknown field's value, a collection, read past and not built.
+    const S = struct { a: u8, b: u8 };
+    const skipped = try yaml.parseFromSliceLeaky(S, a, "a: 1\njunk: [x, {y: [z, {w: 1}]}, []]\nb: 2\n", .{ .ignore_unknown_fields = true });
+    try testing.expectEqual(2, skipped.b);
+}
+
 test "limits: %TAG directives, through ParseOptions" {
     try expectFailure(u8, "%TAG !a! x:\n%TAG !b! y:\n--- 1\n", .{ .max_tag_directives = 1 }, error.TagDirectiveLimit, 2, 1);
     try testing.expectEqual(1, try yaml.parseFromSliceLeaky(u8, testing.allocator, "%TAG !a! x:\n--- 1\n", .{ .max_tag_directives = 1 }));
@@ -406,7 +433,9 @@ test "diagnostics: an enum's names, and errors before construction print plainly
     try expectLine(S, "level: wran\n",
         \\1:8: level: no value is named "wran"; expected one of: debug, info, warn (did you mean "warn"?)
     );
-    try expectLine(S, "level: [debug\n",
-        \\2:1: a flow sequence's entries need a ',' between them, and a ']' after
+    // Construction builds as it reads (t47): a syntax error is the one
+    // found first, as here before the value is built.
+    try expectLine(S, "level: \"debug\n",
+        \\1:8: found the end of the input inside a quoted scalar
     );
 }

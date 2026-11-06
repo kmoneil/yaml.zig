@@ -356,9 +356,9 @@ input in diagnostics. `zig build security` runs its tests and checks it.
 
 Nothing recurses on the input's depth but construction, which is held
 to `max_depth`. Each level, a collection or a pointer followed, takes
-about 1.7 KiB of stack in a Debug build and 0.35 KiB in a release one,
+about 1.9 KiB of stack in a Debug build and 0.75 KiB in a release one,
 so the default needs under 512 KiB in Debug (a thread's default stack
-on macOS) and 128 KiB in release. On a smaller stack, lower
+on macOS) and 200 KiB in release. On a smaller stack, lower
 `max_depth`.
 
 ## Build

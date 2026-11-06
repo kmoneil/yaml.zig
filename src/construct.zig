@@ -50,10 +50,10 @@ pub const ParseOptions = struct {
     /// The deepest construction goes into a document, and the most
     /// collections the scanner lets be open at once. Construction
     /// recurses a level for each collection and each pointer it follows,
-    /// and a level takes about 1.7 KiB of stack in a Debug build and
-    /// 0.35 KiB in a release one, more for a struct or array whose own
+    /// and a level takes about 1.9 KiB of stack in a Debug build and
+    /// 0.75 KiB in a release one, more for a struct or array whose own
     /// size is large. The default's deepest documents need under 512 KiB
-    /// in Debug (a test holds them to it) and 128 KiB in release.
+    /// in Debug (a test holds them to it) and 200 KiB in release.
     max_depth: usize = 256,
     /// The most %TAG directives a document may have.
     max_tag_directives: usize = 64,
@@ -124,24 +124,99 @@ fn build(comptime T: type, result: Allocator, scratch: Allocator, bytes: []const
         .max_tag_directives = options.max_tag_directives,
     });
     defer composer.deinit();
-    const document = try composeOne(&composer, options);
-    var builder: Builder = .{ .allocator = result, .scratch = scratch, .options = options, .seed = composer.seed };
+    var builder: Builder = .{ .allocator = result, .scratch = scratch, .options = options, .seed = composer.seed, .composer = &composer };
     defer builder.visiting.deinit(scratch);
     defer builder.path.deinit(scratch);
-    const root: *const Node = if (document) |d| d.root else &empty_document;
-    return builder.build(T, root, 0);
+    defer builder.stack.deinit(scratch);
+    defer builder.slots.deinit(scratch);
+    // The document read a node at a time as it is built (t47), so only
+    // what an alias may name is held whole, not the graph.
+    if (try builder.beginDocument() == null) return builder.build(T, .{ .node = &empty_document }, 0);
+    var root: Node = undefined;
+    const value = try builder.build(T, (try builder.step(&root)).?, 0);
+    composer.endDocument() catch |err| return builder.composerFailed(err);
+    if (try builder.beginDocument()) |start| {
+        return report(options, .{ .mark = start, .message = "a value is read from one document, and this stream has more" }, error.MultipleDocuments);
+    }
+    return value;
 }
 
 /// An empty stream's node: the empty document's null.
 const empty_document: Node = .{ .start = .{}, .end = .{}, .tag = schema.tag.null, .data = .{ .scalar = .{ .value = "", .style = .plain } } };
 
-fn composeOne(composer: *Composer, options: ParseOptions) ParseError!?Composer.Document {
-    const document = composer.next() catch |err| return report(options, composer.diagnostic, err);
-    if (document == null) return null;
-    const another = composer.next() catch |err| return report(options, composer.diagnostic, err);
-    if (another) |a| return report(options, .{ .mark = a.start, .message = "a value is read from one document, and this stream has more" }, error.MultipleDocuments);
-    return document;
-}
+/// What construction builds a value from: a node, whole, or a collection
+/// the composer has begun reading, by its node of no entries, the
+/// entries the composer's steps still to come (t47).
+const Src = union(enum) {
+    node: *const Node,
+    begun: *const Node,
+
+    /// The node, or the begun collection's: its kind, tag and place.
+    fn head(s: Src) *const Node {
+        return switch (s) {
+            inline else => |n| n,
+        };
+    }
+};
+
+/// A mapping's key, whole, and its value.
+const KeyValue = struct { key: *const Node, value: Src };
+
+/// A collection's entries as construction reads them: a node's, or the
+/// composer's steps to the collection's end, one at a time.
+const Entries = struct {
+    b: *Builder,
+    from: union(enum) { items: []const *Node, pairs: []const Node.Pair, steps },
+    index: usize = 0,
+    /// The key and value last read from steps, by value, on the builder's
+    /// `slots`: they live until the next entry is read.
+    slots: *[2]Node = undefined,
+
+    /// Gives back the slots of entries read from steps.
+    fn done(e: *const Entries) void {
+        if (e.from == .steps) e.b.slots.len -= 1;
+    }
+
+    /// How many entries there are, if known before they are read.
+    fn count(e: *const Entries) ?usize {
+        return switch (e.from) {
+            .items => |items| items.len,
+            .pairs => |pairs| pairs.len,
+            .steps => null,
+        };
+    }
+
+    /// A sequence's next item, or null after its last.
+    fn nextItem(e: *Entries) ParseError!?Src {
+        switch (e.from) {
+            .items => |items| {
+                if (e.index == items.len) return null;
+                e.index += 1;
+                return .{ .node = items[e.index - 1] };
+            },
+            .pairs => unreachable,
+            .steps => return e.b.step(&e.slots[1]),
+        }
+    }
+
+    /// A mapping's next pair, or null after its last.
+    fn nextPair(e: *Entries) ParseError!?KeyValue {
+        switch (e.from) {
+            .pairs => |pairs| {
+                if (e.index == pairs.len) return null;
+                e.index += 1;
+                const pair = pairs[e.index - 1];
+                return .{ .key = pair.key, .value = .{ .node = pair.value } };
+            },
+            .items => unreachable,
+            .steps => {
+                // The composer gives a key whole, and a value after it.
+                const key = try e.b.step(&e.slots[0]) orelse return null;
+                return .{ .key = key.node, .value = (try e.b.step(&e.slots[1])).? };
+            },
+        }
+    }
+};
 
 fn report(options: ParseOptions, diagnostic: Diagnostic, err: ParseError) ParseError {
     if (options.diagnostic) |d| d.* = diagnostic;
@@ -162,6 +237,90 @@ const Builder = struct {
     seed: u64 = 0,
     /// Where construction is in the document, from its root.
     path: std.ArrayList(Segment) = .empty,
+    /// What reads the document a node at a time.
+    composer: *Composer,
+    /// Items of the sequences read from steps, whose number is not known
+    /// till their ends: one stack on the scratch allocator, a sequence's
+    /// at its top while it is read, then copied into the result once, at
+    /// its length (`Gathered`).
+    stack: std.array_list.Aligned(u8, .@"16") = .empty,
+    /// The by-value nodes of the collections read from steps, a key's and a
+    /// value's for each open: here, not in each level's stack frame,
+    /// which they would swell past what max_depth's stack allows.
+    slots: SlotStack = .{},
+
+    /// Gives a composer's error, its diagnostic the caller's.
+    fn composerFailed(b: *const Builder, err: Composer.Error) ParseError {
+        return report(b.options, b.composer.diagnostic, err);
+    }
+
+    fn beginDocument(b: *Builder) ParseError!?Diagnostic.Mark {
+        return b.composer.beginDocument() catch |err| b.composerFailed(err);
+    }
+
+    /// The composer's next step as a source, null at a collection's end:
+    /// a scalar's or a begun collection's node by value in `slot`.
+    fn step(b: *Builder, slot: *Node) ParseError!?Src {
+        switch (b.composer.step() catch |err| return b.composerFailed(err)) {
+            .end => return null,
+            .scalar => |n| {
+                slot.* = n;
+                return .{ .node = slot };
+            },
+            .node => |n| return .{ .node = n },
+            .begin => |n| {
+                slot.* = n;
+                return .{ .begun = slot };
+            },
+        }
+    }
+
+    /// `src` whole: a begun collection composed whole, for what needs a
+    /// node (a type's yamlParse hook).
+    fn whole(b: *Builder, src: Src) ParseError!*const Node {
+        return switch (src) {
+            .node => |n| n,
+            .begun => |n| b.composer.finish(n.*) catch |err| b.composerFailed(err),
+        };
+    }
+
+    /// Reads past a begun collection that is not built, an unknown field's
+    /// value skipped: its entries' steps to its end.
+    fn skip(b: *Builder, src: Src) ParseError!void {
+        if (src != .begun) return;
+        var open: usize = 1;
+        while (open > 0) {
+            switch (b.composer.step() catch |err| return b.composerFailed(err)) {
+                .begin => open += 1,
+                .end => open -= 1,
+                .scalar, .node => {},
+            }
+        }
+    }
+
+    /// A collection's entries, `src` a sequence or a mapping as `kind`
+    /// says, else the error.
+    fn entries(b: *Builder, src: Src, comptime kind: enum { sequence, mapping }) ParseError!Entries {
+        const node = src.head();
+        switch (kind) {
+            .sequence => if (node.data != .sequence) return b.failExpected(node, "a sequence"),
+            .mapping => if (node.data != .mapping) return b.failExpected(node, "a mapping"),
+        }
+        return switch (src) {
+            .node => |n| .{ .b = b, .from = if (kind == .sequence) .{ .items = n.data.sequence.items } else .{ .pairs = n.data.mapping.pairs } },
+            .begun => .{ .b = b, .from = .steps, .slots = try b.slots.push(b.scratch) },
+        };
+    }
+
+    /// Marks `src`, if a node, as being built until `leaveSrc`: a begun
+    /// collection has no anchor, so no alias can lead into it.
+    fn enterSrc(b: *Builder, src: Src) ParseError!void {
+        if (src == .node) try b.enter(src.node);
+    }
+
+    fn leaveSrc(b: *Builder, src: Src) void {
+        if (src == .node) b.leave(src.node);
+    }
 
     /// Fails at `node`, with the path to it.
     fn fail(b: *const Builder, node: *const Node, err: ParseError, message: []const u8) ParseError {
@@ -201,23 +360,24 @@ const Builder = struct {
         _ = b.path.pop();
     }
 
-    fn build(b: *Builder, comptime T: type, node: *const Node, depth: usize) ParseError!T {
+    fn build(b: *Builder, comptime T: type, src: Src, depth: usize) ParseError!T {
+        const node = src.head();
         try b.checkLimits(node, depth);
         if (node.data == .alias) return b.buildAlias(T, node, depth);
         if (node.data == .scalar) try b.checkScalar(node);
-        if (T == Value) return b.buildValue(node, depth);
-        if (comptime hasParseHook(T)) return b.buildWithHook(T, node, depth);
+        if (T == Value) return b.buildValue(src, depth);
+        if (comptime hasParseHook(T)) return b.buildWithHook(T, try b.whole(src), depth);
         return switch (@typeInfo(T)) {
             .void => b.buildVoid(node),
             .bool => b.buildBool(node),
             .int => b.buildInt(T, node),
             .float => b.buildFloat(T, node),
-            .optional => |o| b.buildOptional(o.child, node, depth),
+            .optional => |o| b.buildOptional(o.child, src, depth),
             .@"enum" => b.buildEnum(T, node),
-            .@"struct" => b.buildStruct(T, node, depth),
-            .@"union" => b.buildUnion(T, node, depth),
-            .array => |a| b.buildArray(T, a.child, node, depth),
-            .pointer => b.buildPointer(T, node, depth),
+            .@"struct" => b.buildStruct(T, src, depth),
+            .@"union" => b.buildUnion(T, src, depth),
+            .array => |a| b.buildArray(T, a.child, src, depth),
+            .pointer => b.buildPointer(T, src, depth),
             else => @compileError("yaml cannot build a " ++ @typeName(T)),
         };
     }
@@ -244,9 +404,9 @@ const Builder = struct {
         if (!isNull(node)) return b.failExpected(node, "nothing here, as for a union field with no value");
     }
 
-    fn buildOptional(b: *Builder, comptime Child: type, node: *const Node, depth: usize) ParseError!?Child {
-        if (isNull(node)) return null;
-        return try b.build(Child, node, depth);
+    fn buildOptional(b: *Builder, comptime Child: type, src: Src, depth: usize) ParseError!?Child {
+        if (isNull(src.head())) return null;
+        return try b.build(Child, src, depth);
     }
 
     fn buildAlias(b: *Builder, comptime T: type, node: *const Node, depth: usize) ParseError!T {
@@ -254,7 +414,7 @@ const Builder = struct {
         if (b.visiting.contains(target)) return b.fail(node, error.Cycle, "this alias names a node it is inside: a cycle no value can hold");
         b.alias_depth += 1;
         defer b.alias_depth -= 1;
-        return b.build(T, target, depth);
+        return b.build(T, .{ .node = target }, depth);
     }
 
     /// Marks a collection as being built until `leave`.
@@ -379,85 +539,104 @@ const Builder = struct {
         return try b.allocator.dupe(u8, text);
     }
 
-    fn buildPointer(b: *Builder, comptime T: type, node: *const Node, depth: usize) ParseError!T {
+    fn buildPointer(b: *Builder, comptime T: type, src: Src, depth: usize) ParseError!T {
         const info = @typeInfo(T).pointer;
         switch (info.size) {
             .one => {
                 const p = try b.allocator.create(info.child);
-                p.* = try b.build(info.child, node, depth + 1);
+                p.* = try b.build(info.child, src, depth + 1);
                 return p;
             },
             .slice => {
-                if (info.child == u8) return b.buildString(T, node);
-                return b.buildSlice(T, info.child, node, depth);
+                if (info.child == u8) return b.buildString(T, src.head());
+                return b.buildSlice(T, info.child, src, depth);
             },
             else => @compileError("yaml cannot build a " ++ @typeName(T)),
         }
     }
 
-    fn itemsOf(b: *const Builder, node: *const Node) ParseError![]const *Node {
-        if (node.data != .sequence) return b.failExpected(node, "a sequence");
-        return node.data.sequence.items;
+    fn buildSlice(b: *Builder, comptime T: type, comptime Child: type, src: Src, depth: usize) ParseError!T {
+        var items = try b.entries(src, .sequence);
+        defer items.done();
+        try b.enterSrc(src);
+        defer b.leaveSrc(src);
+        // Each way its own function, so a level's stack frame, which in a
+        // Debug build holds every branch's temporaries, holds one way's.
+        if (items.count()) |n| return b.sliceOf(T, Child, &items, n, depth);
+        return b.sliceGathered(T, Child, &items, depth);
     }
 
-    fn buildSlice(b: *Builder, comptime T: type, comptime Child: type, node: *const Node, depth: usize) ParseError!T {
-        const items = try b.itemsOf(node);
-        try b.enter(node);
-        defer b.leave(node);
+    /// A slice of `n` items, their number known before they are read:
+    /// built in place.
+    fn sliceOf(b: *Builder, comptime T: type, comptime Child: type, items: *Entries, n: usize, depth: usize) ParseError!T {
         const sentinel = @typeInfo(T).pointer.sentinel();
-        const out = if (sentinel) |s| try b.allocator.allocSentinel(Child, items.len, s) else try b.allocator.alloc(Child, items.len);
-        for (items, out, 0..) |item, *slot, i| slot.* = try b.buildItem(Child, item, i, depth);
+        const out = if (sentinel) |s| try b.allocator.allocSentinel(Child, n, s) else try b.allocator.alloc(Child, n);
+        for (out, 0..) |*slot, i| slot.* = try b.buildItem(Child, (try items.nextItem()).?, i, depth);
         return out;
     }
 
+    /// A slice of items read from steps, their number known at the end.
+    fn sliceGathered(b: *Builder, comptime T: type, comptime Child: type, items: *Entries, depth: usize) ParseError!T {
+        var gathered: Gathered(Child) = try .begin(b);
+        defer gathered.end(b);
+        while (try items.nextItem()) |item| try gathered.append(b, try b.buildItem(Child, item, gathered.len, depth));
+        return gathered.finish(b, @typeInfo(T).pointer.sentinel());
+    }
+
     /// Builds the item at `index` of a sequence, the index on the path.
-    fn buildItem(b: *Builder, comptime T: type, item: *const Node, index: usize, depth: usize) ParseError!T {
+    fn buildItem(b: *Builder, comptime T: type, item: Src, index: usize, depth: usize) ParseError!T {
         try b.pushPath(.{ .index = index });
         defer b.popPath();
         return b.build(T, item, depth + 1);
     }
 
     /// Builds the value at `name` of a mapping, the name on the path.
-    fn buildNamed(b: *Builder, comptime T: type, value: *const Node, name: []const u8, depth: usize) ParseError!T {
+    fn buildNamed(b: *Builder, comptime T: type, value: Src, name: []const u8, depth: usize) ParseError!T {
         try b.pushPath(.{ .name = name });
         defer b.popPath();
         return b.build(T, value, depth + 1);
     }
 
-    fn buildArray(b: *Builder, comptime T: type, comptime Child: type, node: *const Node, depth: usize) ParseError!T {
-        const items = try b.itemsOf(node);
-        if (items.len != @typeInfo(T).array.len) return b.fail(node, error.UnexpectedType, "the sequence's length is not the array's");
-        try b.enter(node);
-        defer b.leave(node);
+    fn buildArray(b: *Builder, comptime T: type, comptime Child: type, src: Src, depth: usize) ParseError!T {
+        const len = @typeInfo(T).array.len;
+        var items = try b.entries(src, .sequence);
+        defer items.done();
+        if ((items.count() orelse len) != len) return b.wrongLength(src, "the sequence's length is not the array's");
+        try b.enterSrc(src);
+        defer b.leaveSrc(src);
         var out: T = undefined;
-        for (items, &out, 0..) |item, *slot, i| slot.* = try b.buildItem(Child, item, i, depth);
+        for (&out, 0..) |*slot, i| {
+            const item = try items.nextItem() orelse return b.wrongLength(src, "the sequence's length is not the array's");
+            slot.* = try b.buildItem(Child, item, i, depth);
+        }
+        if (try items.nextItem() != null) return b.wrongLength(src, "the sequence's length is not the array's");
         return out;
     }
 
-    fn pairsOf(b: *const Builder, node: *const Node) ParseError![]const Node.Pair {
-        if (node.data != .mapping) return b.failExpected(node, "a mapping");
-        return node.data.mapping.pairs;
+    fn wrongLength(b: *const Builder, src: Src, message: []const u8) ParseError {
+        return b.fail(src.head(), error.UnexpectedType, message);
     }
 
-    fn buildStruct(b: *Builder, comptime T: type, node: *const Node, depth: usize) ParseError!T {
+    fn buildStruct(b: *Builder, comptime T: type, src: Src, depth: usize) ParseError!T {
         const info = @typeInfo(T).@"struct";
-        if (info.is_tuple) return b.buildTuple(T, node, depth);
-        if (comptime @hasDecl(T, "yaml_map_value")) return b.buildMap(T, node, depth);
-        const pairs = try b.pairsOf(node);
-        try b.enter(node);
-        defer b.leave(node);
+        if (info.is_tuple) return b.buildTuple(T, src, depth);
+        if (comptime @hasDecl(T, "yaml_map_value")) return b.buildMap(T, src, depth);
+        var pairs = try b.entries(src, .mapping);
+        defer pairs.done();
+        try b.enterSrc(src);
+        defer b.leaveSrc(src);
         var out: T = undefined;
         var seen: [info.field_names.len]bool = @splat(false);
-        for (pairs) |pair| {
+        while (try pairs.nextPair()) |pair| {
             const key = pair.key.target();
             const name = try b.nameOf(key);
-            if (!try b.buildField(T, &out, &seen, name, pair.value, depth)) {
-                if (!b.options.ignore_unknown_fields) return b.unknownField(info.field_names, key, name, "no field of the struct has this name");
-            }
+            if (try b.buildField(T, &out, &seen, name, pair.value, depth)) continue;
+            if (!b.options.ignore_unknown_fields) return b.unknownField(info.field_names, key, name, "no field of the struct has this name");
+            try b.skip(pair.value);
         }
         inline for (info.field_names, info.field_types, info.field_attrs, 0..) |name, Field, attrs, i| {
             if (!seen[i]) @field(out, name) = attrs.defaultValue(Field) orelse
-                return b.failDetail(node, error.MissingField, "the mapping has no key for a field with no default", "missing field \"{s}\"", .{name});
+                return b.failDetail(src.head(), error.MissingField, "the mapping has no key for a field with no default", "missing field \"{s}\"", .{name});
         }
         return out;
     }
@@ -473,18 +652,19 @@ const Builder = struct {
     /// A `map.ArrayHashMap`: each scalar key's text to its value built as
     /// the map's value type, in the document's order. With duplicate keys
     /// kept, a later key's value replaces the earlier's, in its place.
-    fn buildMap(b: *Builder, comptime T: type, node: *const Node, depth: usize) ParseError!T {
-        const pairs = try b.pairsOf(node);
-        try b.enter(node);
-        defer b.leave(node);
+    fn buildMap(b: *Builder, comptime T: type, src: Src, depth: usize) ParseError!T {
+        var pairs = try b.entries(src, .mapping);
+        defer pairs.done();
+        try b.enterSrc(src);
+        defer b.leaveSrc(src);
         var out: T = .{ .context = .{ .seed = b.seed } };
-        try out.map.ensureTotalCapacityContext(b.allocator, pairs.len, out.context);
-        for (pairs) |pair| {
+        if (pairs.count()) |n| try out.map.ensureTotalCapacityContext(b.allocator, n, out.context);
+        while (try pairs.nextPair()) |pair| {
             const key = pair.key.target();
             if (key.data != .scalar) return b.fail(key, error.UnexpectedType, "a map's keys are scalars, and this is a collection");
             try b.checkScalar(key);
             const value = try b.buildNamed(T.yaml_map_value, pair.value, key.data.scalar.value, depth);
-            const entry = out.map.getOrPutAssumeCapacityContext(key.data.scalar.value, out.context);
+            const entry = try out.map.getOrPutContext(b.allocator, key.data.scalar.value, out.context);
             if (!entry.found_existing) entry.key_ptr.* = try b.allocator.dupe(u8, key.data.scalar.value);
             entry.value_ptr.* = value;
         }
@@ -493,7 +673,7 @@ const Builder = struct {
 
     /// Builds the field `name` of `out` from `value`; false when no field
     /// has that name.
-    fn buildField(b: *Builder, comptime T: type, out: *T, seen: []bool, name: []const u8, value: *const Node, depth: usize) ParseError!bool {
+    fn buildField(b: *Builder, comptime T: type, out: *T, seen: []bool, name: []const u8, value: Src, depth: usize) ParseError!bool {
         const info = @typeInfo(T).@"struct";
         inline for (info.field_names, info.field_types, 0..) |field, Field, i| {
             if (std.mem.eql(u8, field, name)) {
@@ -505,61 +685,82 @@ const Builder = struct {
         return false;
     }
 
-    fn buildTuple(b: *Builder, comptime T: type, node: *const Node, depth: usize) ParseError!T {
+    fn buildTuple(b: *Builder, comptime T: type, src: Src, depth: usize) ParseError!T {
         const info = @typeInfo(T).@"struct";
-        const items = try b.itemsOf(node);
-        if (items.len != info.field_types.len) return b.fail(node, error.UnexpectedType, "the sequence's length is not the tuple's");
-        try b.enter(node);
-        defer b.leave(node);
+        const len = info.field_types.len;
+        var items = try b.entries(src, .sequence);
+        defer items.done();
+        if ((items.count() orelse len) != len) return b.wrongLength(src, "the sequence's length is not the tuple's");
+        try b.enterSrc(src);
+        defer b.leaveSrc(src);
         var out: T = undefined;
-        inline for (info.field_types, 0..) |Field, i| out[i] = try b.buildItem(Field, items[i], i, depth);
+        inline for (info.field_types, 0..) |Field, i| {
+            const item = try items.nextItem() orelse return b.wrongLength(src, "the sequence's length is not the tuple's");
+            out[i] = try b.buildItem(Field, item, i, depth);
+        }
+        if (try items.nextItem() != null) return b.wrongLength(src, "the sequence's length is not the tuple's");
         return out;
     }
 
     /// A tagged union: a mapping of one key, the field, to its value; or
     /// for a field of type void, the field's name alone.
-    fn buildUnion(b: *Builder, comptime T: type, node: *const Node, depth: usize) ParseError!T {
+    fn buildUnion(b: *Builder, comptime T: type, src: Src, depth: usize) ParseError!T {
         const info = @typeInfo(T).@"union";
         if (info.tag_type == null) @compileError("yaml cannot build the untagged union " ++ @typeName(T));
-        if (node.data == .scalar) {
-            inline for (info.field_names, info.field_types) |field, Field| {
-                if (Field == void and std.mem.eql(u8, field, node.data.scalar.value)) return @unionInit(T, field, {});
-            }
-            return b.fail(node, error.UnexpectedType, "no field of the union with no value has this name");
-        }
-        const pairs = try b.pairsOf(node);
-        if (pairs.len != 1) return b.fail(node, error.UnexpectedType, "a union is a mapping of one key, the field");
-        const name = try b.nameOf(pairs[0].key.target());
-        try b.enter(node);
-        defer b.leave(node);
+        const node = src.head();
+        if (node.data == .scalar) return b.unionByName(T, node);
+        var pairs = try b.entries(src, .mapping);
+        defer pairs.done();
+        const one_key = "a union is a mapping of one key, the field";
+        if ((pairs.count() orelse 1) != 1) return b.wrongLength(src, one_key);
+        const pair = try pairs.nextPair() orelse return b.wrongLength(src, one_key);
+        const name = try b.nameOf(pair.key.target());
+        try b.enterSrc(src);
+        defer b.leaveSrc(src);
         inline for (info.field_names, info.field_types) |field, Field| {
-            if (std.mem.eql(u8, field, name)) return @unionInit(T, field, try b.buildNamed(Field, pairs[0].value, field, depth));
+            if (std.mem.eql(u8, field, name)) {
+                const value = @unionInit(T, field, try b.buildNamed(Field, pair.value, field, depth));
+                if (try pairs.nextPair() != null) return b.wrongLength(src, one_key);
+                return value;
+            }
         }
-        return b.unknownField(info.field_names, pairs[0].key, name, "no field of the union has this name");
+        return b.unknownField(info.field_names, pair.key, name, "no field of the union has this name");
     }
 
-    fn buildValue(b: *Builder, node: *const Node, depth: usize) ParseError!Value {
-        switch (node.data) {
-            .scalar => |s| return b.scalarValue(node, s.value),
-            .sequence => |s| {
-                try b.enter(node);
-                defer b.leave(node);
-                const out = try b.allocator.alloc(Value, s.items.len);
-                for (s.items, out, 0..) |item, *slot, i| slot.* = try b.buildItem(Value, item, i, depth);
-                return .{ .sequence = out };
-            },
-            .mapping => |m| {
-                try b.enter(node);
-                defer b.leave(node);
-                const out = try b.allocator.alloc(Value.Pair, m.pairs.len);
-                for (m.pairs, out) |pair, *slot| slot.* = .{
-                    .key = try b.build(Value, pair.key, depth + 1),
-                    .value = try b.buildNamed(Value, pair.value, keyName(pair.key), depth),
-                };
-                return .{ .mapping = out };
-            },
-            .alias => unreachable,
+    /// A tagged union's field with no value, named by a scalar alone.
+    fn unionByName(b: *const Builder, comptime T: type, node: *const Node) ParseError!T {
+        const info = @typeInfo(T).@"union";
+        inline for (info.field_names, info.field_types) |field, Field| {
+            if (Field == void and std.mem.eql(u8, field, node.data.scalar.value)) return @unionInit(T, field, {});
         }
+        return b.fail(node, error.UnexpectedType, "no field of the union with no value has this name");
+    }
+
+    fn buildValue(b: *Builder, src: Src, depth: usize) ParseError!Value {
+        const node = src.head();
+        // A dispatch only, so the stack frame of each level a Value nests
+        // in holds no more than one kind's (see buildSlice).
+        return switch (node.data) {
+            .scalar => |s| b.scalarValue(node, s.value),
+            .sequence => .{ .sequence = try b.buildSlice([]Value, Value, src, depth) },
+            .mapping => .{ .mapping = try b.buildValuePairs(src, depth) },
+            .alias => unreachable,
+        };
+    }
+
+    /// A Value mapping's pairs in their order, a key any Value.
+    fn buildValuePairs(b: *Builder, src: Src, depth: usize) ParseError![]Value.Pair {
+        var pairs = try b.entries(src, .mapping);
+        defer pairs.done();
+        try b.enterSrc(src);
+        defer b.leaveSrc(src);
+        var gathered: Gathered(Value.Pair) = try .begin(b);
+        defer gathered.end(b);
+        while (try pairs.nextPair()) |pair| try gathered.append(b, .{
+            .key = try b.build(Value, .{ .node = pair.key }, depth + 1),
+            .value = try b.buildNamed(Value, pair.value, keyName(pair.key), depth),
+        });
+        return gathered.finish(b, null);
     }
 
     fn scalarValue(b: *const Builder, node: *const Node, text: []const u8) ParseError!Value {
@@ -578,6 +779,72 @@ const Builder = struct {
         return .{ .string = try b.allocator.dupe(u8, text) };
     }
 };
+
+/// The by-value nodes of the collections read from steps, a pair a
+/// collection open, innermost last: in chunks of a fixed size, so a pair
+/// does not move while it is in use.
+const SlotStack = struct {
+    chunks: std.ArrayList(*[chunk_len][2]Node) = .empty,
+    len: usize = 0,
+
+    const chunk_len = 16;
+
+    fn push(s: *SlotStack, gpa: Allocator) Allocator.Error!*[2]Node {
+        if (s.len == s.chunks.items.len * chunk_len) {
+            const chunk = try gpa.create([chunk_len][2]Node);
+            errdefer gpa.destroy(chunk);
+            try s.chunks.append(gpa, chunk);
+        }
+        s.len += 1;
+        return &s.chunks.items[(s.len - 1) / chunk_len][(s.len - 1) % chunk_len];
+    }
+
+    fn deinit(s: *SlotStack, gpa: Allocator) void {
+        for (s.chunks.items) |chunk| gpa.destroy(chunk);
+        s.chunks.deinit(gpa);
+    }
+};
+
+/// A slice of `Child`s gathered as a sequence or mapping read from steps
+/// is built, their number not known till its end: on the builder's stack
+/// of bytes, then copied into the result once, at their number, so no
+/// slice outgrown is left in the result's arena (t47).
+fn Gathered(comptime Child: type) type {
+    if (@alignOf(Child) > 16) @compileError("yaml cannot build a slice of " ++ @typeName(Child) ++ ", aligned past 16 bytes");
+    return struct {
+        const Self = @This();
+        /// Where the stack was before, and where these begin on it.
+        base: usize,
+        start: usize,
+        len: usize = 0,
+
+        fn begin(b: *Builder) Allocator.Error!Self {
+            const base = b.stack.items.len;
+            const start = std.mem.alignForward(usize, base, @alignOf(Child));
+            try b.stack.resize(b.scratch, start);
+            return .{ .base = base, .start = start };
+        }
+
+        /// Adds `value`; what a nested sequence put on the stack is gone
+        /// by now, as it was copied out when it ended.
+        fn append(g: *Self, b: *Builder, value: Child) Allocator.Error!void {
+            try b.stack.appendSlice(b.scratch, std.mem.asBytes(&value));
+            g.len += 1;
+        }
+
+        /// The gathered `Child`s in the result, `sentinel`-terminated if
+        /// one is given.
+        fn finish(g: *const Self, b: *Builder, comptime sentinel: ?Child) Allocator.Error!(if (sentinel) |s| [:s]Child else []Child) {
+            const out = if (sentinel) |s| try b.allocator.allocSentinel(Child, g.len, s) else try b.allocator.alloc(Child, g.len);
+            @memcpy(std.mem.sliceAsBytes(out), b.stack.items[g.start..][0 .. g.len * @sizeOf(Child)]);
+            return out;
+        }
+
+        fn end(g: *const Self, b: *Builder) void {
+            b.stack.shrinkRetainingCapacity(g.base);
+        }
+    };
+}
 
 /// What a type's own `yamlParse` is given to build itself: the node,
 /// and construction, to build what is in the node as other types with
@@ -605,19 +872,19 @@ pub const Construction = struct {
     /// Builds `node`, this one or one in it, as a `T`, a level deeper,
     /// the path as it is.
     pub fn build(c: Construction, comptime T: type, node: *const Node) ParseError!T {
-        return c.builder.build(T, node, c.depth + 1);
+        return c.builder.build(T, .{ .node = node }, c.depth + 1);
     }
 
     /// Builds `node`, the value of this mapping's key `name`, as a `T`,
     /// with `name` on the path.
     pub fn buildNamed(c: Construction, comptime T: type, name: []const u8, node: *const Node) ParseError!T {
-        return c.builder.buildNamed(T, node, name, c.depth);
+        return c.builder.buildNamed(T, .{ .node = node }, name, c.depth);
     }
 
     /// Builds `node`, the item at `index` of this sequence, as a `T`,
     /// with the index on the path.
     pub fn buildIndexed(c: Construction, comptime T: type, index: usize, node: *const Node) ParseError!T {
-        return c.builder.buildItem(T, node, index, c.depth);
+        return c.builder.buildItem(T, .{ .node = node }, index, c.depth);
     }
 
     /// Fails with `error.UnexpectedType` at `node`, the path to it and
