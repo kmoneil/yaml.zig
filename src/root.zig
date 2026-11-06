@@ -45,6 +45,9 @@ pub const ParseOptions = construct.ParseOptions;
 pub const ParseError = construct.ParseError;
 /// A document of any shape.
 pub const Value = construct.Value;
+/// What a type's own `yamlParse` gets: its node, and construction, to
+/// build the node's parts as other types.
+pub const Construction = construct.Construction;
 
 /// A map from strings to values, for a mapping whose keys are not known
 /// at compile time; `parseFromSlice` and `stringify` take it as a field.

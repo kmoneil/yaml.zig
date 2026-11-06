@@ -17,6 +17,10 @@
 //! is a scalar whose text is not what its tag says, `!!int foo`, whatever
 //! it is read into.
 //!
+//! A type may build itself, as std.json's `jsonParse` lets one: with a
+//! `pub fn yamlParse(c: Construction) ParseError!@This()`, which gets
+//! the node and builds its parts as other types (`Construction`).
+//!
 //! An alias builds its node again, so a document can say much more than
 //! it is long: nodes built through aliases are counted and held to
 //! `max_alias_nodes`. A document whose aliases make a cycle cannot be a
@@ -199,6 +203,7 @@ const Builder = struct {
         if (node.data == .alias) return b.buildAlias(T, node, depth);
         if (node.data == .scalar) try b.checkScalar(node);
         if (T == Value) return b.buildValue(node, depth);
+        if (comptime hasParseHook(T)) return b.buildWithHook(T, node, depth);
         return switch (@typeInfo(T)) {
             .void => b.buildVoid(node),
             .bool => b.buildBool(node),
@@ -212,6 +217,14 @@ const Builder = struct {
             .pointer => b.buildPointer(T, node, depth),
             else => @compileError("yaml cannot build a " ++ @typeName(T)),
         };
+    }
+
+    /// Builds a `T` with its own `yamlParse`, its node, a collection,
+    /// marked as being built, so an alias to it inside it is a cycle.
+    fn buildWithHook(b: *Builder, comptime T: type, node: *const Node, depth: usize) ParseError!T {
+        if (node.data != .scalar) try b.enter(node);
+        defer if (node.data != .scalar) b.leave(node);
+        return T.yamlParse(.{ .node = node, .builder = b, .depth = depth });
     }
 
     /// Counts a node built through an alias, and holds construction to
@@ -561,6 +574,68 @@ const Builder = struct {
         return .{ .string = try b.allocator.dupe(u8, text) };
     }
 };
+
+/// What a type's own `yamlParse` is given to build itself: the node,
+/// and construction, to build what is in the node as other types with
+/// the path, the limits, alias counting and the diagnostic kept. A type
+/// declares
+///
+///     pub fn yamlParse(c: yaml.Construction) yaml.ParseError!@This()
+///
+/// and construction calls it for each node it builds as that type: an
+/// alias's target in place of the alias, a scalar already checked
+/// against its tag.
+pub const Construction = struct {
+    /// The node to build the type from.
+    node: *const Node,
+    /// Construction's own.
+    builder: *Builder,
+    depth: usize,
+
+    /// The allocator what is built lives in: the result's arena under
+    /// `parseFromSlice`. Nothing in it is freed piece by piece.
+    pub fn allocator(c: Construction) Allocator {
+        return c.builder.allocator;
+    }
+
+    /// Builds `node`, this one or one in it, as a `T`, a level deeper,
+    /// the path as it is.
+    pub fn build(c: Construction, comptime T: type, node: *const Node) ParseError!T {
+        return c.builder.build(T, node, c.depth + 1);
+    }
+
+    /// Builds `node`, the value of this mapping's key `name`, as a `T`,
+    /// with `name` on the path.
+    pub fn buildNamed(c: Construction, comptime T: type, name: []const u8, node: *const Node) ParseError!T {
+        return c.builder.buildNamed(T, node, name, c.depth);
+    }
+
+    /// Builds `node`, the item at `index` of this sequence, as a `T`,
+    /// with the index on the path.
+    pub fn buildIndexed(c: Construction, comptime T: type, index: usize, node: *const Node) ParseError!T {
+        return c.builder.buildItem(T, node, index, c.depth);
+    }
+
+    /// Fails with `error.UnexpectedType` at `node`, the path to it and
+    /// `message` in the diagnostic.
+    pub fn fail(c: Construction, node: *const Node, comptime message: []const u8) ParseError {
+        return c.builder.fail(node, error.UnexpectedType, message);
+    }
+
+    /// Fails at `node`, which is not the `what` expected there: `expected
+    /// a command, found a sequence`.
+    pub fn failExpected(c: Construction, node: *const Node, comptime what: []const u8) ParseError {
+        return c.builder.failExpected(node, what);
+    }
+};
+
+/// Whether `T` builds itself with a `yamlParse` (`Construction`).
+fn hasParseHook(comptime T: type) bool {
+    return switch (@typeInfo(T)) {
+        .@"struct", .@"union", .@"enum", .@"opaque" => @hasDecl(T, "yamlParse"),
+        else => false,
+    };
+}
 
 /// A step of the path from a document's root: a mapping's key, or a
 /// sequence's index.

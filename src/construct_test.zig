@@ -224,8 +224,52 @@ test "limits: a cycle, an alias bomb, depth" {
 fn parseAndFree(allocator: std.mem.Allocator) !void {
     const parsed = try yaml.parseFromSlice(Config, allocator, config_text, .{});
     defer parsed.deinit();
+    const job = try yaml.parseFromSlice(Job, allocator, "run: {argv: [a, b], cwd: c}\n", .{});
+    defer job.deinit();
     const value = try yaml.parseFromSlice(yaml.Value, allocator, config_text, .{});
     defer value.deinit();
+}
+
+const Exec = struct { argv: []const []const u8, cwd: ?[]const u8 = null };
+
+/// A command that reads itself: a line for the shell, or a program and
+/// its arguments.
+const Run = union(enum) {
+    shell: []const u8,
+    exec: Exec,
+
+    pub fn yamlParse(c: yaml.Construction) yaml.ParseError!Run {
+        return switch (c.node.data) {
+            .scalar => .{ .shell = try c.build([]const u8, c.node) },
+            .mapping => .{ .exec = try c.build(Exec, c.node) },
+            else => c.failExpected(c.node, "a command, a string or a mapping"),
+        };
+    }
+};
+
+const Job = struct { name: []const u8 = "", run: Run };
+
+test "a type's own yamlParse: a string or a mapping" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const shell = try yaml.parseFromSliceLeaky(Job, a, "run: python train.py\n", .{});
+    try testing.expectEqualStrings("python train.py", shell.run.shell);
+    const exec = try yaml.parseFromSliceLeaky(Job, a, "run: {argv: [python, train.py], cwd: src}\n", .{});
+    try testing.expectEqualStrings("train.py", exec.run.exec.argv[1]);
+    try testing.expectEqualStrings("src", exec.run.exec.cwd.?);
+    // As a sequence's items, one through an alias.
+    const many = try yaml.parseFromSliceLeaky([]const Run, a, "- &x {argv: [a]}\n- *x\n- b c\n", .{});
+    try testing.expectEqual(3, many.len);
+    try testing.expectEqualStrings("a", many[1].exec.argv[0]);
+    try testing.expectEqualStrings("b c", many[2].shell);
+}
+
+test "a type's own yamlParse: errors keep their path, its own are at its node" {
+    try expectLine(Job, "run: {argv: [python, {x: 1}]}\n", "1:22: run.argv[1]: expected a string, found a mapping");
+    try expectLine(Job, "name: j\nrun: [a, b]\n", "2:6: run: expected a command, a string or a mapping, found a sequence");
+    try expectFailure(Job, "run: &r {argv: [*r]}\n", .{}, error.Cycle, 1, 17);
+    try expectFailure(Job, "run: !!int x\n", .{}, error.UnexpectedType, 1, 6);
 }
 
 test "limits: %TAG directives, through ParseOptions" {
