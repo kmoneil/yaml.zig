@@ -225,7 +225,10 @@ fn fetchPlainOrInvalid(s: *Scanner) Error!void {
 
 fn fetchBlockScalar(s: *Scanner) Error!void {
     if (s.flow_level > 0) return s.fail(s.mark, "found a character that cannot start any token");
-    return s.fail(s.mark, "block scalars are not supported yet");
+    try s.removeSimpleKey();
+    s.simple_key_allowed = true;
+    const token = try s.scanBlockScalar(if (s.ch(0) == '|') .literal else .folded);
+    try s.tokens.append(s.gpa, token);
 }
 
 /// Whether the indicator at the next character stands alone: a blank,
@@ -552,7 +555,7 @@ fn skipTabInIndentation(s: *Scanner) Error!void {
 /// Whether the line the scanner is at continues a plain scalar.
 fn plainContinues(s: *const Scanner) bool {
     if (s.mark.offset >= s.input.len or s.ch(0) == '#') return false;
-    if (s.mark.column == 0 and (s.atDocumentMarker("---") or s.atDocumentMarker("..."))) return false;
+    if (s.atDocumentMarkerLine()) return false;
     if (s.flow_level == 0 and @as(isize, @intCast(s.mark.column)) <= s.indent) return false;
     return !s.plainEndsHere();
 }
@@ -751,9 +754,7 @@ fn scanQuotedBlanks(s: *Scanner, arena: Allocator, value: *std.ArrayList(u8), es
 /// marker may begin it, and in a block a line with anything on it must be
 /// indented past the block, with spaces.
 fn skipQuotedIndentation(s: *Scanner, start: Mark) Error!void {
-    if (s.atDocumentMarker("---") or s.atDocumentMarker("...")) {
-        return s.fail(s.mark, "a document marker cannot be inside a quoted scalar");
-    }
+    if (s.atDocumentMarkerLine()) return s.fail(s.mark, "a document marker cannot be inside a quoted scalar");
     while (s.ch(0) == ' ') s.skip();
     const spaces: isize = @intCast(s.mark.column);
     while (isBlank(s.ch(0))) s.skip();
@@ -762,12 +763,181 @@ fn skipQuotedIndentation(s: *Scanner, start: Mark) Error!void {
     return s.fail(s.mark, "a quoted scalar's lines must be indented past its block's, with spaces");
 }
 
+// Block scalars
+
+const Chomping = enum { strip, clip, keep };
+
+/// A block scalar's header: `|` or `>`, then a chomping indicator and an
+/// indentation indicator, each optional, in either order.
+const BlockHeader = struct {
+    chomping: ?Chomping = null,
+    /// How many columns the content is indented past the block's.
+    increment: ?usize = null,
+};
+
+/// A block scalar being read.
+const BlockScalar = struct {
+    literal: bool,
+    /// The content's indentation column, once known.
+    indent: ?usize,
+    value: std.ArrayList(u8) = .empty,
+    /// A content line has been read: its line break, or the one the
+    /// input's end implies, is pending.
+    leading_break: bool = false,
+    /// How many empty lines came since the last content line.
+    trailing_breaks: usize = 0,
+    /// The last content line began with a blank after the indentation.
+    leading_blank: bool = false,
+};
+
+/// Scans a literal (`|`) or folded (`>`) scalar (YAML 1.2.2, 8.1): its
+/// header, then the lines indented to its content's column, given by the
+/// header or found on its first line that is not empty. A folded scalar
+/// joins two lines with a space, except around a line that begins with
+/// a blank. The chomping indicator says what of the last line break and
+/// the empty lines after it stays: none (`-`), the break (no indicator),
+/// or all (`+`).
+fn scanBlockScalar(s: *Scanner, style: ScalarStyle) Error!Token {
+    const start = s.mark;
+    s.skip();
+    const header = try s.scanBlockHeader();
+    try s.skipBlockHeaderEnd();
+    var block: BlockScalar = .{
+        .literal = style == .literal,
+        .indent = if (header.increment) |m| @intCast(s.indent + @as(isize, @intCast(m))) else null,
+    };
+    try s.scanBlockBreaks(&block);
+    while (s.atBlockContent(&block)) {
+        try s.scanBlockLine(&block);
+        try s.scanBlockBreaks(&block);
+    }
+    const arena = s.arena.allocator();
+    const chomping = header.chomping orelse .clip;
+    if (chomping != .strip and block.leading_break) try block.value.append(arena, '\n');
+    if (chomping == .keep) try block.value.appendNTimes(arena, '\n', block.trailing_breaks);
+    return .{ .start = start, .end = s.mark, .data = .{ .scalar = .{ .value = block.value.items, .style = style } } };
+}
+
+fn scanBlockHeader(s: *Scanner) Error!BlockHeader {
+    var header: BlockHeader = .{};
+    for (0..2) |_| {
+        const c = s.ch(0);
+        if ((c == '+' or c == '-') and header.chomping == null) {
+            header.chomping = if (c == '+') .keep else .strip;
+        } else if (c >= '1' and c <= '9' and header.increment == null) {
+            header.increment = c - '0';
+        } else if (c == '0') {
+            return s.fail(s.mark, "a block scalar's indentation indicator cannot be 0");
+        } else break;
+        s.skip();
+    }
+    return header;
+}
+
+/// Skips the rest of a block scalar's header line: blanks, a comment,
+/// and the line break.
+fn skipBlockHeaderEnd(s: *Scanner) Error!void {
+    while (isBlank(s.ch(0))) s.skip();
+    if (s.ch(0) == '#') try s.skipComment();
+    if (!isBreakOrEnd(s.ch(0))) return s.fail(s.mark, "a block scalar's header must end its line, but for a comment");
+    if (isBreak(s.ch(0))) s.skipBreak();
+}
+
+/// Whether the scanner is at a block scalar's next content line: at its
+/// indentation, and not at the end or a document marker.
+fn atBlockContent(s: *const Scanner, block: *const BlockScalar) bool {
+    if (s.mark.offset >= s.input.len or s.mark.column != block.indent.?) return false;
+    return !s.atDocumentMarkerLine();
+}
+
+/// Skips a block scalar's empty lines and the indentation of the line
+/// after them, counting them in `trailing_breaks`; on the first line
+/// that is not empty, finds the content's indentation if the header did
+/// not give it. A last line of blanks with no line break is an empty
+/// line: the input's end implies its break.
+fn scanBlockBreaks(s: *Scanner, block: *BlockScalar) Error!void {
+    var widest_empty: usize = 0;
+    while (!s.atDocumentMarkerLine()) {
+        const line_start = s.mark.offset;
+        try s.skipBlockIndentation(block);
+        const at_end = s.mark.offset >= s.input.len;
+        if (!isBreak(s.ch(0)) and !(at_end and s.mark.offset > line_start)) break;
+        widest_empty = @max(widest_empty, s.mark.column);
+        block.trailing_breaks += 1;
+        if (at_end) break;
+        s.skipBreak();
+    }
+    if (block.indent == null) try s.findBlockIndent(block, widest_empty);
+}
+
+/// Skips a block scalar line's indentation: its spaces up to the
+/// content's column, or all of them while that is not known. A tab may
+/// follow the indentation, as content, but not stand in it.
+fn skipBlockIndentation(s: *Scanner, block: *const BlockScalar) Error!void {
+    while (s.ch(0) == ' ' and s.inBlockIndentation(block)) s.skip();
+    if (s.ch(0) != '\t' or !s.inBlockIndentation(block)) return;
+    // With the column not known, a tab past the block's starts content.
+    if (block.indent == null and s.pastBlock()) return;
+    return s.fail(s.mark, "a tab character cannot indent a block scalar");
+}
+
+fn inBlockIndentation(s: *const Scanner, block: *const BlockScalar) bool {
+    return block.indent == null or s.mark.column < block.indent.?;
+}
+
+/// Sets a block scalar's indentation to that of its first line that is
+/// not empty, the scanner at its first character. A line not indented
+/// past the block holds none of it, and the scalar is empty.
+fn findBlockIndent(s: *Scanner, block: *BlockScalar, widest_empty: usize) Error!void {
+    const at_content = s.mark.offset < s.input.len and s.pastBlock();
+    if (at_content and widest_empty > s.mark.column) {
+        return s.fail(s.mark, "a block scalar's leading empty line has more spaces than its first line");
+    }
+    const past: usize = @intCast(s.indent + 1);
+    block.indent = if (at_content) s.mark.column else @max(widest_empty, past);
+}
+
+/// Whether the scanner's column is past the current block's indentation.
+fn pastBlock(s: *const Scanner) bool {
+    return @as(isize, @intCast(s.mark.column)) > s.indent;
+}
+
+/// Reads one content line of a block scalar, from its indentation through
+/// its line break, folding or keeping the breaks before it.
+fn scanBlockLine(s: *Scanner, block: *BlockScalar) Error!void {
+    const arena = s.arena.allocator();
+    const blank = isBlank(s.ch(0));
+    if (!block.literal and block.leading_break and !block.leading_blank and !blank) {
+        // Two lines of text: one break between them is a space.
+        if (block.trailing_breaks == 0) try block.value.append(arena, ' ');
+    } else if (block.leading_break) {
+        try block.value.append(arena, '\n');
+    }
+    try block.value.appendNTimes(arena, '\n', block.trailing_breaks);
+    block.trailing_breaks = 0;
+    block.leading_blank = blank;
+    const line_start = s.mark.offset;
+    while (!isBreakOrEnd(s.ch(0))) {
+        if (!isPrintable(s.input, s.mark.offset)) return s.fail(s.mark, "found a character that is not allowed in YAML");
+        s.skip();
+    }
+    try block.value.appendSlice(arena, s.input[line_start..s.mark.offset]);
+    // The line is not empty, so the input's end implies its break.
+    block.leading_break = true;
+    if (isBreak(s.ch(0))) s.skipBreak();
+}
+
 // Reading
 
 /// The byte `ahead` places past the next one, or 0 past the end.
 fn ch(s: *const Scanner, ahead: usize) u8 {
     const i = s.mark.offset + ahead;
     return if (i < s.input.len) s.input[i] else 0;
+}
+
+/// Whether a line begins here with a document marker.
+fn atDocumentMarkerLine(s: *const Scanner) bool {
+    return s.mark.column == 0 and (s.atDocumentMarker("---") or s.atDocumentMarker("..."));
 }
 
 /// Whether a document marker (`---` or `...`) begins here, a blank, line

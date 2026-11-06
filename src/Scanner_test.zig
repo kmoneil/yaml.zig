@@ -645,3 +645,144 @@ test "quoted scalar errors (suite 55WF, QB6E, 5TRB, RXY3, DK95/01)" {
         \\ERROR 1:13 a comment must be separated from what comes before it by whitespace
     );
 }
+
+test "block scalars: literal keeps lines, folded joins them" {
+    try expectTokens("a: |\n  one\n   two\n\n  three\nb: >\n  one\n  two\n\n  three\n",
+        \\+STR
+        \\+MAP
+        \\?
+        \\=a
+        \\:
+        \\|one\n two\n\nthree\n
+        \\?
+        \\=b
+        \\:
+        \\>one two\nthree\n
+        \\-BLK
+        \\-STR
+    );
+}
+
+test "block scalars: folded keeps the breaks around more-indented lines" {
+    // YAML 1.2.2 example 8.10.
+    try expectTokens(">\n\n folded\n line\n\n next\n line\n   * bullet\n\n   * list\n   * lines\n\n last\n line\n\n# Comment\n",
+        \\+STR
+        \\>\nfolded line\nnext line\n  * bullet\n\n  * list\n  * lines\n\nlast line\n
+        \\-STR
+    );
+}
+
+test "block scalars: each chomping indicator" {
+    const cases = [_]struct { []const u8, []const u8 }{
+        .{ "|-\n  text\n\n\n", "|text" },
+        .{ "|\n  text\n\n\n", "|text\\n" },
+        .{ "|+\n  text\n\n\n", "|text\\n\\n\\n" },
+        .{ ">-\n  text\n", ">text" },
+        .{ "|-\n\n", "|" },
+        .{ "|\n\n", "|" },
+        .{ "|+\n\n", "|\\n" },
+        // The input's end ends the last line too.
+        .{ "|\n  text", "|text\\n" },
+        .{ "|-\n  text", "|text" },
+        .{ "- |+\n   ", "|\\n" },
+    };
+    inline for (cases) |case| {
+        const got = try dump(testing.allocator, case[0]);
+        defer testing.allocator.free(got);
+        errdefer std.debug.print("input: {s}\ngot:\n{s}\n", .{ case[0], got });
+        try testing.expect(std.mem.indexOf(u8, got, case[1] ++ "\n") != null);
+    }
+}
+
+test "block scalars: indentation indicators, either order with chomping" {
+    try expectTokens("- |1\n  two spaces\n- >2-\n    folded\n- |+1\n  x\n",
+        \\+STR
+        \\+SEQ
+        \\-
+        \\| two spaces\n
+        \\-
+        \\>  folded
+        \\-
+        \\| x\n
+        \\-BLK
+        \\-STR
+    );
+    // At the top, the block's indentation is -1: content may start at 0.
+    try expectTokens("--- >\nline1\nline2\n",
+        \\+STR
+        \\+DOC
+        \\>line1 line2\n
+        \\-STR
+    );
+    try expectTokens("--- |1\n foo\n",
+        \\+STR
+        \\+DOC
+        \\| foo\n
+        \\-STR
+    );
+}
+
+test "block scalars: a less indented comment ends one, a more indented one is content" {
+    try expectTokens("a: |\n  text\n  # kept\n # gone\nb: c\n",
+        \\+STR
+        \\+MAP
+        \\?
+        \\=a
+        \\:
+        \\|text\n# kept\n
+        \\?
+        \\=b
+        \\:
+        \\=c
+        \\-BLK
+        \\-STR
+    );
+}
+
+test "block scalars: tabs after the indentation are content (suite Y79Y/001, 96NN)" {
+    try expectTokens("foo: |\n \t\nbar: 1\n",
+        \\+STR
+        \\+MAP
+        \\?
+        \\=foo
+        \\:
+        \\|\t\n
+        \\?
+        \\=bar
+        \\:
+        \\=1
+        \\-BLK
+        \\-STR
+    );
+    try expectTokens("foo: |-\n \tbar\n",
+        \\+STR
+        \\+MAP
+        \\?
+        \\=foo
+        \\:
+        \\|\tbar
+        \\-BLK
+        \\-STR
+    );
+}
+
+test "block scalar errors (suite 2G84, 5LLU, S98Z, W9L4, Y79Y/000)" {
+    const errors = [_]struct { []const u8, []const u8 }{
+        .{ "--- |10\n", "1:7 a block scalar's indentation indicator cannot be 0" },
+        .{ "--- |0\n", "1:6 a block scalar's indentation indicator cannot be 0" },
+        .{ "--- |x\n", "1:6 a block scalar's header must end its line, but for a comment" },
+        .{ "--- |--\n", "1:7 a block scalar's header must end its line, but for a comment" },
+        .{ "--- |#c\n", "1:6 a comment must be separated from what comes before it by whitespace" },
+        .{ "block scalar: >\n \n  \n   \n invalid\n", "5:2 a block scalar's leading empty line has more spaces than its first line" },
+        .{ "empty block scalar: >\n \n  \n   \n # comment\n", "5:2 a block scalar's leading empty line has more spaces than its first line" },
+        .{ "foo: |\n\t\nbar: 1\n", "2:1 a tab character cannot indent a block scalar" },
+        .{ "foo: |\n  x\n \t\nbar: 1\n", "3:2 a tab character cannot indent a block scalar" },
+        .{ "[ |\n  x ]", "1:3 found a character that cannot start any token" },
+    };
+    inline for (errors) |case| {
+        const got = try dump(testing.allocator, case[0]);
+        defer testing.allocator.free(got);
+        errdefer std.debug.print("input: {s}\ngot:\n{s}\n", .{ case[0], got });
+        try testing.expect(std.mem.endsWith(u8, got, "ERROR " ++ case[1] ++ "\n"));
+    }
+}
