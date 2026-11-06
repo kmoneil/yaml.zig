@@ -172,7 +172,9 @@ const Builder = struct {
     /// Fails at `node`, which is not the `what` expected there, with the
     /// path to it and a detail saying what it is instead.
     fn failExpected(b: *const Builder, node: *const Node, comptime what: []const u8) ParseError {
-        return b.failDetail(node, error.UnexpectedType, "expected " ++ what, "expected " ++ what ++ ", found {f}", .{Found{ .node = node.target() }});
+        // `what` is an argument, not part of the format: a brace in it is
+        // text (t45).
+        return b.failDetail(node, error.UnexpectedType, "expected " ++ what, "expected {s}, found {f}", .{ what, Found{ .node = node.target() } });
     }
 
     /// Fails at `node`, with the path to it and a detail.
@@ -618,13 +620,14 @@ pub const Construction = struct {
     }
 
     /// Fails with `error.UnexpectedType` at `node`, the path to it and
-    /// `message` in the diagnostic.
+    /// `message` in the diagnostic, as it is written: braces are text.
     pub fn fail(c: Construction, node: *const Node, comptime message: []const u8) ParseError {
         return c.builder.fail(node, error.UnexpectedType, message);
     }
 
     /// Fails at `node`, which is not the `what` expected there: `expected
-    /// a command, found a sequence`.
+    /// a command, found a sequence`. `what` is written as it is: braces
+    /// are text.
     pub fn failExpected(c: Construction, node: *const Node, comptime what: []const u8) ParseError {
         return c.builder.failExpected(node, what);
     }

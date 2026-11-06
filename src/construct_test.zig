@@ -272,6 +272,22 @@ test "a type's own yamlParse: errors keep their path, its own are at its node" {
     try expectFailure(Job, "run: !!int x\n", .{}, error.UnexpectedType, 1, 6);
 }
 
+/// A hook whose messages hold braces, as a user's first did: `{argv,
+/// cwd}` was read as a placeholder, and the build failed (t45).
+const Braced = struct {
+    pub fn yamlParse(c: yaml.Construction) yaml.ParseError!Braced {
+        return switch (c.node.data) {
+            .sequence => c.failExpected(c.node, "a line for the shell, or {argv, cwd}"),
+            else => c.fail(c.node, "not {this} either"),
+        };
+    }
+};
+
+test "a type's own yamlParse: its messages may hold braces" {
+    try expectLine(struct { run: Braced }, "run: [a]\n", "1:6: run: expected a line for the shell, or {argv, cwd}, found a sequence");
+    try expectLine(struct { run: Braced }, "run: x\n", "1:6: run: not {this} either");
+}
+
 test "limits: %TAG directives, through ParseOptions" {
     try expectFailure(u8, "%TAG !a! x:\n%TAG !b! y:\n--- 1\n", .{ .max_tag_directives = 1 }, error.TagDirectiveLimit, 2, 1);
     try testing.expectEqual(1, try yaml.parseFromSliceLeaky(u8, testing.allocator, "%TAG !a! x:\n--- 1\n", .{ .max_tag_directives = 1 }));
