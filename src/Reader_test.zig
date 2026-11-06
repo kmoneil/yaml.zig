@@ -80,6 +80,15 @@ test "plain scalars of more lines" {
     try expectWhole("k: &a !!str v\n  w\n");
 }
 
+test "flow collections over lines, as JSON is printed" {
+    try expectWhole("{\n  \"a\": 1,\n  \"b\": [\n    true,\n    \"x\"\n  ],\n  \"c\": {}\n}\n");
+    try expectWhole("k: [a, # first\n    b,\n    'c\n    d']\nn: {x: 1,\n  y: 2}\n");
+    try expectWhole("[one\n two, {a\n : b}]\n");
+    // `:b` does not end a plain scalar: the key is `a :b`, its value
+    // empty.
+    try expectWhole("{a\n:b}\n");
+}
+
 test "flow collections on one line" {
     try expectWhole("tags: [alpha, beta, \"gamma 0\"]\nenv: {A: \"x\", B: 'y'}\nn: [[1, 2], {}, []]\nk: {a, b: , : c}\n");
 }
@@ -112,8 +121,10 @@ test "what it hands over: forms it does not read yet, and errors" {
     try expectHandedOver("{&a k: v}\n");
     try expectHandedOver("? a\n: b\n");
     try expectHandedOver("a b\nc: d\n");
-    try expectHandedOver("[a,\n b]\n");
     try expectHandedOver("[a]: b\n");
+    // A line of a flow collection in a block must be indented past it.
+    try expectHandedOver("k: [\n  a\n]\n");
+
     try expectHandedOver("a:\tb\n");
     try expectHandedOver("\xEF\xBB\xBFa: b\n");
     // Errors.

@@ -723,8 +723,13 @@ fn breakLength(input: []const u8, i: usize) usize {
 /// its end on this line, or that is followed by a `:` (a key), is
 /// unsupported.
 fn flowStart(r: *Reader, props: ?Props) Error!void {
-    const close = r.flowCloseOnLine() orelse return error.Unsupported;
-    if (!r.flowEndsNode(close + 1)) return error.Unsupported;
+    switch (r.flowLine()) {
+        // Closed on its line, it could be a key: what follows says.
+        .closes => |close| if (!r.flowEndsNode(close + 1)) return error.Unsupported,
+        // A key is on one line: one that goes on to the next is none.
+        .goes_on => {},
+        .unclear => return error.Unsupported,
+    }
     if (r.blocks.items.len + r.s.flow_level >= r.s.max_depth) return error.Unsupported;
     const mapping = r.s.ch(0) == '{';
     const start = startOf(props, r.s.mark);
@@ -741,18 +746,45 @@ fn flowStart(r: *Reader, props: ?Props) Error!void {
 /// (the collection is a key), is the parser's to read.
 fn flowEndsNode(r: *const Reader, at: usize) bool {
     const input = r.s.input;
+    if (r.s.flow_level > 0) {
+        const c = nextFlowToken(input, at) orelse return false;
+        return c == ',' or c == ']' or c == '}';
+    }
     var i = at;
     while (i < input.len and chars.isBlank(input[i])) i += 1;
-    if (i >= input.len) return r.s.flow_level == 0;
-    const c = input[i];
-    if (r.s.flow_level > 0) return c == ',' or c == ']' or c == '}';
-    return chars.isBreak(c) or (c == '#' and i > at);
+    if (i >= input.len) return true;
+    return chars.isBreak(input[i]) or (input[i] == '#' and i > at);
 }
+
+/// The first character of the next token in a flow collection from
+/// `at`: past blanks, line breaks and comments, which separate tokens
+/// there. Null at the end.
+fn nextFlowToken(input: []const u8, at: usize) ?u8 {
+    var i = at;
+    while (i < input.len) : (i += 1) {
+        const c = input[i];
+        if (chars.isBlankOrBreak(c)) continue;
+        if (c != '#' or i == at or !chars.isBlankOrBreak(input[i - 1])) return c;
+        while (i + 1 < input.len and !chars.isBreak(input[i + 1])) i += 1;
+    }
+    return null;
+}
+
+/// How the flow collection opening at the cursor stands on its line.
+const FlowLine = union(enum) {
+    /// It closes here, at this offset.
+    closes: usize,
+    /// The line ends, or a comment or a quoted scalar takes it to its
+    /// end, with the collection open.
+    goes_on,
+    /// A quote the look cannot place: the parser's to read.
+    unclear,
+};
 
 /// Where the flow collection opening at the cursor closes, if it does on
 /// this line: its quoted scalars skipped, and a comment taken as the
 /// line's end.
-fn flowCloseOnLine(r: *const Reader) ?usize {
+fn flowLine(r: *const Reader) FlowLine {
     const input = r.s.input;
     var depth: usize = 0;
     var i: usize = r.s.mark.offset;
@@ -765,19 +797,19 @@ fn flowCloseOnLine(r: *const Reader) ?usize {
             '[', '{' => depth += 1,
             ']', '}' => {
                 depth -= 1;
-                if (depth == 0) return i;
+                if (depth == 0) return .{ .closes = i };
             },
-            '\r', '\n' => return null,
-            '#' => if (chars.isBlank(input[i - 1])) return null,
+            '\r', '\n' => return .goes_on,
+            '#' => if (chars.isBlank(input[i - 1])) return .goes_on,
             '"', '\'' => {
-                if (!opensQuoted(last, input[i - 1])) return null;
-                i = quotedCloseOnLine(input, i) orelse return null;
+                if (!opensQuoted(last, input[i - 1])) return .unclear;
+                i = quotedCloseOnLine(input, i) orelse return .goes_on;
             },
             else => {},
         }
         if (!chars.isBlank(c)) last = c;
     }
-    return null;
+    return .goes_on;
 }
 
 /// Whether a quote opens a quoted scalar in a flow collection, `last` the
@@ -853,7 +885,11 @@ fn flowMappingKey(r: *Reader, first: bool) Error!void {
     }
     const token = try r.flowScalar();
     try r.skipFlowSpace();
-    const value = r.s.ch(0) == ':';
+    // After a quoted key any `:` is its value's; after a plain one, on a
+    // later line, one with a blank or a flow indicator after it, or else
+    // the `:` begins a plain scalar.
+    const quoted = token.data.scalar.style != .plain;
+    const value = r.s.ch(0) == ':' and (quoted or r.s.indicatorEnds());
     if (!value and !r.atFlowNodeEnd()) return error.Unsupported;
     try r.emitScalar(token);
     r.state = if (value) .flow_mapping_value else .flow_mapping_empty_value;
@@ -899,20 +935,16 @@ fn flowNode(r: *Reader) Error!void {
     r.pop();
 }
 
-/// A plain or quoted scalar of one line in a flow collection.
+/// A plain or quoted scalar in a flow collection, of one line or more,
+/// by the scanner's scanners, which hold its lines to the block's
+/// indentation as for the parser.
 fn flowScalar(r: *Reader) Error!Scanner.Token {
-    const start = r.s.mark;
     const c = r.s.ch(0);
     if (c == '"' or c == '\'') {
-        const token = r.s.scanQuotedScalar(if (c == '\'') .single_quoted else .double_quoted) catch |err| return unsupported(err);
-        if (token.end.line != start.line) return error.Unsupported;
-        return token;
+        return r.s.scanQuotedScalar(if (c == '\'') .single_quoted else .double_quoted) catch |err| unsupported(err);
     }
     if (!r.atPlainStart()) return error.Unsupported;
-    var end: Mark = undefined;
-    r.s.scanPlainLine(&end) catch return error.Unsupported;
-    if (r.s.ch(0) == '#' or r.atBreakOrEnd()) return error.Unsupported;
-    return .{ .start = start, .end = end, .data = .{ .scalar = .{ .value = r.s.input[start.offset..end.offset], .style = .plain } } };
+    return r.s.scanPlainScalar() catch |err| unsupported(err);
 }
 
 // Whitespace and comments
@@ -937,9 +969,31 @@ fn skipToToken(r: *Reader) Error!void {
 }
 
 /// Moves past the blanks and a comment between flow tokens, on one line.
+/// Moves past the blanks, comments and line breaks between flow tokens.
+/// A line a token begins after a break must be indented past the block
+/// around the collection, with spaces; a document marker, or the end,
+/// is the parser's.
 fn skipFlowSpace(r: *Reader) Error!void {
-    while (chars.isBlank(r.s.ch(0))) r.s.skip();
-    if (r.s.ch(0) == '#' or r.atBreakOrEnd()) return error.Unsupported;
+    var new_line = false;
+    while (true) {
+        r.skipBlanks();
+        if (r.atEnd()) return error.Unsupported;
+        const c = r.s.ch(0);
+        if (c == '#') {
+            r.s.skipComment() catch return error.Unsupported;
+        } else if (chars.isBreak(c)) {
+            r.s.skipBreak();
+            new_line = true;
+        } else break;
+    }
+    if (r.s.atDocumentMarkerLine()) return error.Unsupported;
+    if (new_line) {
+        // The scanner's checkFlowLineIndent.
+        const input = r.s.input;
+        var i = r.s.line_start;
+        while (i < input.len and input[i] == ' ') i += 1;
+        if (@as(isize, @intCast(i - r.s.line_start)) <= r.indent()) return error.Unsupported;
+    }
 }
 
 fn skipSpaces(r: *Reader) void {
