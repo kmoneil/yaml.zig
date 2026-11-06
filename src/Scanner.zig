@@ -10,13 +10,16 @@
 //! before it. Block structure is a stack of indentation columns: a line
 //! less indented than the current block ends it (`block_end`).
 //!
-//! The input is UTF-8 (other encodings are decoded before this), whole in
-//! memory. A scalar's value is a slice of the input when it is written
+//! The input is UTF-8, whole in memory: `encoding.toUtf8` decodes UTF-16
+//! and UTF-32 first, and the scanner refuses them undecoded rather than
+//! read them as garbage. A byte order mark may open the stream and each
+//! document after it. A scalar's value is a slice of the input when it is written
 //! as it reads (one line, no escapes); otherwise it is built in the
 //! scanner's arena, so it lives until `deinit`.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const encoding = @import("encoding.zig");
 
 const Scanner = @This();
 
@@ -297,8 +300,9 @@ fn fetchStreamStart(s: *Scanner) Error!void {
     s.simple_key_allowed = true;
     s.stream_start_produced = true;
     try s.simple_keys.append(s.gpa, .{});
-    // A byte order mark may open the stream (YAML 1.2.2, 5.2).
-    if (std.mem.startsWith(u8, s.input, "\xEF\xBB\xBF")) s.mark.offset = 3;
+    if (encoding.detect(s.input) != .utf8) {
+        return s.fail(s.mark, "this input is UTF-16 or UTF-32: decode it to UTF-8 first (encoding.toUtf8)");
+    }
     try s.append(.stream_start, s.mark, s.mark);
 }
 
@@ -331,7 +335,7 @@ fn fetchDirective(s: *Scanner) Error!void {
     else if (std.mem.eql(u8, name, "TAG"))
         .{ .tag_directive = try s.scanTagDirective() }
     else {
-        while (!isBreakOrEnd(s.ch(0))) s.skip();
+        while (!isBreakOrEnd(s.ch(0))) try s.skipPrintable();
         return;
     };
     const end = s.mark;
@@ -715,6 +719,7 @@ fn staleSimpleKeys(s: *Scanner) Error!void {
 /// Moves past the blanks, comments and line breaks before the next token.
 fn scanToNextToken(s: *Scanner) Error!void {
     while (true) {
+        s.skipByteOrderMark();
         try s.skipSeparation();
         if (s.ch(0) == '#') try s.skipComment();
         if (!isBreak(s.ch(0))) return;
@@ -746,10 +751,19 @@ fn skipSeparation(s: *Scanner) Error!void {
 /// Skips a comment to its line break. A comment needs whitespace before
 /// it: `a#b` is a plain scalar, and `"a"#b` is an error.
 fn skipComment(s: *Scanner) Error!void {
-    if (s.mark.offset > 0 and !isBlankOrBreak(s.input[s.mark.offset - 1])) {
+    // A line's start counts as whitespace, after a byte order mark too.
+    if (s.mark.column > 0 and !isBlankOrBreak(s.input[s.mark.offset - 1])) {
         return s.fail(s.mark, "a comment must be separated from what comes before it by whitespace");
     }
-    while (!isBreakOrEnd(s.ch(0))) s.skip();
+    while (!isBreakOrEnd(s.ch(0))) try s.skipPrintable();
+}
+
+/// Skips a byte order mark where a document may begin: the start of a
+/// line outside any collection (YAML 1.2.2, 5.2 and 9.1.1). Anywhere
+/// else one is no character YAML allows.
+fn skipByteOrderMark(s: *Scanner) void {
+    if (s.mark.column != 0 or s.flow_level > 0 or s.indent >= 0) return;
+    if (std.mem.startsWith(u8, s.input[s.mark.offset..], "\xEF\xBB\xBF")) s.mark.offset += 3;
 }
 
 // Plain scalars
@@ -764,11 +778,11 @@ fn scanPlainScalar(s: *Scanner) Error!Token {
     const arena = s.arena.allocator();
     var breaks: usize = 0;
     var line_start = s.mark.offset;
-    s.scanPlainLine(&end);
+    try s.scanPlainLine(&end);
     const first_line = s.input[start.offset..end.offset];
     while (true) {
         if (breaks > 0) {
-            s.scanPlainLine(&end);
+            try s.scanPlainLine(&end);
             try appendFolded(arena, &folded, first_line, breaks, s.input[line_start..end.offset]);
         }
         breaks = try s.skipPlainBreaks(&line_start);
@@ -781,9 +795,9 @@ fn scanPlainScalar(s: *Scanner) Error!Token {
 
 /// Moves over one line of a plain scalar, its words and the blanks
 /// between them, and sets `end` after its last word.
-fn scanPlainLine(s: *Scanner, end: *Mark) void {
+fn scanPlainLine(s: *Scanner, end: *Mark) Error!void {
     while (true) {
-        while (!isBlankOrBreakOrEnd(s.ch(0)) and !s.plainEndsHere()) s.skip();
+        while (!isBlankOrBreakOrEnd(s.ch(0)) and !s.plainEndsHere()) try s.skipPrintable();
         end.* = s.mark;
         while (isBlank(s.ch(0))) s.skip();
         // A blank and then `#` starts a comment.
@@ -1228,6 +1242,12 @@ fn skip(s: *Scanner) void {
     s.mark.column += 1;
 }
 
+/// Moves past one character, which must be one YAML allows in text.
+fn skipPrintable(s: *Scanner) Error!void {
+    if (!isPrintable(s.input, s.mark.offset)) return s.fail(s.mark, "found a character that is not allowed in YAML");
+    s.skip();
+}
+
 fn skipN(s: *Scanner, n: usize) void {
     for (0..n) |_| s.skip();
 }
@@ -1289,9 +1309,11 @@ fn utf8Length(c: u8) usize {
     return std.unicode.utf8ByteSequenceLength(c) catch 1;
 }
 
-/// Whether the character at `offset` is printable as YAML has it
-/// (c-printable, 5.1): tab, line breaks and the printable ASCII, and
-/// past ASCII all but the surrogates and U+FFFE, U+FFFF.
+/// Whether the character at `offset` is one YAML allows in text (nb-char
+/// and the line breaks, 5.1 and 5.4): tab, line breaks and the printable
+/// ASCII, and past ASCII all but the C1 controls but NEL, the
+/// surrogates, U+FFFE, U+FFFF, and the byte order mark U+FEFF, which
+/// only a document's start may hold.
 pub fn isPrintable(input: []const u8, offset: usize) bool {
     const c = input[offset];
     if (c < 0x80) return c == '\t' or c == '\n' or c == '\r' or (c >= 0x20 and c != 0x7F);
@@ -1299,7 +1321,7 @@ pub fn isPrintable(input: []const u8, offset: usize) bool {
     if (offset + len > input.len) return false;
     const cp = std.unicode.utf8Decode(input[offset..][0..len]) catch return false;
     return switch (cp) {
-        0x80...0x84, 0x86...0x9F, 0xD800...0xDFFF, 0xFFFE, 0xFFFF => false,
+        0x80...0x84, 0x86...0x9F, 0xD800...0xDFFF, 0xFEFF, 0xFFFE, 0xFFFF => false,
         else => true,
     };
 }

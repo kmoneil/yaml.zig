@@ -25,6 +25,10 @@ pub const Composer = @import("Composer.zig");
 /// schemas, and the values their scalars hold.
 pub const schema = @import("schema.zig");
 
+/// A stream's encoding, and decoding UTF-16 and UTF-32 to the UTF-8 the
+/// scanner reads.
+pub const encoding = @import("encoding.zig");
+
 const construct = @import("construct.zig");
 /// Reads the one document in a slice into a `T`; see `ParseOptions`.
 pub const parseFromSlice = construct.parseFromSlice;
@@ -50,4 +54,5 @@ test {
     _ = @import("Composer_test.zig");
     _ = @import("schema_test.zig");
     _ = @import("construct_test.zig");
+    _ = @import("encoding_test.zig");
 }

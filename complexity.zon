@@ -17,6 +17,7 @@
         "src/Composer.zig",
         "src/schema.zig",
         "src/construct.zig",
+        "src/encoding.zig",
     },
     // Test code, the test-suite harness, tools and the build. gnarl skips
     // zig-pkg (fetched packages) and what git ignores by itself.

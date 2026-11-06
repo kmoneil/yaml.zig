@@ -24,6 +24,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Composer = @import("Composer.zig");
+const encoding = @import("encoding.zig");
 const schema = @import("schema.zig");
 const Node = Composer.Node;
 const Diagnostic = Composer.Diagnostic;
@@ -44,7 +45,7 @@ pub const ParseOptions = struct {
     diagnostic: ?*Diagnostic = null,
 };
 
-pub const ParseError = Composer.Error || error{
+pub const ParseError = Composer.Error || encoding.Error || error{
     /// The stream holds more than one document.
     MultipleDocuments,
     /// A node does not fit the type asked for.
@@ -78,8 +79,9 @@ pub fn Parsed(comptime T: type) type {
     };
 }
 
-/// Reads the one document in `input` into a `T`. An empty stream is an
-/// empty document, which is null. Free the result with `deinit`.
+/// Reads the one document in `input`, UTF-8, UTF-16 or UTF-32, into a
+/// `T`. An empty stream is an empty document, which is null. Free the
+/// result with `deinit`.
 pub fn parseFromSlice(comptime T: type, gpa: Allocator, input: []const u8, options: ParseOptions) ParseError!Parsed(T) {
     const arena = try gpa.create(std.heap.ArenaAllocator);
     errdefer gpa.destroy(arena);
@@ -94,7 +96,9 @@ pub fn parseFromSliceLeaky(comptime T: type, allocator: Allocator, input: []cons
     return build(T, allocator, allocator, input, options);
 }
 
-fn build(comptime T: type, result: Allocator, scratch: Allocator, input: []const u8, options: ParseOptions) ParseError!T {
+fn build(comptime T: type, result: Allocator, scratch: Allocator, bytes: []const u8, options: ParseOptions) ParseError!T {
+    const input = try encoding.toUtf8(scratch, bytes, options.diagnostic);
+    defer if (input.ptr != bytes.ptr) scratch.free(input);
     var composer: Composer = .init(scratch, input, .{
         .schema = options.schema,
         .duplicate_keys = options.duplicate_keys,
