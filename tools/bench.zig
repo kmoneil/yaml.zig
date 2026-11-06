@@ -1,5 +1,7 @@
 //! `zig build bench [-- records [runs]]` (karte t46): how fast each stage
 //! reads a document of typical config records, and what it allocates.
+//! `zig build bench -- rss STAGE [records]`: the memory one stage holds
+//! resident, in a process of its own.
 //!
 //! Each stage runs `runs` times (7 by default) over one document it
 //! generates (20,000 records, about 4.9 MB, by default): the scanner's
@@ -9,6 +11,13 @@
 //! allocator's calls, the bytes asked for and the most held at once, as
 //! a counting allocator over smp_allocator saw them. The library is
 //! built ReleaseFast, as a consumer would ship it.
+//!
+//! The counter's peak is address space asked for: an arena's last
+//! buffer, grown by half again, is counted whole, and where its growth
+//! lands moves the peak by more than a small saving. What a stage holds
+//! resident is `rss`'s: the process's peak resident memory after the
+//! stage less before it, the stage run once in a fresh process, as only
+//! a process's peak can be read.
 //!
 //! A change claimed faster or leaner cites this step's numbers before and
 //! after. Allocations, bytes and peak are exact, the same every run. The
@@ -90,11 +99,21 @@ const Record = struct {
 
 /// `records` config records, each holding the shapes configs do: plain
 /// strings and numbers, a null, a flow sequence with a quoted item, a
-/// folded scalar, a block sequence and a flow mapping.
+/// folded scalar, a block sequence and a flow mapping. Measured first and
+/// written once at its length, so no growth leaves a peak behind for
+/// `rss` to count against a stage.
 fn document(gpa: Allocator, records: usize) ![]u8 {
-    var text: std.ArrayList(u8) = .empty;
-    errdefer text.deinit(gpa);
-    for (0..records) |i| try text.print(gpa,
+    var counting: Io.Writer.Discarding = .init(&.{});
+    for (0..records) |i| try writeRecord(&counting.writer, i);
+    const text = try gpa.alloc(u8, @intCast(counting.fullCount()));
+    errdefer gpa.free(text);
+    var w: Io.Writer = .fixed(text);
+    for (0..records) |i| try writeRecord(&w, i);
+    return text;
+}
+
+fn writeRecord(w: *Io.Writer, i: usize) Io.Writer.Error!void {
+    try w.print(
         \\- name: service-{d}
         \\  id: {d}
         \\  ratio: 0.{d}
@@ -110,7 +129,55 @@ fn document(gpa: Allocator, records: usize) ![]u8 {
         \\  env: {{A: "x", B: 'y'}}
         \\
     , .{ i, i, i % 100, i, i });
-    return text.toOwnedSlice(gpa);
+}
+
+/// The records `document` writes, built in memory, for stringify's `rss`:
+/// reading them would leave reading's peak behind it.
+fn built(gpa: Allocator, count: usize) ![]Record {
+    const out = try gpa.alloc(Record, count);
+    for (out, 0..) |*r, i| {
+        var env: yaml.ArrayHashMap([]const u8) = .{};
+        try env.put(gpa, "A", "x");
+        try env.put(gpa, "B", "y");
+        r.* = .{
+            .name = try std.fmt.allocPrint(gpa, "service-{d}", .{i}),
+            .id = @intCast(i),
+            .ratio = @as(f64, @floatFromInt(i % 100)) / 100,
+            .enabled = true,
+            .tags = &.{ "alpha", "beta", "gamma" },
+            .owner = null,
+            .description = "A folded description of a service across two lines.\n",
+            .ports = &.{ 80, 443 },
+            .env = env,
+        };
+    }
+    return out;
+}
+
+/// The process's peak resident memory so far, in bytes.
+fn peakResident() usize {
+    const rusage = std.posix.getrusage(std.posix.rusage.SELF);
+    const max: usize = @intCast(rusage.maxrss);
+    // Linux counts KiB, macOS bytes.
+    return if (@import("builtin").os.tag == .linux) max * 1024 else max;
+}
+
+/// `rss STAGE [records]`: one run of the stage, and the resident memory
+/// it added to the process's peak. The process ends after; nothing is
+/// freed, as nothing more is read.
+fn resident(io: Io, args: []const []const u8) !void {
+    const stage = std.meta.stringToEnum(Stage, args[2]) orelse return error.UnknownStage;
+    const count = if (args.len > 3) try std.fmt.parseInt(usize, args[3], 10) else 20_000;
+    const gpa = std.heap.smp_allocator;
+    const text = try document(gpa, count);
+    const records = if (stage == .stringify) try built(gpa, count) else &.{};
+    const before = peakResident();
+    std.mem.doNotOptimizeAway(try run(stage, gpa, text, records));
+    const added = peakResident() - before;
+    var buf: [256]u8 = undefined;
+    var stdout = Io.File.stdout().writerStreaming(io, &buf);
+    try stdout.interface.print("{s}: {d} records, {d} bytes; {d} bytes resident ({d:.1} times the input)\n", .{ @tagName(stage), count, text.len, added, @as(f64, @floatFromInt(added)) / @as(f64, @floatFromInt(text.len)) });
+    try stdout.interface.flush();
 }
 
 const Stage = enum { scan, parse, compose, value, typed, stringify };
@@ -159,6 +226,7 @@ fn run(stage: Stage, gpa: Allocator, text: []const u8, records: []const Record) 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
+    if (args.len > 2 and std.mem.eql(u8, args[1], "rss")) return resident(io, args);
     const records = if (args.len > 1) try std.fmt.parseInt(usize, args[1], 10) else 20_000;
     const runs = if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 7;
     if (runs == 0) return error.NoRuns;
