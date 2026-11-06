@@ -188,6 +188,25 @@ test "the depth limit comes through with its diagnostic" {
     try testing.expectEqual(2, c.diagnostic.mark.column);
 }
 
+test "a large mapping's key set, used again, holds none of the last one's keys" {
+    // Ten keys, past the linear search: each mapping after the first
+    // checks its keys in the set the one before it closed.
+    const ten = "k0: x, k1: x, k2: x, k3: x, k4: x, k5: x, k6: x, k7: x, k8: x, k9: x";
+    const inputs = [_][]const u8{
+        "[{" ++ ten ++ "}, {" ++ ten ++ "}, {" ++ ten ++ "}]",
+        "{" ++ ten ++ ", inner: {" ++ ten ++ "}, after: {" ++ ten ++ "}}",
+    };
+    for (inputs) |input| {
+        var c: Composer = .init(testing.allocator, input, .{});
+        defer c.deinit();
+        _ = try first(&c);
+    }
+    // A duplicate in a mapping after the first is still found.
+    var c: Composer = .init(testing.allocator, "[{" ++ ten ++ "}, {" ++ ten ++ ", k3: y}]", .{});
+    defer c.deinit();
+    try testing.expectError(error.DuplicateKey, c.next());
+}
+
 test "syntax errors come through with their diagnostic" {
     var c: Composer = .init(testing.allocator, "a: [b", .{});
     defer c.deinit();

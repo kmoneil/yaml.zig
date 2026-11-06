@@ -114,6 +114,9 @@ options: Options,
 arena: std.heap.ArenaAllocator,
 /// The open collections, innermost last.
 frames: std.ArrayList(Frame) = .empty,
+/// Key sets of closed mappings, emptied, for the next large mapping: one
+/// made and freed a mapping was two allocations each (t46).
+spare_key_sets: std.ArrayList(KeySet) = .empty,
 anchors: std.HashMapUnmanaged([]const u8, *Node, SeededStrings, std.hash_map.default_max_load_percentage) = .empty,
 /// The seed of every hash map, from a hash of the input.
 seed: u64,
@@ -150,6 +153,8 @@ pub fn deinit(c: *Composer) void {
     const gpa = c.parser.scanner.gpa;
     for (c.frames.items) |*frame| frame.keys.deinit(gpa);
     c.frames.deinit(gpa);
+    for (c.spare_key_sets.items) |*keys| keys.deinit(gpa);
+    c.spare_key_sets.deinit(gpa);
     c.anchors.deinit(gpa);
     c.arena.deinit();
     c.parser.deinit();
@@ -274,7 +279,7 @@ fn open(c: *Composer, event: Event, properties: Event.Properties, data: Node.Dat
 /// Closes the innermost collection and returns it.
 fn close(c: *Composer, end: Mark) Error!*Node {
     var frame = c.frames.pop().?;
-    defer frame.keys.deinit(c.parser.scanner.gpa);
+    defer c.recycle(&frame.keys);
     const node = frame.node;
     node.end = end;
     switch (node.data) {
@@ -317,11 +322,20 @@ fn checkKey(c: *Composer, frame: *Frame, key: *Node) Error!void {
         return;
     }
     if (frame.keys.count() == 0) {
+        if (frame.keys.capacity() == 0) frame.keys = c.spare_key_sets.pop() orelse .empty;
         var i: usize = 0;
         while (i < items.len) : (i += 2) try frame.keys.putContext(gpa, items[i], {}, ctx);
     }
     const entry = try frame.keys.getOrPutContext(gpa, key, ctx);
     if (entry.found_existing) return c.duplicate(key);
+}
+
+/// Keeps a closed mapping's key set, emptied, for the next large one; or
+/// frees it if there is no room to keep it.
+fn recycle(c: *Composer, keys: *KeySet) void {
+    if (keys.capacity() == 0) return;
+    keys.clearRetainingCapacity();
+    c.spare_key_sets.append(c.parser.scanner.gpa, keys.*) catch keys.deinit(c.parser.scanner.gpa);
 }
 
 fn duplicate(c: *Composer, key: *const Node) Error {
