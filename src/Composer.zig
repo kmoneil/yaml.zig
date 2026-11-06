@@ -137,8 +137,8 @@ spare_key_sets: std.ArrayList(KeySet) = .empty,
 /// for each, made when the set is, so keeping one never allocates.
 key_sets: usize = 0,
 anchors: std.HashMapUnmanaged([]const u8, *Node, SeededStrings, std.hash_map.default_max_load_percentage) = .empty,
-/// The seed of every hash map, from a hash of the input.
-seed: u64,
+/// The seed of every hash map, once `hashSeed` has hashed the input.
+seed: ?u64 = null,
 /// The error `next` failed with, which every later call gives again.
 failed: ?Error = null,
 diagnostic: Diagnostic = .{},
@@ -155,8 +155,6 @@ const Frame = struct {
 /// A composer over `input`, UTF-8 (`encoding.toUtf8` for others). It
 /// allocates nothing until `next`.
 pub fn init(gpa: Allocator, input: []const u8, options: Options) Composer {
-    var digest: [8]u8 = undefined;
-    std.crypto.hash.Blake3.hash(input, &digest, .{});
     var parser: Parser = .init(gpa, input);
     parser.scanner.max_depth = options.max_depth;
     parser.max_tag_directives = options.max_tag_directives;
@@ -164,8 +162,22 @@ pub fn init(gpa: Allocator, input: []const u8, options: Options) Composer {
         .parser = parser,
         .options = options,
         .arena = .init(gpa),
-        .seed = std.mem.readInt(u64, &digest, .little),
     };
+}
+
+/// The seed of every hash map keyed by the input's text (anchors, a large
+/// mapping's keys, a map construction builds): a hash of the whole input,
+/// so keys built to collide under a seed known before the input exists
+/// cannot be (kb/t7). Hashed the first time a map needs it: a document
+/// with no anchor and no mapping past `linear_keys` keys never pays for
+/// it (t48).
+pub fn hashSeed(c: *Composer) u64 {
+    if (c.seed) |s| return s;
+    var digest: [8]u8 = undefined;
+    std.crypto.hash.Blake3.hash(c.parser.scanner.input, &digest, .{});
+    const s = std.mem.readInt(u64, &digest, .little);
+    c.seed = s;
+    return s;
 }
 
 /// Frees every node and string the composer gave.
@@ -416,7 +428,7 @@ fn newNode(c: *Composer, event: Event, properties: Event.Properties, data: Node.
     const tag = if (data == .alias) null else try c.resolveTag(event.start, properties.tag, data);
     node.* = .{ .start = event.start, .end = event.end, .tag = tag, .anchor = properties.anchor, .data = data };
     if (properties.anchor) |name| {
-        try c.anchors.putContext(c.parser.scanner.gpa, name, node, .{ .seed = c.seed });
+        try c.anchors.putContext(c.parser.scanner.gpa, name, node, .{ .seed = c.hashSeed() });
     }
     return node;
 }
@@ -449,7 +461,7 @@ fn aliasNode(c: *Composer, event: Event, name: []const u8) Error!*Node {
 
 /// The node the anchor `name` names, for the alias `event`.
 fn anchorNamed(c: *Composer, event: Event, name: []const u8) Error!*Node {
-    return c.anchors.getContext(name, .{ .seed = c.seed }) orelse {
+    return c.anchors.getContext(name, .{ .seed = c.hashSeed() }) orelse {
         c.diagnostic = .{ .mark = event.start, .message = "an alias names no anchor before it in its document" };
         return error.UndefinedAlias;
     };
@@ -494,8 +506,12 @@ fn attach(c: *Composer, node: *Node) Error!void {
 }
 
 /// A mapping with this many keys or fewer is searched key by key; past
-/// it, its keys go in a hash set.
-const linear_keys = 8;
+/// it, its keys go in a hash set. A config record often has more than 8
+/// keys: at 16 one builds no set and the input is never hashed for a
+/// seed, a tenth of composing 4.9 MB of 9-key records (t48). A search
+/// compares each key with at most 15 others, so its cost stays within a
+/// small multiple of the input's length.
+const linear_keys = 16;
 
 fn checkKey(c: *Composer, frame: *Frame, key: *Node) Error!void {
     return c.checkKeyAmong(c.items.items[frame.start..], 2, &frame.keys, key);
@@ -513,7 +529,7 @@ fn checkKeyAmong(c: *Composer, items: []const *Node, stride: usize, set: *KeySet
         return;
     }
     if (set.count() == 0) try c.fillKeySet(items, stride, set);
-    const entry = try set.getOrPutContext(c.parser.scanner.gpa, key, .{ .seed = c.seed });
+    const entry = try set.getOrPutContext(c.parser.scanner.gpa, key, .{ .seed = c.hashSeed() });
     if (entry.found_existing) return c.duplicate(key);
 }
 
@@ -532,7 +548,8 @@ fn fillKeySet(c: *Composer, items: []const *Node, stride: usize, set: *KeySet) E
         }
     }
     var i: usize = 0;
-    while (i < items.len) : (i += stride) try set.putContext(gpa, items[i], {}, .{ .seed = c.seed });
+    const ctx: KeyContext = .{ .seed = c.hashSeed() };
+    while (i < items.len) : (i += stride) try set.putContext(gpa, items[i], {}, ctx);
 }
 
 /// Nodes that live until the collection keeping them ends: the keys
@@ -583,6 +600,10 @@ fn duplicate(c: *Composer, key: *const Node) Error {
 /// are equal integers), through aliases. Gives up, as not equal, past
 /// `node_budget` nodes.
 pub fn equal(a: *const Node, b: *const Node) bool {
+    // Keys a person writes are plain strings far more often than not: two
+    // of them are compared by their text at once (t48), as equalValues
+    // would after the walk below.
+    if (isString(a) and isString(b)) return std.mem.eql(u8, a.data.scalar.value, b.data.scalar.value);
     var budget: usize = node_budget;
     return equalWithin(a, b, &budget);
 }
@@ -600,6 +621,13 @@ fn equalWithin(a_node: *const Node, b_node: *const Node, budget: *usize) bool {
         .mapping => |m| b.data == .mapping and equalPairs(m.pairs, b.data.mapping.pairs, budget),
         .alias => unreachable,
     };
+}
+
+/// Whether `node` is a scalar the composer tagged a string, by the tag's
+/// pointer (`schema.core`).
+fn isString(node: *const Node) bool {
+    const tag = node.tag orelse return false;
+    return node.data == .scalar and tag.ptr == schema.tag.str.ptr and tag.len == schema.tag.str.len;
 }
 
 fn equalItems(a: []const *Node, b: []const *Node, budget: *usize) bool {
@@ -720,8 +748,8 @@ test "keys and anchors built to collide under a fixed seed spread under the comp
     var anchor_hashes: [400]u64 = undefined;
     for (root.data.mapping.pairs, anchors, 0..) |pair, anchor, i| {
         try testing.expectEqual(0, hashNode(pair.key, 0) & mask);
-        key_hashes[i] = hashNode(pair.key, c.seed);
-        anchor_hashes[i] = SeededStrings.hash(.{ .seed = c.seed }, anchor);
+        key_hashes[i] = hashNode(pair.key, c.hashSeed());
+        anchor_hashes[i] = SeededStrings.hash(.{ .seed = c.hashSeed() }, anchor);
     }
     // 400 random hashes fill about 330 of 1,024 buckets; one is what the
     // fixed seed gives. Allow a wide margin either side of random.

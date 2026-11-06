@@ -124,7 +124,7 @@ fn build(comptime T: type, result: Allocator, scratch: Allocator, bytes: []const
         .max_tag_directives = options.max_tag_directives,
     });
     defer composer.deinit();
-    var builder: Builder = .{ .allocator = result, .scratch = scratch, .options = options, .seed = composer.seed, .composer = &composer };
+    var builder: Builder = .{ .allocator = result, .scratch = scratch, .options = options, .composer = &composer };
     defer builder.visiting.deinit(scratch);
     defer builder.path.deinit(scratch);
     defer builder.stack.deinit(scratch);
@@ -233,8 +233,7 @@ const Builder = struct {
     alias_depth: usize = 0,
     /// Nodes built through aliases so far.
     alias_nodes: usize = 0,
-    /// The seed of every map built, from a hash of the input.
-    seed: u64 = 0,
+
     /// Where construction is in the document, from its root.
     path: std.ArrayList(Segment) = .empty,
     /// What reads the document a node at a time.
@@ -657,7 +656,7 @@ const Builder = struct {
         defer pairs.done();
         try b.enterSrc(src);
         defer b.leaveSrc(src);
-        var out: T = .{ .context = .{ .seed = b.seed } };
+        var out: T = .{ .context = .{ .seed = b.composer.hashSeed() } };
         if (pairs.count()) |n| try out.map.ensureTotalCapacityContext(b.allocator, n, out.context);
         while (try pairs.nextPair()) |pair| {
             const key = pair.key.target();
