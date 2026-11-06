@@ -141,6 +141,23 @@ fn expectEventsEmit(events: []const Event.Data, expected: []const u8) !void {
     try testing.expectEqualStrings(expected, out.written());
 }
 
+test "a %TAG prefix is escaped again, and may be long" {
+    // The scanner decodes a prefix's escapes: a space, an é, and a `[`,
+    // which cannot begin a prefix, are escaped again.
+    try expectEmits("%TAG !e! tag:example.com,2000:a%20b%C3%A9\n--- !e!x 1\n",
+        \\%TAG !e! tag:example.com,2000:a%20b%C3%A9
+        \\--- !e!x 1
+        \\
+    );
+    try expectEmits("%TAG !e! %5Bx]\n--- !e!y 1\n",
+        \\%TAG !e! %5Bx]
+        \\--- !e!y 1
+        \\
+    );
+    const long = comptime "%TAG !e! tag:" ++ repeat("aaaaaaaaaa", 110) ++ "\n--- !e!x 1\n";
+    try expectEmits(long, long);
+}
+
 test "documents: markers where needed, '...' before another's directives" {
     try expectEmits("a\n--- b\n...\n%YAML 1.2\n--- c\n",
         \\a

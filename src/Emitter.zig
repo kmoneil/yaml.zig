@@ -219,8 +219,12 @@ fn emitDocumentStart(e: *Emitter, event: Event, first: bool) Error!void {
     e.tag_directives = d.tag_directives;
     const has_directives = d.version != null or d.tag_directives.len > 0;
     if (has_directives and e.open_ended) try e.writeLine("...");
-    if (d.version) |v| try e.writeLineFmt("%YAML {d}.{d}", .{ v.major, v.minor });
-    for (d.tag_directives) |t| try e.writeLineFmt("%TAG {s} {s}", .{ t.handle, t.prefix });
+    if (d.version) |v| {
+        try e.startLine();
+        try e.writer.print("%YAML {d}.{d}", .{ v.major, v.minor });
+        try e.writeBreak();
+    }
+    for (d.tag_directives) |t| try e.writeTagDirective(t);
     // An empty document with no marker would be no document at all.
     const empty = if (e.peekAfter(1)) |next| isEmptyPlain(next) else false;
     if (d.explicit or !first or has_directives or empty) {
@@ -442,17 +446,42 @@ fn writeBreak(e: *Emitter) Error!void {
     e.column = 0;
 }
 
-/// Writes a line of its own, as a directive or marker is.
+/// Writes a line of its own, as a marker is.
 fn writeLine(e: *Emitter, text: []const u8) Error!void {
-    if (e.column != 0) try e.writeBreak();
+    try e.startLine();
     try e.writeText(text);
     try e.writeBreak();
 }
 
-fn writeLineFmt(e: *Emitter, comptime format: []const u8, args: anytype) Error!void {
-    var buf: [1024]u8 = undefined;
-    const line = std.fmt.bufPrint(&buf, format, args) catch return error.InvalidUtf8;
-    try e.writeLine(line);
+/// Ends the line, unless nothing is on it yet.
+fn startLine(e: *Emitter) Error!void {
+    if (e.column != 0) try e.writeBreak();
+}
+
+/// Writes `%TAG handle prefix` on a line of its own. The prefix is held
+/// decoded, as the scanner gives it, so it is escaped again as a tag's
+/// text is, and its first character too if it is a flow indicator, which
+/// cannot begin one (YAML 1.2.2, 6.8.2.2).
+fn writeTagDirective(e: *Emitter, directive: Scanner.Token.TagDirective) Error!void {
+    try e.startLine();
+    try e.writeText("%TAG ");
+    try e.writeText(directive.handle);
+    try e.writeByte(' ');
+    const prefix = directive.prefix;
+    if (prefix.len > 0 and isFlowIndicator(prefix[0])) {
+        try e.writeEscapedByte(prefix[0]);
+        try e.writeUri(prefix[1..], .uri);
+    } else {
+        try e.writeUri(prefix, .uri);
+    }
+    try e.writeBreak();
+}
+
+fn isFlowIndicator(c: u8) bool {
+    return switch (c) {
+        ',', '[', ']', '{', '}' => true,
+        else => false,
+    };
 }
 
 /// Starts a line at the current indentation, unless the line is at it.
@@ -919,11 +948,12 @@ fn writeUri(e: *Emitter, text: []const u8, kind: UriKind) Error!void {
         const plain_ok = std.ascii.isAlphanumeric(c) or std.mem.indexOfScalar(u8, "-#;/?:@&=+$_.~*'()", c) != null;
         const suffix_only_bad = c == '!' or c == ',' or c == '[' or c == ']' or c == '{' or c == '}';
         const ok = plain_ok or (kind == .uri and suffix_only_bad);
-        if (ok) {
-            try e.writeByte(c);
-        } else {
-            var buf: [3]u8 = undefined;
-            try e.writeText(std.fmt.bufPrint(&buf, "%{X:0>2}", .{c}) catch unreachable);
-        }
+        if (ok) try e.writeByte(c) else try e.writeEscapedByte(c);
     }
+}
+
+/// Writes `c` as a URI's `%` escape: two hex digits.
+fn writeEscapedByte(e: *Emitter, c: u8) Error!void {
+    try e.writer.print("%{X:0>2}", .{c});
+    e.column += 3;
 }
