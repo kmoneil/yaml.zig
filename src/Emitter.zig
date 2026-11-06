@@ -771,6 +771,12 @@ fn writePlain(e: *Emitter, value: []const u8, allow_breaks: bool) Error!void {
             i += 1;
         } else {
             i += try e.writeCharacter(value, i);
+            // No indicator comes before a plain scalar to end the
+            // indentation, so its first character does: else folding at
+            // a space would take the line for indentation and pad it to
+            // the indent, not break it (t55). libyaml's write_plain does
+            // the same.
+            e.indention = false;
         }
     }
     e.whitespace = false;

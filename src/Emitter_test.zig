@@ -53,6 +53,39 @@ test "block collections, nested, a sequence at its key's column" {
     );
 }
 
+/// The scalars' values `text` parses to, in order.
+fn scalarValues(arena: std.mem.Allocator, text: []const u8) ![]const []const u8 {
+    var parser: Parser = .init(arena, text);
+    var values: std.ArrayList([]const u8) = .empty;
+    while (true) {
+        const event = try parser.next();
+        switch (event.data) {
+            .scalar => |s| try values.append(arena, s.value),
+            .stream_end => return values.items,
+            else => {},
+        }
+    }
+}
+
+test "a plain scalar folded in a flow collection reads back, at every width and indent" {
+    // Found by the emit fuzz target (t55): at width 8 and indent 6, `null
+    // "d"` was written `null  "d"`. Folding at its space padded to the
+    // indent instead of breaking the line: the scalar began with the
+    // indentation's `indention` still set.
+    const input = "- [a, {b: c} ,null \"d\", 'e']\n- ? k\n  : v\n";
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const want = try scalarValues(arena, input);
+    for (8..81) |width| for (2..9) |indent| {
+        const text = try reemit(arena, input, .{ .width = @intCast(width), .indent = @intCast(indent) });
+        errdefer std.debug.print("width {d}, indent {d}:\n{s}\n", .{ width, indent, text });
+        const got = try scalarValues(arena, text);
+        try testing.expectEqual(want.len, got.len);
+        for (want, got) |w, g| try testing.expectEqualStrings(w, g);
+    };
+}
+
 test "flow collections stay flow" {
     try expectEmits("k: [a, {b: c}, []]\n",
         \\k: [a, {b: c}, []]
