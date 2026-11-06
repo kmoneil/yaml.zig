@@ -153,8 +153,15 @@ fn step(r: *Reader) Error!void {
 
 // Events and states
 
-fn emit(r: *Reader, start: Mark, end: Mark, data: Event.Data) Error!void {
-    try r.events.append(r.s.gpa, .{ .start = start, .end = end, .data = data });
+/// Puts an event at the end of the queue: inlined to a check and a store,
+/// the queue grown in a call apart (as the scanner's tokens, t49).
+inline fn emit(r: *Reader, start: Mark, end: Mark, data: Event.Data) Error!void {
+    if (r.events.items.len == r.events.capacity) try r.growEvents();
+    r.events.appendAssumeCapacity(.{ .start = start, .end = end, .data = data });
+}
+
+noinline fn growEvents(r: *Reader) Error!void {
+    try r.events.ensureUnusedCapacity(r.s.gpa, 1);
 }
 
 /// A scalar token's event.
@@ -700,12 +707,25 @@ fn skipFlowSpace(r: *Reader) Error!void {
 }
 
 fn skipSpaces(r: *Reader) void {
-    while (r.s.ch(0) == ' ') r.s.skip();
+    const input = r.s.input;
+    var i: usize = r.s.mark.offset;
+    while (i < input.len and input[i] == ' ') i += 1;
+    r.advanceAscii(i);
 }
 
 /// Moves past the blanks after a token on its line.
 fn skipBlanks(r: *Reader) void {
-    while (chars.isBlank(r.s.ch(0))) r.s.skip();
+    const input = r.s.input;
+    var i: usize = r.s.mark.offset;
+    while (i < input.len and chars.isBlank(input[i])) i += 1;
+    r.advanceAscii(i);
+}
+
+/// Moves to `offset`, past ASCII on the line: a character a byte.
+fn advanceAscii(r: *Reader, offset: usize) void {
+    const n: u32 = @intCast(offset - r.s.mark.offset);
+    r.s.mark.offset += n;
+    r.s.mark.column += n;
 }
 
 // Reading

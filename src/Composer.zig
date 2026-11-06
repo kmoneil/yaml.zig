@@ -127,6 +127,8 @@ reader: Reader,
 source: enum { reader, parser } = .reader,
 /// Events the reader has given: the parser, taking over, skips as many.
 given: usize = 0,
+/// The parser's last event, kept where `nextEvent` can point at it.
+parsed: Event = undefined,
 options: Options,
 /// Nodes and their lists.
 arena: std.heap.ArenaAllocator,
@@ -357,7 +359,7 @@ fn nextStep(c: *Composer, slot: *Node) Error!StepInto {
     const stream: ?*Stream = if (c.streams.items.len > 0) &c.streams.items[c.streams.items.len - 1] else null;
     const is_key = if (stream) |s| s.mapping and s.at_key else false;
     if (stream) |s| s.at_key = s.mapping and !s.at_key;
-    const result = try c.stepOf(&event, is_key, slot);
+    const result = try c.stepOf(event, is_key, slot);
     if (is_key and c.options.duplicate_keys == .refuse) try c.checkStreamKey(stream.?, result, slot);
     return result;
 }
@@ -373,11 +375,11 @@ fn stepOf(c: *Composer, event: *const Event, is_key: bool, slot: *Node) Error!St
             return .scalar;
         },
         .alias => |name| {
-            slot.* = .{ .start = event.start, .end = event.end, .data = .{ .alias = try c.anchorNamed(event.*, name) } };
+            slot.* = .{ .start = event.start, .end = event.end, .data = .{ .alias = try c.anchorNamed(event, name) } };
             return .scalar;
         },
         .sequence_start, .mapping_start => |*collection| {
-            if (collection.properties.anchor != null or is_key) return .{ .node = try c.composeFrom(event.*) };
+            if (collection.properties.anchor != null or is_key) return .{ .node = try c.composeFrom(event) };
             const data: Node.Data = if (event.data == .sequence_start) .{ .sequence = .{ .flow = collection.flow } } else .{ .mapping = .{ .flow = collection.flow } };
             const tag = try c.resolveTag(event.start, collection.properties.tag, data);
             try c.streams.append(c.parser.scanner.gpa, .{ .mapping = event.data == .mapping_start, .start = c.items.items.len, .kept_len = c.kept.len });
@@ -437,17 +439,20 @@ pub fn endDocument(c: *Composer) Error!void {
     };
 }
 
-fn nextEvent(c: *Composer) Error!Event {
+/// The next event, where it is kept: valid until the next call. The
+/// reader's is read in place, not copied (t56).
+fn nextEvent(c: *Composer) Error!*const Event {
     if (c.source == .reader) {
         if (c.reader.next()) |event| {
             c.given += 1;
-            return event.*;
+            return event;
         } else |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             error.Unsupported => try c.handOver(),
         }
     }
-    return c.parserEvent();
+    c.parsed = try c.parserEvent();
+    return &c.parsed;
 }
 
 /// Where the reader stops, the parser reads the stream from its start,
@@ -473,15 +478,15 @@ fn composeNode(c: *Composer) Error!*Node {
 }
 
 /// Composes the node whose first event is `first`, and all inside it.
-fn composeFrom(c: *Composer, first: Event) Error!*Node {
+fn composeFrom(c: *Composer, first: *const Event) Error!*Node {
     var event = first;
     while (true) : (event = try c.nextEvent()) {
         const done = switch (event.data) {
             // The event read where it is, not copied to each call (t49).
-            .scalar => |*s| try c.newNode(&event, &s.properties, .{ .scalar = .{ .value = s.value, .style = s.style } }),
-            .alias => |name| try c.aliasNode(&event, name),
-            .sequence_start => |*s| try c.open(&event, &s.properties, .{ .sequence = .{ .flow = s.flow } }),
-            .mapping_start => |*s| try c.open(&event, &s.properties, .{ .mapping = .{ .flow = s.flow } }),
+            .scalar => |*s| try c.newNode(event, &s.properties, .{ .scalar = .{ .value = s.value, .style = s.style } }),
+            .alias => |name| try c.aliasNode(event, name),
+            .sequence_start => |*s| try c.open(event, &s.properties, .{ .sequence = .{ .flow = s.flow } }),
+            .mapping_start => |*s| try c.open(event, &s.properties, .{ .mapping = .{ .flow = s.flow } }),
             .sequence_end, .mapping_end => try c.close(event.end),
             else => unreachable,
         };
@@ -526,11 +531,11 @@ fn resolveTag(c: *Composer, mark: Mark, written: ?[]const u8, data: Node.Data) E
 }
 
 fn aliasNode(c: *Composer, event: *const Event, name: []const u8) Error!*Node {
-    return c.newNode(event, &.{}, .{ .alias = try c.anchorNamed(event.*, name) });
+    return c.newNode(event, &.{}, .{ .alias = try c.anchorNamed(event, name) });
 }
 
 /// The node the anchor `name` names, for the alias `event`.
-fn anchorNamed(c: *Composer, event: Event, name: []const u8) Error!*Node {
+fn anchorNamed(c: *Composer, event: *const Event, name: []const u8) Error!*Node {
     return c.anchors.getContext(name, .{ .seed = c.hashSeed() }) orelse {
         c.diagnostic = .{ .mark = event.start, .message = "an alias names no anchor before it in its document" };
         return error.UndefinedAlias;
