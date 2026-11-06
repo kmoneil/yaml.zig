@@ -15,6 +15,12 @@
 //! collide under a fixed seed cannot be found for a seed nobody knows
 //! before the input exists.
 //!
+//! A document may also be read a node at a time (`beginDocument`, `step`,
+//! `endDocument`): a collection with no anchor is begun and its entries
+//! read one by one, and only what must be is composed whole, a node an
+//! alias may name and a mapping's key, so a reader building as it reads
+//! holds a fraction of the graph (t47).
+//!
 //! Nodes live as long as the composer. Not threadsafe.
 
 const std = @import("std");
@@ -119,6 +125,11 @@ frames: std.ArrayList(Frame) = .empty,
 /// old buffer in the arena; closing one copies its items there once, at
 /// their length (t46).
 items: std.ArrayList(*Node) = .empty,
+/// The collections `step` has begun and not ended, innermost last.
+streams: std.ArrayList(Stream) = .empty,
+/// Copies of the keys `step` gave of the mappings it has begun, kept to
+/// find a duplicate until each mapping ends.
+kept: NodeStack = .{},
 /// Key sets of closed mappings, emptied, for the next large mapping: one
 /// made and freed a mapping was two allocations each (t46).
 spare_key_sets: std.ArrayList(KeySet) = .empty,
@@ -160,6 +171,9 @@ pub fn deinit(c: *Composer) void {
     for (c.frames.items) |*frame| frame.keys.deinit(gpa);
     c.frames.deinit(gpa);
     c.items.deinit(gpa);
+    for (c.streams.items) |*stream| stream.keys.deinit(gpa);
+    c.streams.deinit(gpa);
+    c.kept.deinit(gpa);
     for (c.spare_key_sets.items) |*keys| keys.deinit(gpa);
     c.spare_key_sets.deinit(gpa);
     c.anchors.deinit(gpa);
@@ -211,6 +225,157 @@ fn nextDocument(c: *Composer) Error!?Document {
     };
 }
 
+/// One step of a document read a node at a time (`step`).
+pub const Step = union(enum) {
+    /// A scalar or an alias, the node by value: it points into nothing
+    /// of the composer's but an alias's target.
+    scalar: Node,
+    /// A node composed whole, living as long as the composer: one with an
+    /// anchor, which an alias may name later, or a mapping's key that is a
+    /// collection, compared whole with the mapping's other keys.
+    node: *Node,
+    /// A collection with no anchor, begun: the node by value, its tag and
+    /// start known and no entries. Its entries are the steps after it, a
+    /// mapping's keys and values in turn, to its `end`.
+    begin: Node,
+    /// The end of the innermost collection begun.
+    end: Mark,
+};
+
+/// A collection `step` has begun and not ended.
+const Stream = struct {
+    mapping: bool,
+    /// A mapping's next entry is a key.
+    at_key: bool = true,
+    /// Where its keys begin in `items` and their copies in `kept`, held to
+    /// find a duplicate until it ends.
+    start: usize,
+    kept_len: usize,
+    keys: KeySet = .empty,
+};
+
+/// Begins reading the stream's next document a node at a time; null
+/// after the last, else where the document begins. `step` then gives its
+/// root, and once that is read `endDocument` ends it. `next` composes a
+/// document whole: a document is read one way or the other, not both.
+pub fn beginDocument(c: *Composer) Error!?Mark {
+    if (c.failed) |err| return err;
+    return c.documentStart() catch |err| {
+        c.failed = err;
+        return err;
+    };
+}
+
+fn documentStart(c: *Composer) Error!?Mark {
+    while (true) {
+        const event = try c.nextEvent();
+        switch (event.data) {
+            .stream_start => {},
+            .stream_end => return null,
+            .document_start => {
+                c.anchors.clearRetainingCapacity();
+                return event.start;
+            },
+            else => unreachable,
+        }
+    }
+}
+
+/// The next step of the document `beginDocument` began: its root first,
+/// then a begun collection's entries to its end. Called again after the
+/// root is read is a misuse; `endDocument` comes then. A mapping's key
+/// with an equal key before it in its mapping is `error.DuplicateKey`.
+pub fn step(c: *Composer) Error!Step {
+    if (c.failed) |err| return err;
+    return c.nextStep() catch |err| {
+        c.failed = err;
+        return err;
+    };
+}
+
+fn nextStep(c: *Composer) Error!Step {
+    const event = try c.nextEvent();
+    if (event.data == .sequence_end or event.data == .mapping_end) {
+        c.endStream();
+        return .{ .end = event.end };
+    }
+    const stream: ?*Stream = if (c.streams.items.len > 0) &c.streams.items[c.streams.items.len - 1] else null;
+    const is_key = if (stream) |s| s.mapping and s.at_key else false;
+    if (stream) |s| s.at_key = s.mapping and !s.at_key;
+    const result = try c.stepOf(event, is_key);
+    if (is_key and c.options.duplicate_keys == .refuse) try c.checkStreamKey(stream.?, result);
+    return result;
+}
+
+/// The step `event` begins: whole, or a collection begun.
+fn stepOf(c: *Composer, event: Event, is_key: bool) Error!Step {
+    switch (event.data) {
+        .scalar => |s| {
+            const data: Node.Data = .{ .scalar = .{ .value = s.value, .style = s.style } };
+            if (s.properties.anchor != null) return .{ .node = try c.newNode(event, s.properties, data) };
+            return .{ .scalar = .{ .start = event.start, .end = event.end, .tag = try c.resolveTag(event.start, s.properties.tag, data), .data = data } };
+        },
+        .alias => |name| return .{ .scalar = .{ .start = event.start, .end = event.end, .data = .{ .alias = try c.anchorNamed(event, name) } } },
+        .sequence_start, .mapping_start => |collection| {
+            if (collection.properties.anchor != null or is_key) return .{ .node = try c.composeFrom(event) };
+            const data: Node.Data = if (event.data == .sequence_start) .{ .sequence = .{ .flow = collection.flow } } else .{ .mapping = .{ .flow = collection.flow } };
+            const tag = try c.resolveTag(event.start, collection.properties.tag, data);
+            try c.streams.append(c.parser.scanner.gpa, .{ .mapping = event.data == .mapping_start, .start = c.items.items.len, .kept_len = c.kept.len });
+            return .{ .begin = .{ .start = event.start, .end = event.end, .tag = tag, .data = data } };
+        },
+        else => unreachable,
+    }
+}
+
+/// Checks a key `step` read against its mapping's others, keeping it,
+/// or a copy of it, until the mapping ends.
+fn checkStreamKey(c: *Composer, stream: *Stream, key: Step) Error!void {
+    const gpa = c.parser.scanner.gpa;
+    const node = switch (key) {
+        .scalar => |n| try c.kept.push(gpa, n),
+        .node => |n| n,
+        .begin, .end => unreachable,
+    };
+    try c.checkKeyAmong(c.items.items[stream.start..], 1, &stream.keys, node);
+    try c.items.append(gpa, node);
+}
+
+fn endStream(c: *Composer) void {
+    var stream = c.streams.pop().?;
+    c.items.shrinkRetainingCapacity(stream.start);
+    c.kept.len = stream.kept_len;
+    c.recycle(&stream.keys);
+}
+
+/// Composes whole the collection the last `step` began, none of its
+/// entries read yet: a node living as long as the composer, for a reader
+/// that needs one whole after all (a type's yamlParse hook).
+pub fn finish(c: *Composer, head: Node) Error!*Node {
+    if (c.failed) |err| return err;
+    return c.finishStream(head) catch |err| {
+        c.failed = err;
+        return err;
+    };
+}
+
+fn finishStream(c: *Composer, head: Node) Error!*Node {
+    var stream = c.streams.pop().?;
+    c.recycle(&stream.keys);
+    const node = try c.arena.allocator().create(Node);
+    node.* = head;
+    try c.frames.append(c.parser.scanner.gpa, .{ .node = node, .start = c.items.items.len });
+    return c.composeFrom(try c.nextEvent());
+}
+
+/// Ends the document `beginDocument` began, its root read.
+pub fn endDocument(c: *Composer) Error!void {
+    if (c.failed) |err| return err;
+    _ = c.nextEvent() catch |err| {
+        c.failed = err;
+        return err;
+    };
+}
+
 fn nextEvent(c: *Composer) Error!Event {
     return c.parser.next() catch |err| {
         if (err != error.OutOfMemory) c.diagnostic = c.parser.diagnostic;
@@ -220,8 +385,13 @@ fn nextEvent(c: *Composer) Error!Event {
 
 /// Composes the node whose first event is next, and all inside it.
 fn composeNode(c: *Composer) Error!*Node {
-    while (true) {
-        const event = try c.nextEvent();
+    return c.composeFrom(try c.nextEvent());
+}
+
+/// Composes the node whose first event is `first`, and all inside it.
+fn composeFrom(c: *Composer, first: Event) Error!*Node {
+    var event = first;
+    while (true) : (event = try c.nextEvent()) {
         const done = switch (event.data) {
             .scalar => |s| try c.newNode(event, s.properties, .{ .scalar = .{ .value = s.value, .style = s.style } }),
             .alias => |name| try c.aliasNode(event, name),
@@ -271,11 +441,15 @@ fn resolveTag(c: *Composer, mark: Mark, written: ?[]const u8, data: Node.Data) E
 }
 
 fn aliasNode(c: *Composer, event: Event, name: []const u8) Error!*Node {
-    const target = c.anchors.getContext(name, .{ .seed = c.seed }) orelse {
+    return c.newNode(event, .{}, .{ .alias = try c.anchorNamed(event, name) });
+}
+
+/// The node the anchor `name` names, for the alias `event`.
+fn anchorNamed(c: *Composer, event: Event, name: []const u8) Error!*Node {
+    return c.anchors.getContext(name, .{ .seed = c.seed }) orelse {
         c.diagnostic = .{ .mark = event.start, .message = "an alias names no anchor before it in its document" };
         return error.UndefinedAlias;
     };
-    return c.newNode(event, .{}, .{ .alias = target });
 }
 
 /// Opens a collection; returns null, as it is not done yet.
@@ -321,25 +495,58 @@ fn attach(c: *Composer, node: *Node) Error!void {
 const linear_keys = 8;
 
 fn checkKey(c: *Composer, frame: *Frame, key: *Node) Error!void {
-    const items = c.items.items[frame.start..];
-    const count = items.len / 2;
+    return c.checkKeyAmong(c.items.items[frame.start..], 2, &frame.keys, key);
+}
+
+/// Checks `key` against a mapping's keys so far, every `stride`th of
+/// `items` from the first: key by key up to linear_keys, past it in
+/// `set`.
+fn checkKeyAmong(c: *Composer, items: []const *Node, stride: usize, set: *KeySet, key: *Node) Error!void {
     const gpa = c.parser.scanner.gpa;
     const ctx: KeyContext = .{ .seed = c.seed };
-    if (count < linear_keys) {
+    if (items.len / stride < linear_keys) {
         var i: usize = 0;
-        while (i < items.len) : (i += 2) {
+        while (i < items.len) : (i += stride) {
             if (equal(items[i], key)) return c.duplicate(key);
         }
         return;
     }
-    if (frame.keys.count() == 0) {
-        if (frame.keys.capacity() == 0) frame.keys = c.spare_key_sets.pop() orelse .empty;
+    if (set.count() == 0) {
+        if (set.capacity() == 0) set.* = c.spare_key_sets.pop() orelse .empty;
         var i: usize = 0;
-        while (i < items.len) : (i += 2) try frame.keys.putContext(gpa, items[i], {}, ctx);
+        while (i < items.len) : (i += stride) try set.putContext(gpa, items[i], {}, ctx);
     }
-    const entry = try frame.keys.getOrPutContext(gpa, key, ctx);
+    const entry = try set.getOrPutContext(gpa, key, ctx);
     if (entry.found_existing) return c.duplicate(key);
 }
+
+/// Nodes that live until the collection keeping them ends: the keys
+/// `step` gave of a mapping, kept to find a duplicate. In chunks of a
+/// fixed size, so a node does not move while it lives; freed from the
+/// top.
+const NodeStack = struct {
+    chunks: std.ArrayList(*[chunk_len]Node) = .empty,
+    len: usize = 0,
+
+    const chunk_len = 64;
+
+    fn push(s: *NodeStack, gpa: Allocator, node: Node) Allocator.Error!*Node {
+        if (s.len == s.chunks.items.len * chunk_len) {
+            const chunk = try gpa.create([chunk_len]Node);
+            errdefer gpa.destroy(chunk);
+            try s.chunks.append(gpa, chunk);
+        }
+        const slot = &s.chunks.items[s.len / chunk_len][s.len % chunk_len];
+        slot.* = node;
+        s.len += 1;
+        return slot;
+    }
+
+    fn deinit(s: *NodeStack, gpa: Allocator) void {
+        for (s.chunks.items) |chunk| gpa.destroy(chunk);
+        s.chunks.deinit(gpa);
+    }
+};
 
 /// Keeps a closed mapping's key set, emptied, for the next large one; or
 /// frees it if there is no room to keep it.

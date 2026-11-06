@@ -207,6 +207,78 @@ test "a large mapping's key set, used again, holds none of the last one's keys" 
     try testing.expectError(error.DuplicateKey, c.next());
 }
 
+/// `input`'s one document read a node at a time, as text: `{` and `[`
+/// for a begun collection, `}` for any end, a scalar's value, `*` and
+/// its target's anchor for an alias, `=` and the value or kind of a node
+/// composed whole. `finish_at` names a begun collection's index of the
+/// steps to finish whole, `=` and its item count shown.
+fn readSteps(input: []const u8, options: Composer.Options, finish_at: ?usize) ![]u8 {
+    var c: Composer = .init(testing.allocator, input, options);
+    defer c.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(testing.allocator);
+    _ = (try c.beginDocument()).?;
+    var depth: usize = 0;
+    var i: usize = 0;
+    while (true) : (i += 1) {
+        if (i > 0) try out.append(testing.allocator, ' ');
+        switch (try c.step()) {
+            .scalar => |n| switch (n.data) {
+                .scalar => |s| try out.appendSlice(testing.allocator, s.value),
+                .alias => |t| try out.print(testing.allocator, "*{s}", .{t.anchor.?}),
+                else => unreachable,
+            },
+            .node => |n| switch (n.data) {
+                .scalar => |s| try out.print(testing.allocator, "={s}", .{s.value}),
+                .sequence => |s| try out.print(testing.allocator, "=seq{d}", .{s.items.len}),
+                .mapping => |m| try out.print(testing.allocator, "=map{d}", .{m.pairs.len}),
+                .alias => unreachable,
+            },
+            .begin => |n| if (finish_at == i) {
+                const whole = try c.finish(n);
+                try out.print(testing.allocator, "=seq{d}", .{whole.data.sequence.items.len});
+            } else {
+                try out.append(testing.allocator, if (n.data == .mapping) '{' else '[');
+                depth += 1;
+            },
+            .end => {
+                try out.append(testing.allocator, '}');
+                depth -= 1;
+            },
+        }
+        if (depth == 0) break;
+    }
+    try c.endDocument();
+    try testing.expectEqual(null, try c.beginDocument());
+    return out.toOwnedSlice(testing.allocator);
+}
+
+fn expectSteps(input: []const u8, finish_at: ?usize, expected: []const u8) !void {
+    const got = try readSteps(input, .{}, finish_at);
+    defer testing.allocator.free(got);
+    try testing.expectEqualStrings(expected, got);
+}
+
+test "a document read a node at a time: collections begun, scalars by value, what an alias names whole" {
+    try expectSteps("{a: 1, b: [x, {c: d}], &e f: *e, [k]: v}", null, "{ a 1 b [ x { c d } } =f *e =seq1 v }");
+    try expectSteps("[&r [a, *r], *r]", null, "[ =seq2 *r }");
+    try expectSteps("{a: [1, 2, [3]], b: 3}", 2, "{ a =seq3 b 3 }");
+    try expectSteps("plain", null, "plain");
+}
+
+test "a document read a node at a time: duplicate keys refused, each mapping's own" {
+    // Sibling and nested mappings may hold the same keys.
+    try expectSteps("[{a: 1}, {a: 1, b: {a: 1}}]", null, "[ { a 1 } { a 1 b { a 1 } } }");
+    const cases = [_][]const u8{ "{a: 1, b: {a: 2}, a: 3}", "{1: x, 0x1: y}", "{k0: x, k1: x, k2: x, k3: x, k4: x, k5: x, k6: x, k7: x, k8: x, k9: x, k3: y}", "{[a]: x, [a]: y}" };
+    for (cases) |input| {
+        errdefer std.debug.print("input: {s}\n", .{input});
+        try testing.expectError(error.DuplicateKey, readSteps(input, .{}, null));
+    }
+    const kept = try readSteps("{a: 1, a: 2}", .{ .duplicate_keys = .keep }, null);
+    defer testing.allocator.free(kept);
+    try testing.expectEqualStrings("{ a 1 a 2 }", kept);
+}
+
 test "syntax errors come through with their diagnostic" {
     var c: Composer = .init(testing.allocator, "a: [b", .{});
     defer c.deinit();
