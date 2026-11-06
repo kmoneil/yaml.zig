@@ -14,22 +14,29 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests, zigvet and gnarl");
     test_step.dependOn(&b.addRunArtifact(tests).step);
 
-    // The yaml-test-suite: test/suite.zig reads its data tree (build.zig.zon's
-    // yaml_test_suite, a lazy dependency). Only this repo's own build asks
-    // for it, so a package that depends on this one never fetches it.
+    // The yaml-test-suite harness (test/main.zig) over the suite's data
+    // tree (build.zig.zon's yaml_test_suite, a lazy dependency), held to
+    // test/suite-skip.txt. `zig build test` fails on a regression or a
+    // listed check that now passes; `zig build suite` prints the counts.
+    // Only this repo's own build asks for the data, so a package that
+    // depends on this one never fetches it.
     const suite_mod = b.createModule(.{
-        .root_source_file = b.path("test/suite.zig"),
+        .root_source_file = b.path("test/main.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{.{ .name = "yaml", .module = mod }},
     });
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = suite_mod })).step);
-    const suite_step = b.step("suite", "Count the yaml-test-suite's cases (-- --list lists each)");
+    const suite_step = b.step("suite", "Run the yaml-test-suite, print the counts (-- list [--all], -- show <case>)");
     if (b.isRoot()) {
         if (b.lazyDependency("yaml_test_suite", .{})) |suite_data| {
-            const list = b.addRunArtifact(b.addExecutable(.{ .name = "suite", .root_module = suite_mod }));
-            list.addDirectoryArg(suite_data.path("."));
-            list.addPassthruArgs();
-            suite_step.dependOn(&list.step);
+            const harness = b.addExecutable(.{ .name = "suite", .root_module = suite_mod });
+            const verbose = suiteRun(b, harness, suite_data);
+            verbose.addPassthruArgs();
+            suite_step.dependOn(&verbose.step);
+            const quiet = suiteRun(b, harness, suite_data);
+            quiet.addArgs(&.{ "check", "--quiet" });
+            test_step.dependOn(&quiet.step);
         }
     }
 
@@ -56,4 +63,16 @@ pub fn build(b: *std.Build) void {
 
     const fmt = b.addFmt(.{ .paths = &.{ b.path("build.zig"), b.path("src"), b.path("test") } });
     b.step("fmt", "Format build.zig, src/ and test/").dependOn(&fmt.step);
+}
+
+/// A run of the suite harness over the suite's data, held to the skip list.
+fn suiteRun(b: *std.Build, harness: *std.Build.Step.Compile, suite_data: *std.Build.Dependency) *std.Build.Step.Run {
+    const run = b.addRunArtifact(harness);
+    run.addDirectoryArg(suite_data.path("."));
+    run.addArg("--skip");
+    run.addFileArg(b.path("test/suite-skip.txt"));
+    // It reads the suite's files as it runs, which the build does not
+    // see, so a cached pass could stand for a run that would now fail.
+    run.has_side_effects = true;
+    return run;
 }

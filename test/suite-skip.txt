@@ -1,0 +1,4 @@
+# The yaml-test-suite checks known to fail: `<check> <case>` a line, `#`
+# to a line's end a comment. `zig build test` fails when a check not
+# listed here fails, and when one listed here passes: take it off. What
+# each check is: test/check.zig.

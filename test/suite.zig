@@ -5,12 +5,7 @@
 //! with variants holds none of these itself but numbered directories
 //! (`00`, `01`, ...), each a case laid out the same way. The tree's
 //! `name` and `tags` directories index the tests by other keys and are
-//! not read.
-//!
-//!     suite <suite-dir> [--list]
-//!
-//! prints how many cases there are and what they hold; `--list` prints
-//! each case first, one a line.
+//! not read. main.zig is the harness that runs them.
 
 const std = @import("std");
 const Io = std.Io;
@@ -180,45 +175,6 @@ pub fn writeCase(w: *Io.Writer, case: Case) Io.Writer.Error!void {
         try w.print(" {s:<10}", .{if (case.has.contains(file)) file.fileName() else "-"});
     }
     try w.print("  {s}\n", .{case.title});
-}
-
-pub fn main(init: std.process.Init) !void {
-    const io = init.io;
-    const arena = init.arena.allocator();
-    var args: std.process.Args.Iterator = .init(init.minimal.args);
-    _ = args.skip();
-    var root_path: ?[]const u8 = null;
-    var list = false;
-    while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--list")) {
-            list = true;
-        } else if (root_path == null) {
-            root_path = arg;
-        } else return usage();
-    }
-    var root = try Io.Dir.cwd().openDir(io, root_path orelse return usage(), .{ .iterate = true });
-    defer root.close(io);
-
-    var problem: Problem = .{};
-    const cases = collect(arena, io, root, &problem) catch |err| switch (err) {
-        error.BadLayout => {
-            std.debug.print("suite: {s}: {s}\n", .{ problem.path, problem.why });
-            std.process.exit(1);
-        },
-        else => return err,
-    };
-
-    var buf: [64 * 1024]u8 = undefined;
-    var stdout = Io.File.stdout().writerStreaming(io, &buf);
-    const out = &stdout.interface;
-    if (list) for (cases) |case| try writeCase(out, case);
-    try writeSummary(out, cases);
-    try out.flush();
-}
-
-fn usage() error{Usage} {
-    std.debug.print("usage: suite <suite-dir> [--list]\n", .{});
-    return error.Usage;
 }
 
 const testing = std.testing;
