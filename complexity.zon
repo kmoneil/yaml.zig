@@ -13,6 +13,7 @@
     .hot = .{
         "src/root.zig",
         "src/Scanner.zig",
+        "src/Parser.zig",
     },
     // Test code, the test-suite harness, tools and the build. gnarl skips
     // zig-pkg (fetched packages) and what git ignores by itself.
