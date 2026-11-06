@@ -57,6 +57,14 @@ test "found by the reader fuzz target" {
     try expectHandedOver("- [a, {b: c}, \"d\",:y '}: e']\n-k\n  : v\n\n");
 }
 
+test "documents: markers, several, empty, ended" {
+    try expectWhole("--- a\n");
+    try expectWhole("a: 1\n---\nb: 2\n...\n--- |\n  lit\n---\n...\n");
+    try expectWhole("...\n# no document yet\nx\n...\ny: z\n");
+    try expectWhole("- a\n- b: c\n...  # done\n");
+    try expectWhole("key:\n- a\n---\n");
+}
+
 test "flow collections on one line" {
     try expectWhole("tags: [alpha, beta, \"gamma 0\"]\nenv: {A: \"x\", B: 'y'}\nn: [[1, 2], {}, []]\nk: {a, b: , : c}\n");
 }
@@ -81,7 +89,7 @@ test "the bench's records" {
 }
 
 test "what it hands over: forms it does not read yet, and errors" {
-    try expectHandedOver("--- a\n");
+    try expectHandedOver("%YAML 1.2\n---\na\n");
     try expectHandedOver("a: &x 1\nb: *x\n");
     try expectHandedOver("a: !!str 1\n");
     try expectHandedOver("? a\n: b\n");
@@ -95,4 +103,13 @@ test "what it hands over: forms it does not read yet, and errors" {
     try expectHandedOver("a: [b\n");
     try expectHandedOver("- a\nb: c\n");
     try expectHandedOver("a: 'b\n");
+    try expectHandedOver("a\nb\n");
+    try expectHandedOver("--- a: b\n");
+    try expectHandedOver("--- - a\n");
+    try expectHandedOver("... a\n");
+    try expectHandedOver("a\n... b\n");
+    // Found by the reader fuzz target: the parser ends a document at
+    // `...` only once it has read the token after, here a comment with a
+    // byte that is not UTF-8.
+    try expectHandedOver("--- a\n--- |\n b\n...\n# \xBB\n");
 }

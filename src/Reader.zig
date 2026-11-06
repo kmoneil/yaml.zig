@@ -47,6 +47,9 @@ pub const Error = error{
 const State = enum {
     stream_start,
     document_start,
+    /// After `---`: the document's root, on that line or after it, or
+    /// none.
+    document_content,
     document_end,
     block_sequence_entry,
     /// A sequence at its mapping key's column, which no indentation ends:
@@ -92,8 +95,9 @@ state: State = .stream_start,
 states: std.ArrayList(State) = .empty,
 /// The columns of the block collections open, innermost last.
 blocks: std.ArrayList(isize) = .empty,
-/// Documents read: the reader reads one.
-documents: usize = 0,
+/// The stream has just begun, or the last document ended with `...`:
+/// the next may be bare.
+after_end_marker: bool = true,
 
 /// A reader over `input`, UTF-8. It allocates nothing until `next`.
 pub fn init(gpa: Allocator, input: []const u8) Reader {
@@ -133,6 +137,7 @@ fn step(r: *Reader) Error!void {
     switch (r.state) {
         .stream_start => try r.streamStart(),
         .document_start => try r.documentStart(),
+        .document_content => try r.documentContent(),
         .document_end => try r.documentEnd(),
         .block_sequence_entry => try r.blockSequenceEntry(),
         .indentless_sequence_entry => try r.indentlessSequenceEntry(),
@@ -196,25 +201,85 @@ fn streamStart(r: *Reader) Error!void {
 
 fn documentStart(r: *Reader) Error!void {
     try r.skipToToken();
+    // A `...` with no document before it ends nothing.
+    while (r.atMarker("...")) {
+        const line = r.s.mark.line;
+        r.advanceAscii(r.s.mark.offset + 3);
+        r.after_end_marker = true;
+        try r.skipToToken();
+        if (!r.atEnd() and r.s.mark.line == line) return error.Unsupported;
+    }
     if (r.atEnd()) {
         const m = r.endMark();
         try r.emit(m, m, .stream_end);
         r.state = .end;
         return;
     }
-    if (r.documents > 0 or r.s.mark.column == 0 and (r.s.ch(0) == '%' or r.s.atDocumentMarkerLine())) return error.Unsupported;
+    if (r.atDirective()) return error.Unsupported;
+    if (r.atMarker("---")) {
+        const start = r.s.mark;
+        r.advanceAscii(start.offset + 3);
+        try r.emit(start, r.s.mark, .{ .document_start = .{ .explicit = true } });
+        try r.push(.document_end);
+        r.state = .document_content;
+        return;
+    }
+    // A document after another must begin with `---`, but after `...`.
+    if (!r.after_end_marker) return error.Unsupported;
     try r.emit(r.s.mark, r.s.mark, .{ .document_start = .{ .explicit = false } });
     try r.push(.document_end);
     try r.blockNode(.entry);
 }
 
+/// The root of a document begun with `---`: on that line no block
+/// collection may begin. With none, the document is an empty scalar.
+fn documentContent(r: *Reader) Error!void {
+    const line = r.s.mark.line;
+    try r.skipToToken();
+    if (r.atDirective()) return error.Unsupported;
+    if (r.atEnd() or r.s.atDocumentMarkerLine()) {
+        const m = if (r.atEnd()) r.endMark() else r.s.mark;
+        r.pop();
+        return r.emitEmpty(m);
+    }
+    try r.blockNode(if (r.s.mark.line == line) .value_inline else .entry);
+}
+
+/// A document's end: `...`, after which only a comment may be on its
+/// line; or, ended by no marker, the next `---` or the stream's end.
 fn documentEnd(r: *Reader) Error!void {
     try r.skipToToken();
-    if (!r.atEnd()) return error.Unsupported;
-    const m = r.endMark();
-    try r.emit(m, m, .{ .document_end = .{ .explicit = false } });
-    r.documents += 1;
     r.state = .document_start;
+    if (r.atMarker("...")) {
+        const start = r.s.mark;
+        r.advanceAscii(start.offset + 3);
+        const end = r.s.mark;
+        r.skipBlanks();
+        if (!r.atBlockNodeEnd()) return error.Unsupported;
+        try r.emit(start, end, .{ .document_end = .{ .explicit = true } });
+        r.after_end_marker = true;
+        // The parser gives `...` only once it has read the token after:
+        // read on to it in this step, so a hand-over there drops this
+        // event with it, not yet given.
+        return r.documentStart();
+    }
+    if (!r.atEnd() and !r.atMarker("---")) return error.Unsupported;
+    const m = if (r.atEnd()) r.endMark() else r.s.mark;
+    try r.emit(m, m, .{ .document_end = .{ .explicit = false } });
+    r.after_end_marker = false;
+}
+
+/// Whether the document marker `marker` begins the line at the cursor:
+/// a blank, a line break or the end after it.
+fn atMarker(r: *const Reader, comptime marker: []const u8) bool {
+    if (r.s.mark.column != 0 or !std.mem.startsWith(u8, r.s.input[r.s.mark.offset..], marker)) return false;
+    const c = r.s.ch(3);
+    return r.s.mark.offset + 3 >= r.s.input.len or chars.isBlankOrBreak(c);
+}
+
+/// Whether a directive (`%`) begins the line at the cursor.
+fn atDirective(r: *const Reader) bool {
+    return r.s.mark.column == 0 and !r.atEnd() and r.s.ch(0) == '%';
 }
 
 /// Where the stream ends, as the scanner marks it: a last line with no
@@ -253,6 +318,13 @@ fn closeBlock(r: *Reader, data: Event.Data, mark: Mark) Error!void {
     _ = r.blocks.pop();
     r.s.indent = r.indent();
     r.pop();
+}
+
+/// Whether the next token ends the innermost block collection: the
+/// stream's end, a document marker (which ends every one), or a line
+/// less indented.
+fn atBlockEnd(r: *const Reader) bool {
+    return r.atEnd() or r.s.atDocumentMarkerLine() or r.column() < r.indent();
 }
 
 /// Where the next token ends a block collection: at its start, or at the
@@ -335,14 +407,14 @@ fn blockScalar(r: *Reader) Error!void {
 
 fn blockSequenceEntry(r: *Reader) Error!void {
     try r.skipToToken();
-    if (r.atEnd() or r.column() < r.indent()) return r.closeBlock(.sequence_end, r.blockEndMark());
-    if (r.column() > r.indent() or !r.atIndicator('-') or r.s.atDocumentMarkerLine()) return error.Unsupported;
+    if (r.atBlockEnd()) return r.closeBlock(.sequence_end, r.blockEndMark());
+    if (r.column() > r.indent() or !r.atIndicator('-')) return error.Unsupported;
     const line = r.s.mark.line;
     r.s.skip();
     const dash_end = r.s.mark;
     try r.skipToToken();
-    if (r.atEnd() or r.s.mark.line != line and r.column() <= r.indent()) {
-        if (!r.atEnd() and r.column() == r.indent() and !r.atIndicator('-')) return error.Unsupported;
+    if (r.atBlockEnd() or r.s.mark.line != line and r.column() <= r.indent()) {
+        if (!r.atBlockEnd() and !r.atIndicator('-')) return error.Unsupported;
         return r.emitEmpty(dash_end);
     }
     try r.push(.block_sequence_entry);
@@ -351,7 +423,7 @@ fn blockSequenceEntry(r: *Reader) Error!void {
 
 fn indentlessSequenceEntry(r: *Reader) Error!void {
     try r.skipToToken();
-    if (r.atEnd() or r.column() < r.indent()) return r.endIndentless();
+    if (r.atBlockEnd()) return r.endIndentless();
     if (r.column() > r.indent()) return error.Unsupported;
     if (!r.atIndicator('-')) {
         // The sequence ends at its mapping's next key, or a `:`: the
@@ -363,8 +435,8 @@ fn indentlessSequenceEntry(r: *Reader) Error!void {
     r.s.skip();
     const dash_end = r.s.mark;
     try r.skipToToken();
-    if (r.atEnd() or r.s.mark.line != line and r.column() <= r.indent()) {
-        if (!r.atEnd() and r.column() == r.indent() and !r.atIndicator('-') and !r.atIndicator(':') and !try r.keyAhead()) return error.Unsupported;
+    if (r.atBlockEnd() or r.s.mark.line != line and r.column() <= r.indent()) {
+        if (!r.atBlockEnd() and !r.atIndicator('-') and !r.atIndicator(':') and !try r.keyAhead()) return error.Unsupported;
         return r.emitEmpty(dash_end);
     }
     try r.push(.indentless_sequence_entry);
@@ -379,8 +451,8 @@ fn endIndentless(r: *Reader) Error!void {
 
 fn blockMappingKey(r: *Reader) Error!void {
     try r.skipToToken();
-    if (r.atEnd() or r.column() < r.indent()) return r.closeBlock(.mapping_end, r.blockEndMark());
-    if (r.column() > r.indent() or r.s.atDocumentMarkerLine()) return error.Unsupported;
+    if (r.atBlockEnd()) return r.closeBlock(.mapping_end, r.blockEndMark());
+    if (r.column() > r.indent()) return error.Unsupported;
     if (r.atIndicator(':')) {
         // A value with no key: the key is empty.
         try r.emitEmpty(r.s.mark);
@@ -403,8 +475,7 @@ fn blockMappingValue(r: *Reader) Error!void {
         try r.push(.block_mapping_key);
         return r.blockNode(.value_inline);
     }
-    if (r.s.atDocumentMarkerLine()) return error.Unsupported;
-    if (r.column() < r.indent()) return r.emitEmpty(colon_end);
+    if (r.atBlockEnd()) return r.emitEmpty(colon_end);
     if (r.column() == r.indent() and !r.atIndicator('-')) {
         // The next key, or the `:` of an empty one.
         if (!r.atIndicator(':') and !try r.keyAhead()) return error.Unsupported;
@@ -490,8 +561,16 @@ fn lineContinuesPlain(input: []const u8, line_start: usize, i: usize, indent_col
     if (i >= input.len) return false;
     if (input[i] == '\t') return true;
     if (input[i] == '#') return false;
-    if (i == line_start and (std.mem.startsWith(u8, input[i..], "---") or std.mem.startsWith(u8, input[i..], "..."))) return true;
+    if (i == line_start and atMarkerText(input, i)) return false;
     return @as(isize, @intCast(i - line_start)) > indent_col;
+}
+
+/// Whether a document marker, `---` or `...` and a blank, a line break
+/// or the end after it, is at `i` in `input`.
+fn atMarkerText(input: []const u8, i: usize) bool {
+    const rest = input[i..];
+    if (!std.mem.startsWith(u8, rest, "---") and !std.mem.startsWith(u8, rest, "...")) return false;
+    return rest.len == 3 or chars.isBlankOrBreak(rest[3]);
 }
 
 /// How many bytes the line break at `i` takes: `\r\n` two.
@@ -687,6 +766,8 @@ fn flowScalar(r: *Reader) Error!Scanner.Token {
 /// A tab is unsupported, and a comment must follow whitespace.
 fn skipToToken(r: *Reader) Error!void {
     while (true) {
+        // The scanner skips a byte order mark where a document may begin.
+        if (r.s.mark.column == 0 and r.indent() < 0 and r.s.flow_level == 0 and std.mem.startsWith(u8, r.s.input[r.s.mark.offset..], "\xEF\xBB\xBF")) return error.Unsupported;
         r.skipSpaces();
         const c = r.s.ch(0);
         if (r.atEnd()) return;

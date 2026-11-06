@@ -8,8 +8,6 @@
 whole 26DV     # Whitespace around colon in mappings
 whole 27NA     # Spec Example 5.9. Directive Indicator
 whole 2AUY     # Tags in Block Sequence
-whole 2G84/02  # Literal modifers
-whole 2G84/03  # Literal modifers
 whole 2JQS     # Block Mapping with Missing Keys
 whole 2LFX     # Spec Example 6.13. Reserved Directives [1.3]
 whole 2SXE     # Anchors With Colon in Name
@@ -26,8 +24,6 @@ whole 4FJ6     # Nested implicit complex keys
 whole 4MUZ/00  # Flow mapping colon on line after key
 whole 4MUZ/01  # Flow mapping colon on line after key
 whole 4MUZ/02  # Flow mapping colon on line after key
-whole 4Q9F     # Folded Block Scalar [1.3]
-whole 4V8U     # Plain scalar with backslashes
 whole 4ZYM     # Spec Example 6.4. Line Prefixes
 whole 52DL     # Explicit Non-Specific Tag [1.3]
 whole 565N     # Construct Binary
@@ -40,51 +36,37 @@ whole 6BCT     # Spec Example 6.3. Separation Spaces
 whole 6BFJ     # Mapping, key and flow sequence item anchors
 whole 6CA3     # Tab indented top flow
 whole 6CK3     # Spec Example 6.26. Tag Shorthands
-whole 6FWR     # Block Scalar Keep
 whole 6HB6     # Spec Example 6.1. Indentation Spaces
-whole 6JQW     # Spec Example 2.13. In literals, newlines are preserved
 whole 6JWB     # Tags for Block Objects
 whole 6KGN     # Anchor for empty node
 whole 6LVF     # Spec Example 6.13. Reserved Directives
 whole 6M2F     # Aliases in Explicit Block Mapping
 whole 6PBE     # Zero-indented sequences in explicit mapping keys
 whole 6WLZ     # Spec Example 6.18. Primary Tag Handle [1.3]
-whole 6WPF     # Spec Example 6.8. Flow Folding [1.3]
-whole 6XDY     # Two document start markers
 whole 6ZKB     # Spec Example 9.6. Stream
 whole 735Y     # Spec Example 8.20. Block Node Types
 whole 74H7     # Tags in Implicit Mapping
-whole 753E     # Block Scalar Strip [1.3]
 whole 7BMT     # Node and Mapping Key Anchors [1.3]
 whole 7BUB     # Spec Example 2.10. Node for “Sammy Sosa” appears twice in this document
 whole 7FWL     # Spec Example 6.24. Verbatim Tags
 whole 7TMG     # Comment in flow sequence before comma
 whole 7W2P     # Block Mapping with Missing Values
-whole 7Z25     # Bare document after document end marker
-whole 7ZZ5     # Empty flow collections
 whole 82AN     # Three dashes and content without space
 whole 87E4     # Spec Example 7.8. Single Quoted Implicit Keys
-whole 8CWC     # Plain mapping key ending with colon
 whole 8KB6     # Multiline plain flow mapping key without value
 whole 8MK2     # Explicit Non-Specific Tag
 whole 8UDB     # Spec Example 7.14. Flow Sequence Entries
 whole 8XYN     # Anchor with unicode character
-whole 93WF     # Spec Example 6.6. Line Folding [1.3]
-whole 96L6     # Spec Example 2.14. In the folded scalars, newlines become spaces
 whole 9BXH     # Multiline doublequoted flow mapping key without value
 whole 9DXL     # Spec Example 9.6. Stream [1.3]
 whole 9KAX     # Various combinations of tags and anchors
 whole 9MMW     # Single Pair Implicit Entries
-whole 9MQT/00  # Scalar doc with '...' in content
 whole 9SA2     # Multiline double quoted flow mapping key
-whole 9TFX     # Spec Example 7.6. Double Quoted Lines [1.3]
-whole 9U5K     # Spec Example 2.12. Compact Nested Mapping
 whole 9WXW     # Spec Example 6.18. Primary Tag Handle
 whole 9YRD     # Multiline Scalar at Top Level
 whole A2M4     # Spec Example 6.2. Indentation Indicators
 whole A984     # Multiline Scalar in Mapping
 whole AB8U     # Sequence entry that looks like two with wrong indentation
-whole B3HG     # Spec Example 8.9. Folded Scalar [1.3]
 whole BEC7     # Spec Example 6.14. “YAML” directive
 whole BU8L     # Node Anchor and Tag on Seperate Lines
 whole C2DT     # Spec Example 7.18. Flow Mapping Adjacent Values
@@ -92,13 +74,11 @@ whole C4HZ     # Spec Example 2.24. Global Tags
 whole CC74     # Spec Example 6.20. Tag Handles
 whole CFD4     # Empty implicit key in single pair flow sequences
 whole CN3R     # Various location of anchors in flow sequence
-whole CPZ3     # Doublequoted scalar starting with a tab
 whole CT4Q     # Spec Example 7.20. Single Pair Explicit Entry
 whole CUP7     # Spec Example 5.6. Node Property Indicators
 whole DBG4     # Spec Example 7.10. Plain Characters
 whole DC7X     # Various trailing tabs
 whole DFF7     # Spec Example 7.16. Flow Mapping Entries
-whole DK3J     # Zero indented block scalar with line that looks like a comment
 whole DK95/00  # Tabs that look like indentation
 whole DK95/03  # Tabs that look like indentation
 whole DK95/04  # Tabs that look like indentation
@@ -109,36 +89,27 @@ whole EHF6     # Tags for Flow Objects
 whole EX5H     # Multiline Scalar at Top Level [1.3]
 whole EXG3     # Three dashes and content without space [1.3]
 whole F2C7     # Anchors and Tags
-whole F3CP     # Nested flow collections on one line
-whole F6MC     # More indented lines at the beginning of folded block scalars
 whole FBC9     # Allowed characters in plain scalars
 whole FH7J     # Tags on Empty Scalars
-whole FP8R     # Zero indented block scalar
 whole FRK4     # Spec Example 7.3. Completely Empty Flow Nodes
 whole FTA2     # Single block sequence with anchor and explicit document start
 whole GH63     # Mixed Block Mapping (explicit to implicit)
-whole H3Z8     # Literal unicode
 whole HMQ5     # Spec Example 6.23. Node Properties
 whole HS5T     # Spec Example 7.12. Plain Lines
-whole HWV9     # Document-end marker
 whole J3BT     # Spec Example 5.12. Tabs and Spaces
 whole J7PZ     # Spec Example 2.26. Ordered Mappings
-whole J9HZ     # Spec Example 2.9. Single Document with Two Comments
-whole JHB9     # Spec Example 2.7. Two Documents in a Stream
 whole JS2J     # Spec Example 6.29. Node Anchors
 whole JTV5     # Block Mapping with Multiline Scalars
 whole K3WX     # Colon and adjacent value after comment on next line
 whole K54U     # Tab after document header
 whole KK5P     # Various combinations of explicit block mappings
 whole KSS4     # Scalars on --- line
-whole L383     # Two scalar docs with trailing comments
 whole L94M     # Tags in Explicit Mapping
 whole L9U5     # Spec Example 7.11. Plain Implicit Keys
 whole LE5A     # Spec Example 7.24. Flow Nodes
 whole LP6E     # Whitespace After Scalars in Flow
 whole LQZ7     # Spec Example 7.4. Double Quoted Implicit Keys
 whole LX3P     # Implicit Flow Mapping Key on one line
-whole M29M     # Literal Block Scalar
 whole M2N8/00  # Question mark edge cases
 whole M2N8/01  # Question mark edge cases
 whole M5C3     # Spec Example 8.21. Block Scalar Nodes
@@ -150,39 +121,26 @@ whole MUS6/03  # Directive variants
 whole MUS6/04  # Directive variants
 whole MUS6/05  # Directive variants
 whole MUS6/06  # Directive variants
-whole MYW6     # Block Scalar Strip
-whole NAT4     # Various empty or newline only quoted strings
 whole NB6Z     # Multiline plain value with tabs on empty lines
 whole NHX8     # Empty Lines at End of Document
 whole NJ66     # Multiline plain flow mapping key
 whole NKF9     # Empty keys in block and flow mapping
 whole P76L     # Spec Example 6.19. Secondary Tag Handle
-whole PUW8     # Document start on last line
 whole PW8X     # Anchors on Empty Scalars
 whole Q5MG     # Tab at beginning of line followed by a flow mapping
-whole Q8AD     # Spec Example 7.5. Double Quoted Line Breaks [1.3]
 whole Q9WF     # Spec Example 6.12. Separation Spaces
 whole QF4Y     # Spec Example 7.19. Single Pair Flow Mappings
-whole QT73     # Comment and document-end marker
-whole R52L     # Nested flow mapping sequence and mappings
 whole RR7F     # Mixed Block Mapping (implicit to explicit)
 whole RTP8     # Spec Example 9.2. Document Markers
 whole RZP5     # Various Trailing Comments [1.3]
 whole RZT7     # Spec Example 2.28. Log File
 whole S4JQ     # Spec Example 6.28. Non-Specific Tags
-whole S4T7     # Document with footer
-whole S7BG     # Colon followed by comma
 whole S9E8     # Spec Example 5.3. Block Structure Indicators
 whole SBG9     # Flow Sequence in Flow Mapping
 whole SKE5     # Anchor before zero indented sequence
 whole SM9W/01  # Single character streams
-whole SSW6     # Spec Example 7.7. Single Quoted Characters [1.3]
-whole T26H     # Spec Example 8.8. Literal Content [1.3]
-whole T4YY     # Spec Example 7.9. Single Quoted Lines [1.3]
-whole T5N4     # Spec Example 8.7. Literal Scalar [1.3]
 whole U3C3     # Spec Example 6.16. “TAG” directive
 whole U3XV     # Node and Mapping Key Anchors
-whole U9NS     # Spec Example 2.8. Play by Play Feed from a Game
 whole UGM3     # Spec Example 2.27. Invoice
 whole UKK6/00  # Syntax character edge cases
 whole UKK6/02  # Syntax character edge cases
