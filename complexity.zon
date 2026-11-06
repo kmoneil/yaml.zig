@@ -20,6 +20,7 @@
         "src/encoding.zig",
         "src/Emitter.zig",
         "src/stringify.zig",
+        "src/map.zig",
     },
     // Test code, the test-suite harness, tools and the build. gnarl skips
     // zig-pkg (fetched packages) and what git ignores by itself.

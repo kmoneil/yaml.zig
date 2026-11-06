@@ -46,6 +46,10 @@ pub const ParseError = construct.ParseError;
 /// A document of any shape.
 pub const Value = construct.Value;
 
+/// A map from strings to values, for a mapping whose keys are not known
+/// at compile time; `parseFromSlice` and `stringify` take it as a field.
+pub const ArrayHashMap = @import("map.zig").ArrayHashMap;
+
 const stringify_mod = @import("stringify.zig");
 /// Writes a Zig value as a YAML document; `parseFromSlice` reads it back.
 pub const stringify = stringify_mod.stringify;
@@ -74,4 +78,5 @@ test {
     _ = @import("Emitter_test.zig");
     _ = @import("stringify_test.zig");
     _ = @import("fuzz_test.zig");
+    _ = @import("map_test.zig");
 }

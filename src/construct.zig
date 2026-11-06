@@ -109,7 +109,7 @@ fn build(comptime T: type, result: Allocator, scratch: Allocator, bytes: []const
     });
     defer composer.deinit();
     const document = try composeOne(&composer, options);
-    var builder: Builder = .{ .allocator = result, .scratch = scratch, .options = options };
+    var builder: Builder = .{ .allocator = result, .scratch = scratch, .options = options, .seed = composer.seed };
     defer builder.visiting.deinit(scratch);
     const root: *const Node = if (document) |d| d.root else &empty_document;
     return builder.build(T, root, 0);
@@ -141,6 +141,8 @@ const Builder = struct {
     alias_depth: usize = 0,
     /// Nodes built through aliases so far.
     alias_nodes: usize = 0,
+    /// The seed of every map built, from a hash of the input.
+    seed: u64 = 0,
 
     fn fail(b: *const Builder, node: *const Node, err: ParseError, message: []const u8) ParseError {
         return report(b.options, .{ .mark = node.start, .message = message }, err);
@@ -311,6 +313,7 @@ const Builder = struct {
     fn buildStruct(b: *Builder, comptime T: type, node: *const Node, depth: usize) ParseError!T {
         const info = @typeInfo(T).@"struct";
         if (info.is_tuple) return b.buildTuple(T, node, depth);
+        if (comptime @hasDecl(T, "yaml_map_value")) return b.buildMap(T, node, depth);
         const pairs = try b.pairsOf(node);
         try b.enter(node);
         defer b.leave(node);
@@ -326,6 +329,26 @@ const Builder = struct {
         inline for (info.field_names, info.field_types, info.field_attrs, 0..) |name, Field, attrs, i| {
             if (!seen[i]) @field(out, name) = attrs.defaultValue(Field) orelse
                 return b.fail(node, error.MissingField, "the mapping has no key for a field with no default");
+        }
+        return out;
+    }
+
+    /// A `map.ArrayHashMap`: each scalar key's text to its value built as
+    /// the map's value type, in the document's order. With duplicate keys
+    /// kept, a later key's value replaces the earlier's, in its place.
+    fn buildMap(b: *Builder, comptime T: type, node: *const Node, depth: usize) ParseError!T {
+        const pairs = try b.pairsOf(node);
+        try b.enter(node);
+        defer b.leave(node);
+        var out: T = .{ .context = .{ .seed = b.seed } };
+        try out.map.ensureTotalCapacityContext(b.allocator, pairs.len, out.context);
+        for (pairs) |pair| {
+            const key = pair.key.target();
+            if (key.data != .scalar) return b.fail(key, error.UnexpectedType, "a map's keys are scalars, and this is a collection");
+            const value = try b.build(T.yaml_map_value, pair.value, depth + 1);
+            const entry = out.map.getOrPutAssumeCapacityContext(key.data.scalar.value, out.context);
+            if (!entry.found_existing) entry.key_ptr.* = try b.allocator.dupe(u8, key.data.scalar.value);
+            entry.value_ptr.* = value;
         }
         return out;
     }
