@@ -66,7 +66,8 @@ pub fn toUtf8(allocator: Allocator, bytes: []const u8, diagnostic: ?*Diagnostic)
 }
 
 fn invalid(diagnostic: ?*Diagnostic, offset: usize, message: []const u8) Error {
-    if (diagnostic) |d| d.* = .{ .mark = .{ .offset = offset }, .message = message };
+    // A mark counts to 4 GiB, as the scanner reads no longer an input.
+    if (diagnostic) |d| d.* = .{ .mark = .{ .offset = std.math.lossyCast(u32, offset) }, .message = message };
     return error.InvalidEncoding;
 }
 

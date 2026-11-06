@@ -9,11 +9,13 @@ const std = @import("std");
 const Diagnostic = @This();
 
 /// A place in the input. Lines and columns count from 0, and a column
-/// counts characters (code points), not bytes.
+/// counts characters (code points), not bytes. 32 bits each, as the
+/// scanner refuses an input past 4 GiB: a node holds two, and a token
+/// and an event two, so their size is the library's memory (t46).
 pub const Mark = struct {
-    offset: usize = 0,
-    line: usize = 0,
-    column: usize = 0,
+    offset: u32 = 0,
+    line: u32 = 0,
+    column: u32 = 0,
 };
 
 mark: Mark = .{},

@@ -30,17 +30,17 @@ test "security: CWE-372 each stage gives its first error again after it" {
     for (0..3) |_| try testing.expectError(error.DuplicateKey, composer.next());
 }
 
-test "security: CWE-190 an input longer than a signed size holds is refused" {
-    // Columns are compared as isizes. A slice as long as that, made from
-    // four real bytes: the scanner must refuse it before it reads past
-    // them (2 GiB on a 32-bit target).
+test "security: CWE-190 an input longer than a mark can count is refused" {
+    // A mark counts in 32 bits and columns compare as isizes. A slice one
+    // byte longer than that, made from four real bytes: the scanner must
+    // refuse it before it reads past them.
     const bytes: [4]u8 = "a: b".*;
     // Its length known only at run time, so the slice is no array type.
-    var len: usize = std.math.maxInt(isize);
+    var len: usize = yaml.Scanner.max_input;
     len += 1;
     const huge = @as([*]const u8, &bytes)[0..len];
     var scanner: yaml.Scanner = .init(gpa, huge);
     defer scanner.deinit();
     try testing.expectError(error.SyntaxError, scanner.next());
-    try testing.expectEqualStrings("the input is longer than this target can count in a signed size", scanner.diagnostic.message);
+    try testing.expectEqualStrings("the input is longer than a mark can count: 4 GiB, or 2 GiB on a 32-bit target", scanner.diagnostic.message);
 }

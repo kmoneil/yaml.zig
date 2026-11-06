@@ -109,6 +109,10 @@ const SimpleKey = struct {
     flow_mapping: bool = false,
 };
 
+/// The longest input the scanner reads, in bytes: a mark's u32, or this
+/// target's isize if less.
+pub const max_input: usize = @min(std.math.maxInt(u32), std.math.maxInt(isize));
+
 /// The longest an implicit key may be, in characters (YAML 1.2.2, 7.4.2).
 const max_simple_key_length = 1024;
 
@@ -316,11 +320,12 @@ fn fetchStreamStart(s: *Scanner) Error!void {
     s.simple_key_allowed = true;
     s.stream = .scanning;
     try s.simple_keys.append(s.gpa, .{});
-    // Columns and indentation are compared as isizes: an input longer than
-    // an isize holds (2 GiB on a 32-bit target) could have a line whose
-    // column would not fit one.
-    if (s.input.len > std.math.maxInt(isize)) {
-        return s.fail(s.mark, "the input is longer than this target can count in a signed size");
+    // A mark counts in 32 bits (t46), and columns and indentation are
+    // compared as isizes, 2 GiB on a 32-bit target: past either, a place
+    // in the input could not be counted. Every cast of an offset, line or
+    // column to a mark's u32 rests on this.
+    if (s.input.len > max_input) {
+        return s.fail(s.mark, "the input is longer than a mark can count: 4 GiB, or 2 GiB on a 32-bit target");
     }
     if (encoding.detect(s.input) != .utf8) {
         return s.fail(s.mark, "this input is UTF-16 or UTF-32: decode it to UTF-8 first (encoding.toUtf8)");
@@ -806,7 +811,7 @@ fn scanPlainScalar(s: *Scanner) Error!Token {
     var folded: std.ArrayList(u8) = .empty;
     const arena = s.arena.allocator();
     var breaks: usize = 0;
-    var line_start = s.mark.offset;
+    var line_start: usize = s.mark.offset;
     try s.scanPlainLine(&end);
     const first_line = s.input[start.offset..end.offset];
     while (true) {
@@ -907,9 +912,9 @@ fn scanQuotedScalar(s: *Scanner, style: ScalarStyle) Error!Token {
     s.skip();
     const value: []const u8 = if (s.quotedAsWritten(quote)) |len| as_written: {
         const text = s.input[s.mark.offset..][0..len];
-        s.mark.offset += len;
+        s.mark.offset += @intCast(len);
         // quotedAsWritten found the text valid UTF-8.
-        s.mark.column += std.unicode.utf8CountCodepoints(text) catch unreachable;
+        s.mark.column += @intCast(std.unicode.utf8CountCodepoints(text) catch unreachable);
         break :as_written text;
     } else try s.scanQuotedValue(quote, start);
     s.skip();
@@ -1275,7 +1280,7 @@ fn atDocumentMarker(s: *const Scanner, marker: []const u8) bool {
 
 /// Moves past one character (not a line break).
 fn skip(s: *Scanner) void {
-    s.mark.offset = @min(s.mark.offset + utf8Length(s.ch(0)), s.input.len);
+    s.mark.offset = @intCast(@min(s.mark.offset + utf8Length(s.ch(0)), s.input.len));
     s.mark.column += 1;
 }
 

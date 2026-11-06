@@ -86,7 +86,7 @@ and a NUL byte in a block scalar looped forever.
 | ID | Attack | Source | Defense | Test | Status |
 |---|---|---|---|---|---|
 | NUM-01 | A number past its type: wrapped, saturated, or undefined behaviour in an unchecked build | CWE-190, CWE-681 | Every conversion is bounded and refused past the type with error.Overflow (t28, t35, t40) | test/security/types_test.zig: security: CWE-190 numbers past their type are refused, in every optimize mode ; src/construct_test.zig: a float into an integer: up to the type's edge, and not past it ; src/construct_test.zig: an integer into a u128, past an i128 too ; src/construct_test.zig: an integer wider than 128 bits, from integer text and from a float | covered |
-| NUM-02 | An input longer than a signed size: column and indentation compares overflow on a 32-bit target | CWE-190 | The scanner refuses an input longer than maxInt(isize) | test/security/api_test.zig: security: CWE-190 an input longer than a signed size holds is refused | covered |
+| NUM-02 | An input longer than a mark or a signed size counts: an offset, line or column overflows | CWE-190 | The scanner refuses an input past Scanner.max_input: 4 GiB, a mark's u32 (t46), or 2 GiB on a 32-bit target | test/security/api_test.zig: security: CWE-190 an input longer than a mark can count is refused | covered |
 
 ## Encoding
 
