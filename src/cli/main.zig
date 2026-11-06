@@ -244,6 +244,38 @@ fn decode(arena: Allocator, path: []const u8, bytes: []const u8, finding: *Findi
     };
 }
 
+/// Reads every document of `text` a node at a time, as the composer's
+/// steps give them (the checks of composing all made: syntax, equal keys,
+/// aliases, the schema's tags) without holding a document's graph: only
+/// what an alias may name, and a mapping's keys while it is open. False,
+/// the finding set, when it is not YAML.
+fn validate(arena: Allocator, path: []const u8, text: []const u8, options: Options, finding: *Finding) Allocator.Error!bool {
+    var c: yaml.Composer = .init(arena, text, options.composer);
+    defer c.deinit();
+    readSteps(&c) catch |err| switch (err) {
+        error.OutOfMemory => |e| return e,
+        else => {
+            finding.* = .{ .path = path, .text = text, .diagnostic = c.diagnostic };
+            return false;
+        },
+    };
+    return true;
+}
+
+fn readSteps(c: *yaml.Composer) yaml.Composer.Error!void {
+    var slot: yaml.Composer.Node = undefined;
+    while (try c.beginDocument()) |_| {
+        // The root; a collection begun, its steps to its end.
+        var open: usize = @intFromBool(try c.stepInto(&slot) == .begin);
+        while (open > 0) switch (try c.stepInto(&slot)) {
+            .begin => open += 1,
+            .end => open -= 1,
+            .scalar, .node => {},
+        };
+        try c.endDocument();
+    }
+}
+
 /// Composes every document of `text`, their roots; null, the finding
 /// set, when it is not YAML.
 fn compose(arena: Allocator, path: []const u8, text: []const u8, options: Options, finding: *Finding) Allocator.Error!?[]const *yaml.Composer.Node {
@@ -319,7 +351,7 @@ fn check(arena: Allocator, io: Io, out: *Io.Writer, args: Args) !u8 {
             continue;
         };
         var finding: Finding = undefined;
-        const clean = if (try decode(arena, path, bytes, &finding)) |text| try compose(arena, path, text, args.options, &finding) != null else false;
+        const clean = if (try decode(arena, path, bytes, &finding)) |text| try validate(arena, path, text, args.options, &finding) else false;
         if (clean) continue;
         switch (args.options.format) {
             .text => try writeFinding(out, finding),

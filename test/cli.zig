@@ -14,6 +14,7 @@ const files = [_]struct { []const u8, []const u8 }{
     .{ "cycle.yaml", "&a [*a]\n" },
     .{ "data.json", "{\"name\": \"x\", \"on\": \"yes\", \"n\": [1, 2.5, null, true]}\n" },
     .{ "tab.yaml", "a:\n\tb: 1\n" },
+    .{ "late.yaml", "--- a\n--- {b: 1, b: 2}\n" },
 };
 
 const Case = struct {
@@ -28,6 +29,7 @@ const cases = [_]Case{
     .{ .argv = &.{ "check", "good.yaml", "stream.yaml", "alias.yaml" }, .exit = 0 },
     .{ .argv = &.{ "check", "dup.yaml" }, .exit = 1, .stdout = "dup.yaml:2:1: a mapping cannot have two equal keys\na: 2\n^\n" },
     .{ .argv = &.{ "check", "--duplicate-keys", "keep", "dup.yaml" }, .exit = 0 },
+    .{ .argv = &.{ "check", "late.yaml" }, .exit = 1, .stdout = "late.yaml:2:12: a mapping cannot have two equal keys\n--- {b: 1, b: 2}\n           ^\n" },
     .{ .argv = &.{ "check", "good.yaml", "tab.yaml", "dup.yaml" }, .exit = 1, .stdout = "tab.yaml:2:2: a tab character cannot indent a block\n\tb: 1\n\t^\ndup.yaml:2:1: a mapping cannot have two equal keys\na: 2\n^\n" },
     .{ .argv = &.{ "check", "--format", "json", "good.yaml" }, .exit = 0, .stdout = "[]\n" },
     .{ .argv = &.{ "check", "--format", "json", "dup.yaml", "good.yaml" }, .exit = 1, .stdout = "[\n{\"file\":\"dup.yaml\",\"line\":2,\"column\":1,\"message\":\"a mapping cannot have two equal keys\"}\n]\n" },
