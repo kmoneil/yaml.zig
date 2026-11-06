@@ -49,6 +49,7 @@ const corpus = [_][]const u8{
     "- [a, {b: c}, \"d\", 'e']\n- ? k\n  : v\n",
     "%YAML 1.2\n%TAG !e! tag:e.com,2000:\n--- !e!x &a\nk: *a\n...\n",
     "%TAG !e! %5Bt%20%C3%A9:\n--- !e!x [!e!y a]\n",
+    "--- |\x00\n  b\n...\n",
     "a: |\n  lit\n   more\nb: >-\n  fold\n  ed\n\nc: |2+\n   x\n\n",
     "\"esc \\t \\u00e9 \\x41\": 'it''s'\n",
     "{\"json\":1, \"adj\":[2]}\n",

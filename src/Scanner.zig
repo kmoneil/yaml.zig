@@ -1141,7 +1141,10 @@ fn scanBlockHeader(s: *Scanner) Error!BlockHeader {
 fn skipBlockHeaderEnd(s: *Scanner) Error!void {
     while (isBlank(s.ch(0))) s.skip();
     if (s.ch(0) == '#') try s.skipComment();
-    if (!isBreakOrEnd(s.ch(0))) return s.fail(s.mark, "a block scalar's header must end its line, but for a comment");
+    // The input's real end: `ch` gives a NUL byte as 0 too, as it does
+    // the end, and a NUL here is no end.
+    const at_end = s.mark.offset >= s.input.len;
+    if (!isBreak(s.ch(0)) and !at_end) return s.fail(s.mark, "a block scalar's header must end its line, but for a comment");
     if (isBreak(s.ch(0))) s.skipBreak();
 }
 
@@ -1219,7 +1222,11 @@ fn scanBlockLine(s: *Scanner, block: *BlockScalar) Error!void {
     block.trailing_breaks = 0;
     block.leading_blank = blank;
     const line_start = s.mark.offset;
-    while (!isBreakOrEnd(s.ch(0))) {
+    // To the input's real end: a NUL byte, which `ch` gives as 0 as it
+    // does the end, is a character to refuse. Stopping at one left the
+    // scanner where the line began, at content again: it looped forever
+    // (found by fuzzing, t43).
+    while (s.mark.offset < s.input.len and !isBreak(s.ch(0))) {
         if (!isPrintable(s.input, s.mark.offset)) return s.fail(s.mark, "found a character that is not allowed in YAML");
         s.skip();
     }

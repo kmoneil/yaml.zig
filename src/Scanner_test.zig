@@ -827,6 +827,12 @@ test "block scalar errors (suite 2G84, 5LLU, S98Z, W9L4, Y79Y/000)" {
         .{ "foo: |\n\t\nbar: 1\n", "2:1 a tab character cannot indent a block scalar" },
         .{ "foo: |\n  x\n \t\nbar: 1\n", "3:2 a tab character cannot indent a block scalar" },
         .{ "[ |\n  x ]", "1:3 found a character that cannot start any token" },
+        // A NUL byte, read as 0 as the input's end is, once looped
+        // forever (t43; the last is the fuzzer's input).
+        .{ "--- |\x00", "1:6 a block scalar's header must end its line, but for a comment" },
+        .{ "|\n\x00", "2:1 found a character that is not allowed in YAML" },
+        .{ ">\n  a\n  \x00", "3:3 found a character that is not allowed in YAML" },
+        .{ "-1.5e3-!!str - a\n--- |\x00\n  b\n...\n# c\n", "2:6 a block scalar's header must end its line, but for a comment" },
     };
     inline for (errors) |case| {
         const got = try dump(testing.allocator, case[0]);
