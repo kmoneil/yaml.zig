@@ -1,0 +1,4 @@
+# gnarl baseline: the functions over a critical threshold when it was
+# written. gnarl --check fails a function that is new and over one, or
+# above its number here; gnarl --update-baseline rewrites this file.
+# path, name, cyclomatic, cognitive, lines, nesting, params, params_weighted

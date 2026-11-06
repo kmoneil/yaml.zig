@@ -1,0 +1,19 @@
+// gnarl's path classes (github.com/kmoneil/gnarl). `zig build complexity`,
+// and `zig build test` with it, runs `gnarl --check .`, which fails a
+// function over a critical limit unless complexity.baseline holds it at
+// that number or above.
+.{
+    // The release the code is judged by: a gnarl that counts otherwise
+    // refuses --check.
+    .gnarl = "0.7.0",
+    // What runs per byte, token, event or node: the scanner, parser,
+    // composer and construction. Named one by one, since a glob over src
+    // would also take test files (hot wins over cold on overlap): each
+    // pipeline file joins this list in the change that adds it.
+    .hot = .{
+        "src/root.zig",
+    },
+    // Test code, the test-suite harness, tools and the build. gnarl skips
+    // zig-pkg (fetched packages) and what git ignores by itself.
+    .cold = .{ "build.zig", "tools/**", "test/**", "src/*_test.zig" },
+}

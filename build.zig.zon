@@ -1,0 +1,13 @@
+.{
+    .name = .yaml,
+    .version = "0.0.0",
+    .fingerprint = 0xea31a98467e0804e, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "README.md",
+    },
+}
