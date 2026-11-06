@@ -171,6 +171,14 @@ const Run = union(enum) {
             else => c.failExpected(c.node, "a command, a string or a mapping"),
         };
     }
+
+    /// Written as the shape it is read from.
+    pub fn yamlStringify(r: Run, s: *yaml.Stringification) yaml.StringifyError!void {
+        switch (r) {
+            .shell => |line| try s.write(line),
+            .exec => |exec| try s.write(exec),
+        }
+    }
 };
 
 test "a type that reads itself: yamlParse" {
@@ -185,12 +193,19 @@ test "a type that reads itself: yamlParse" {
     defer parsed.deinit();
     try std.testing.expectEqualStrings("make test", parsed.value.steps[0].shell);
     try std.testing.expectEqualStrings("train.py", parsed.value.steps[1].exec.argv[1]);
+
+    // And written so it reads back the same.
+    const written = try yaml.stringifyAlloc(std.testing.allocator, parsed.value, .{});
+    defer std.testing.allocator.free(written);
+    const again = try yaml.parseFromSlice(Job, std.testing.allocator, written, .{});
+    defer again.deinit();
+    try std.testing.expectEqualDeep(parsed.value, again.value);
 }
 ```
 
-`stringify` writes such a type by its shape as any other, so a union
-like this one does not read back the same; there is no `yamlStringify`
-yet.
+Its `pub fn yamlStringify(self: @This(), s: *yaml.Stringification)
+yaml.StringifyError!void` writes it back: one value in its place, any
+that `stringify` writes (`s.write`).
 
 ### Errors say where, and why
 

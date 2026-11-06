@@ -12,6 +12,10 @@
 //! always has a point or an exponent, so `1.0` does not read back as an
 //! integer, and its infinities and NaN are `.inf`, `-.inf` and `.nan`.
 //!
+//! A type may write itself, as std.json's `jsonStringify` lets one: with
+//! a `pub fn yamlStringify(self: @This(), s: *Stringification)
+//! StringifyError!void`, which writes one value in its place.
+//!
 //! So `parseFromSlice` of what `stringify` writes gives the value back.
 
 const std = @import("std");
@@ -110,6 +114,7 @@ const Stringifier = struct {
     fn write(s: *Stringifier, value: anytype) StringifyError!void {
         const T = @TypeOf(value);
         if (T == Value) return s.writeValue(value);
+        if (comptime hasStringifyHook(T)) return s.writeWithHook(value);
         switch (@typeInfo(T)) {
             .bool => try s.scalar(if (value) "true" else "false", .plain),
             .int, .comptime_int => try s.format("{d}", .{value}),
@@ -125,6 +130,14 @@ const Stringifier = struct {
             .pointer => try s.writePointer(value),
             else => @compileError("yaml cannot stringify a " ++ @typeName(T)),
         }
+    }
+
+    /// Writes `value` with its type's own `yamlStringify`, which must have
+    /// written one value when it returns.
+    fn writeWithHook(s: *Stringifier, value: anytype) StringifyError!void {
+        var handle: Stringification = .{ .stringifier = s };
+        try value.yamlStringify(&handle);
+        if (!handle.written) @panic("a yamlStringify returned without writing a value: it writes exactly one");
     }
 
     fn writeFloat(s: *Stringifier, x: f64) StringifyError!void {
@@ -223,3 +236,31 @@ const Stringifier = struct {
         }
     }
 };
+
+/// What a type's own `yamlStringify` is given to write itself: one value,
+/// of any type `stringify` writes, in the type's place. A type declares
+///
+///     pub fn yamlStringify(self: @This(), s: *yaml.Stringification) yaml.StringifyError!void
+///
+/// and calls `write` exactly once: none, or a second, would leave a key
+/// without its value or a value with no place, and is a panic.
+pub const Stringification = struct {
+    /// Stringify's own.
+    stringifier: *Stringifier,
+    written: bool = false,
+
+    /// Writes `value` in the type's place, as `stringify` writes any.
+    pub fn write(s: *Stringification, value: anytype) StringifyError!void {
+        if (s.written) @panic("a yamlStringify wrote a second value: it writes exactly one");
+        s.written = true;
+        return s.stringifier.write(value);
+    }
+};
+
+/// Whether `T` writes itself with a `yamlStringify` (`Stringification`).
+fn hasStringifyHook(comptime T: type) bool {
+    return switch (@typeInfo(T)) {
+        .@"struct", .@"union", .@"enum", .@"opaque" => @hasDecl(T, "yamlStringify"),
+        else => false,
+    };
+}

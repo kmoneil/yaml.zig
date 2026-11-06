@@ -62,6 +62,9 @@ pub const stringifyAlloc = stringify_mod.stringifyAlloc;
 pub const StringifyOptions = stringify_mod.StringifyOptions;
 /// What writing can fail with.
 pub const StringifyError = stringify_mod.StringifyError;
+/// What a type's own `yamlStringify` gets: the way to write one value in
+/// its place.
+pub const Stringification = stringify_mod.Stringification;
 /// Where and why parsing failed: a mark (offset, line and column, from
 /// 0) and a message.
 pub const Diagnostic = @import("Diagnostic.zig");

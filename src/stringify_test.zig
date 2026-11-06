@@ -94,6 +94,37 @@ test "a non-exhaustive enum's value with no name is its number" {
     try expectRoundTrip([_]Open{ .a, @fromBackingInt(7), @fromBackingInt(255) }, .{});
 }
 
+/// A command that reads and writes itself: a line for the shell, or a
+/// program and its arguments.
+const Run = union(enum) {
+    shell: []const u8,
+    exec: struct { argv: []const []const u8, cwd: ?[]const u8 = null },
+
+    pub fn yamlParse(c: yaml.Construction) yaml.ParseError!Run {
+        return switch (c.node.data) {
+            .scalar => .{ .shell = try c.build([]const u8, c.node) },
+            .mapping => .{ .exec = try c.build(@FieldType(Run, "exec"), c.node) },
+            else => c.failExpected(c.node, "a command"),
+        };
+    }
+
+    pub fn yamlStringify(r: Run, s: *yaml.Stringification) yaml.StringifyError!void {
+        switch (r) {
+            .shell => |line| try s.write(line),
+            .exec => |exec| try s.write(exec),
+        }
+    }
+};
+
+test "a type's own yamlStringify writes it as it is read" {
+    const runs = [_]Run{ .{ .shell = "make test" }, .{ .exec = .{ .argv = &.{ "python", "train.py" }, .cwd = "src" } } };
+    try expectText(runs, .{ .style = .flow }, "[make test, {argv: [python, train.py], cwd: src}]\n");
+    try expectRoundTrip(runs, .{});
+    // Through a pointer and an optional, as any value.
+    const one: Run = .{ .shell = "true" };
+    try expectText(@as(?*const Run, &one), .{}, "'true'\n");
+}
+
 test "round trip: strings that read as other things when plain" {
     const texts = [_][]const u8{
         "true",            "False",     "null",        "~",       "",         "123", "-1.5", "0x1F", ".inf",  ".nan",   "1e3",
@@ -129,6 +160,8 @@ test "every allocation may fail, and nothing leaks when one does" {
         fn run(gpa: std.mem.Allocator) !void {
             const text = try yaml.stringifyAlloc(gpa, S{ .a = &.{ "x", "true", "1" }, .b = 1 }, .{});
             gpa.free(text);
+            const runs = try yaml.stringifyAlloc(gpa, [_]Run{ .{ .shell = "a b" }, .{ .exec = .{ .argv = &.{"c"} } } }, .{});
+            gpa.free(runs);
         }
     }.run;
     try testing.checkAllAllocationFailures(testing.allocator, run, .{});
