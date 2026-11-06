@@ -99,6 +99,9 @@ blocks: std.ArrayList(isize) = .empty,
 /// The stream has just begun, or the last document ended with `...`:
 /// the next may be bare.
 after_end_marker: bool = true,
+/// A tab was in the blanks just before the next token, on its line: no
+/// block collection may open there (the scanner's `tab_before`).
+tab_before: bool = false,
 
 /// A reader over `input`, UTF-8. It allocates nothing until `next`.
 pub fn init(gpa: Allocator, input: []const u8) Reader {
@@ -398,7 +401,7 @@ fn blockContent(r: *Reader, place: Place, props: ?Props) Error!void {
             r.state = .indentless_sequence_entry;
             return;
         }
-        if (col <= ind) return error.Unsupported;
+        if (col <= ind or r.tab_before) return error.Unsupported;
         try r.openBlock(col);
         try r.emit(startOf(props, start), start, .{ .sequence_start = .{ .properties = propertiesOf(props), .flow = false } });
         r.state = .block_sequence_entry;
@@ -463,7 +466,7 @@ fn blockQuoted(r: *Reader, place: Place, start: Mark, col: isize, props: ?Props)
 /// Opens a block mapping at `col` with `key` its first key, the cursor
 /// at the key's `:`; `props`, on the lines before, are the mapping's.
 fn firstKey(r: *Reader, place: Place, start: Mark, col: isize, key: Scanner.Token, props: ?Props) Error!void {
-    if (place == .value_inline or col <= r.indent() or !r.keyFits(start)) return error.Unsupported;
+    if (place == .value_inline or col <= r.indent() or !r.keyFits(start) or r.tab_before) return error.Unsupported;
     try r.openBlock(col);
     try r.emit(startOf(props, start), start, .{ .mapping_start = .{ .properties = propertiesOf(props), .flow = false } });
     try r.emitScalar(key);
@@ -955,10 +958,9 @@ fn skipToToken(r: *Reader) Error!void {
     while (true) {
         // The scanner skips a byte order mark where a document may begin.
         if (r.s.mark.column == 0 and r.indent() < 0 and r.s.flow_level == 0 and std.mem.startsWith(u8, r.s.input[r.s.mark.offset..], "\xEF\xBB\xBF")) return error.Unsupported;
-        r.skipSpaces();
+        try r.skipSeparation();
         const c = r.s.ch(0);
         if (r.atEnd()) return;
-        if (c == '\t') return error.Unsupported;
         if (c == '#') {
             r.s.skipComment() catch return error.Unsupported;
             continue;
@@ -968,7 +970,23 @@ fn skipToToken(r: *Reader) Error!void {
     }
 }
 
-/// Moves past the blanks and a comment between flow tokens, on one line.
+/// Moves past spaces and tabs, as the scanner's skipSeparation: a tab
+/// separates tokens anywhere, but where it would indent a block (at a
+/// line's start, before the spaces reach past the block's column) only
+/// an empty line, a comment or a flow collection may follow it.
+fn skipSeparation(r: *Reader) Error!void {
+    const line_start = r.s.mark.column == 0;
+    r.tab_before = false;
+    r.skipSpaces();
+    if (r.s.ch(0) != '\t') return;
+    const spaces = r.column();
+    r.tab_before = true;
+    r.skipBlanks();
+    if (!line_start or r.s.flow_level > 0 or spaces > r.indent()) return;
+    const c = r.s.ch(0);
+    if (c == 0 or chars.isBreak(c) or c == '#' or c == '[' or c == '{') return;
+    return error.Unsupported;
+}
 /// Moves past the blanks, comments and line breaks between flow tokens.
 /// A line a token begins after a break must be indented past the block
 /// around the collection, with spaces; a document marker, or the end,

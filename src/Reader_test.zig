@@ -89,6 +89,13 @@ test "flow collections over lines, as JSON is printed" {
     try expectWhole("{a\n:b}\n");
 }
 
+test "tabs between tokens" {
+    try expectWhole("a:\tb\nc: d\t# tail\n");
+    try expectWhole("- \tx\n");
+    try expectWhole("k:\n  \tv\n\t# a comment\n");
+    try expectWhole("- a\t\n-\tb\n");
+}
+
 test "flow collections on one line" {
     try expectWhole("tags: [alpha, beta, \"gamma 0\"]\nenv: {A: \"x\", B: 'y'}\nn: [[1, 2], {}, []]\nk: {a, b: , : c}\n");
 }
@@ -125,7 +132,8 @@ test "what it hands over: forms it does not read yet, and errors" {
     // A line of a flow collection in a block must be indented past it.
     try expectHandedOver("k: [\n  a\n]\n");
 
-    try expectHandedOver("a:\tb\n");
+    try expectHandedOver("-\ta: b\n");
+    try expectHandedOver("a:\n\tb: c\n");
     try expectHandedOver("\xEF\xBB\xBFa: b\n");
     // Errors.
     try expectHandedOver("a: b: c\n");

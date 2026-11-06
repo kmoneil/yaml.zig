@@ -16,9 +16,7 @@ whole 4FJ6     # Nested implicit complex keys
 whole 5TYM     # Spec Example 6.21. Local Tag Prefix
 whole 5WE3     # Spec Example 8.17. Explicit Block Mapping Entries
 whole 652Z     # Question mark at start of flow key
-whole 6BCT     # Spec Example 6.3. Separation Spaces
 whole 6BFJ     # Mapping, key and flow sequence item anchors
-whole 6CA3     # Tab indented top flow
 whole 6CK3     # Spec Example 6.26. Tag Shorthands
 whole 6LVF     # Spec Example 6.13. Reserved Directives
 whole 6M2F     # Aliases in Explicit Block Mapping
@@ -43,10 +41,7 @@ whole CC74     # Spec Example 6.20. Tag Handles
 whole CFD4     # Empty implicit key in single pair flow sequences
 whole CN3R     # Various location of anchors in flow sequence
 whole CT4Q     # Spec Example 7.20. Single Pair Explicit Entry
-whole DC7X     # Various trailing tabs
 whole DFF7     # Spec Example 7.16. Flow Mapping Entries
-whole DK95/00  # Tabs that look like indentation
-whole DK95/03  # Tabs that look like indentation
 whole DK95/07  # Tabs that look like indentation
 whole E76Z     # Aliases in Implicit Block Mapping
 whole EHF6     # Tags for Flow Objects
@@ -54,9 +49,7 @@ whole FH7J     # Tags on Empty Scalars
 whole FRK4     # Spec Example 7.3. Completely Empty Flow Nodes
 whole GH63     # Mixed Block Mapping (explicit to implicit)
 whole HMQ5     # Spec Example 6.23. Node Properties
-whole J3BT     # Spec Example 5.12. Tabs and Spaces
 whole JTV5     # Block Mapping with Multiline Scalars
-whole K54U     # Tab after document header
 whole KK5P     # Various combinations of explicit block mappings
 whole L94M     # Tags in Explicit Mapping
 whole L9U5     # Spec Example 7.11. Plain Implicit Keys
@@ -74,7 +67,6 @@ whole NHX8     # Empty Lines at End of Document
 whole NKF9     # Empty keys in block and flow mapping
 whole P76L     # Spec Example 6.19. Secondary Tag Handle
 whole PW8X     # Anchors on Empty Scalars
-whole Q5MG     # Tab at beginning of line followed by a flow mapping
 whole Q9WF     # Spec Example 6.12. Separation Spaces
 whole QF4Y     # Spec Example 7.19. Single Pair Flow Mappings
 whole RR7F     # Mixed Block Mapping (implicit to explicit)
@@ -92,7 +84,6 @@ whole WZ62     # Spec Example 7.2. Empty Content
 whole X38W     # Aliases in Flow Objects
 whole X8DW     # Explicit key and value seperated by comment
 whole XW4D     # Various Trailing Comments
-whole Y79Y/010 # Tabs in various contexts
 whole Z9M4     # Spec Example 6.22. Global Tag Prefix
 whole ZH7C     # Anchors in Mapping
 whole ZWK4     # Key with anchor after missing explicit mapping value
