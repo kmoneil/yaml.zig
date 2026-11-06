@@ -18,6 +18,9 @@ pub const Scanner = @import("Scanner.zig");
 /// Tokens to events: a stream's documents and the nodes in them.
 pub const Parser = @import("Parser.zig");
 
+/// Events to a graph of nodes, a document at a time.
+pub const Composer = @import("Composer.zig");
+
 test "the module builds and its tests run" {
     try std.testing.expectEqualStrings("1.2.2", spec_version);
 }
@@ -26,4 +29,5 @@ test {
     std.testing.refAllDecls(@This());
     _ = @import("Scanner_test.zig");
     _ = @import("Parser_test.zig");
+    _ = @import("Composer_test.zig");
 }
