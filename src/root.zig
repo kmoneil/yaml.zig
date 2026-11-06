@@ -25,6 +25,20 @@ pub const Composer = @import("Composer.zig");
 /// schemas, and the values their scalars hold.
 pub const schema = @import("schema.zig");
 
+const construct = @import("construct.zig");
+/// Reads the one document in a slice into a `T`; see `ParseOptions`.
+pub const parseFromSlice = construct.parseFromSlice;
+/// `parseFromSlice` into an allocator freed as a whole, as an arena is.
+pub const parseFromSliceLeaky = construct.parseFromSliceLeaky;
+pub const Parsed = construct.Parsed;
+pub const ParseOptions = construct.ParseOptions;
+pub const ParseError = construct.ParseError;
+/// A document of any shape.
+pub const Value = construct.Value;
+/// Where and why parsing failed: a mark (offset, line and column, from
+/// 0) and a message.
+pub const Diagnostic = Scanner.Diagnostic;
+
 test "the module builds and its tests run" {
     try std.testing.expectEqualStrings("1.2.2", spec_version);
 }
@@ -35,4 +49,5 @@ test {
     _ = @import("Parser_test.zig");
     _ = @import("Composer_test.zig");
     _ = @import("schema_test.zig");
+    _ = @import("construct_test.zig");
 }
