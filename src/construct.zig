@@ -289,7 +289,7 @@ const Builder = struct {
             const x = schema.parseFloat(text) orelse return b.failExpected(node, "an integer");
             if (@trunc(x) != x or !std.math.isFinite(x)) return b.fail(node, error.UnexpectedType, "expected an integer, found a fraction");
             if (!wholeFits(T, x)) return b.tooBig(T, node, text);
-            return @trunc(x);
+            return wholeToInt(T, x);
         }
         return b.failExpected(node, "an integer");
     }
@@ -304,6 +304,23 @@ const Builder = struct {
         const upper: f64 = comptime std.math.ldexp(@as(f64, 1), info.bits - @intFromBool(signed));
         const lower: f64 = if (signed) -upper else 0;
         return x >= lower and x < upper;
+    }
+
+    /// The whole number `x`, which `wholeFits` a `T`, as a `T`. LLVM has
+    /// no call converting a float to an integer wider than 128 bits
+    /// (aarch64's at least), so such a `T` is built from `x`'s
+    /// significand, a 53-bit integer, shifted by its exponent: exact, as
+    /// `x` is whole.
+    fn wholeToInt(comptime T: type, x: f64) T {
+        const info = @typeInfo(T).int;
+        if (info.bits <= 128) return @trunc(x);
+        if (x == 0) return 0;
+        const parts = std.math.frexp(@abs(x));
+        const significand: u64 = @trunc(std.math.ldexp(parts.significand, 53));
+        const shift = parts.exponent - 53;
+        const Magnitude = @Int(.unsigned, info.bits);
+        const magnitude: Magnitude = if (shift >= 0) @as(Magnitude, significand) << @intCast(shift) else significand >> @intCast(-shift);
+        return @bitCast(if (x < 0) 0 -% magnitude else magnitude);
     }
 
     fn tooBig(b: *const Builder, comptime T: type, node: *const Node, text: []const u8) ParseError {

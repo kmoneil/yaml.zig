@@ -224,6 +224,7 @@ const Typed = struct {
     ulong: u64 = 0,
     huge: i128 = 0,
     uhuge: u128 = 0,
+    wide: u256 = 0,
     half: f16 = 0,
     single: f32 = 0,
     double: f64 = 0,
@@ -277,6 +278,7 @@ const typed_edges = [_][]const u8{
     "small: -129.0",                "small: -128.0",               "half: 65520",
     "single: 3.5e38",               "open: 7",                     "open: 255",
     "level: 2",                     "level: 3",                    "items: [32768]",
+    "wide: 1.157920892373162e77",   "wide: 9.9e76",                "wide: 115792089237316195423570985008687907853269984665640564039457584007913129639935",
 };
 
 /// A mapping of `Typed`'s field names to `typed_values`, or a time in

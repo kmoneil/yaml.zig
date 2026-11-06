@@ -133,6 +133,23 @@ test "a float into an integer: up to the type's edge, and not past it" {
     try expectFailure(u0, "1.0", .{}, error.Overflow, 1, 1);
 }
 
+test "an integer wider than 128 bits, from integer text and from a float" {
+    const gpa = testing.allocator;
+    try testing.expectEqual(std.math.maxInt(u256), try yaml.parseFromSliceLeaky(u256, gpa, "115792089237316195423570985008687907853269984665640564039457584007913129639935", .{}));
+    try testing.expectEqual(std.math.minInt(i256), try yaml.parseFromSliceLeaky(i256, gpa, "-57896044618658097711785492504343953926634992332820282019728792003956564819968", .{}));
+    // Floats written as Zig writes them, so each reads back the f64 it
+    // was: the largest below 2^256, -2^255, and past each edge.
+    var buf: [64]u8 = undefined;
+    const below = std.math.ldexp(@as(f64, (1 << 53) - 1), 203);
+    try testing.expectEqual(@as(u256, (1 << 53) - 1) << 203, try yaml.parseFromSliceLeaky(u256, gpa, try std.fmt.bufPrint(&buf, "{e}", .{below}), .{}));
+    try testing.expectEqual(std.math.minInt(i256), try yaml.parseFromSliceLeaky(i256, gpa, try std.fmt.bufPrint(&buf, "{e}", .{-std.math.ldexp(@as(f64, 1), 255)}), .{}));
+    try testing.expectEqual(-3, try yaml.parseFromSliceLeaky(i256, gpa, "-3.0", .{}));
+    try testing.expectEqual(0, try yaml.parseFromSliceLeaky(u256, gpa, "-0.0", .{}));
+    try expectFailure(u256, try std.fmt.bufPrint(&buf, "{e}", .{std.math.ldexp(@as(f64, 1), 256)}), .{}, error.Overflow, 1, 1);
+    try expectFailure(i256, try std.fmt.bufPrint(&buf, "{e}", .{std.math.ldexp(@as(f64, 1), 255)}), .{}, error.Overflow, 1, 1);
+    try expectFailure(u256, "1.5", .{}, error.UnexpectedType, 1, 1);
+}
+
 test "an integer into a u128, past an i128 too" {
     try testing.expectEqual(std.math.maxInt(u128), try yaml.parseFromSliceLeaky(u128, testing.allocator, "340282366920938463463374607431768211455", .{}));
     try testing.expectEqual(std.math.maxInt(u128), try yaml.parseFromSliceLeaky(u128, testing.allocator, "0xffffffffffffffffffffffffffffffff", .{}));
