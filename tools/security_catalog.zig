@@ -126,13 +126,22 @@ const Checker = struct {
     }
 
     /// Reports each `security: ...` test under `dir_path` no row names.
+    /// A test file's path as the catalog names it: under `dir_path`, its
+    /// separators `/`, which the walker gives as the system writes them
+    /// (`\` on Windows, found by a Windows CI run, t57).
+    fn catalogPath(arena: std.mem.Allocator, dir_path: []const u8, entry_path: []const u8) ![]u8 {
+        const path = try std.mem.concat(arena, u8, &.{ dir_path, "/", entry_path });
+        std.mem.replaceScalar(u8, path, '\\', '/');
+        return path;
+    }
+
     fn unnamedTests(c: *Checker, dir_path: []const u8) !void {
         var dir = try c.root.openDir(c.io, dir_path, .{ .iterate = true });
         defer dir.close(c.io);
         var walker = try dir.walk(c.arena);
         while (try walker.next(c.io)) |entry| {
             if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, ".zig")) continue;
-            const path = try std.fs.path.join(c.arena, &.{ dir_path, entry.path });
+            const path = try catalogPath(c.arena, dir_path, entry.path);
             const src = try c.root.readFileAlloc(c.io, path, c.arena, .limited(16 << 20));
             var at: usize = 0;
             while (std.mem.findPos(u8, src, at, "test \"security: ")) |i| {
@@ -220,4 +229,11 @@ test "a catalog with no rows is a problem" {
     const got = try checked(header, &.{tests_file});
     defer std.testing.allocator.free(got);
     try std.testing.expect(std.mem.find(u8, got, "CATALOG.md has no rows") != null);
+}
+
+test "a test file's path is the catalog's, its separators /" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectEqualStrings("test/security/rsa_test.zig", try Checker.catalogPath(arena.allocator(), "test/security", "rsa_test.zig"));
+    try std.testing.expectEqualStrings("test/security/sub/a_test.zig", try Checker.catalogPath(arena.allocator(), "test/security", "sub\\a_test.zig"));
 }
