@@ -786,3 +786,161 @@ test "block scalar errors (suite 2G84, 5LLU, S98Z, W9L4, Y79Y/000)" {
         try testing.expect(std.mem.endsWith(u8, got, "ERROR " ++ case[1] ++ "\n"));
     }
 }
+
+test "directives: %YAML and %TAG, a reserved one skipped" {
+    try expectTokens("%YAML 1.2\n%TAG !e! tag:example.com,2000:app/\n%TAG ! !foo%21\n%FOO  bar baz # ignored\n--- !e!x a\n",
+        \\+STR
+        \\%YAML 1.2
+        \\%TAG !e! tag:example.com,2000:app/
+        \\%TAG ! !foo!
+        \\+DOC
+        \\!!e!x
+        \\=a
+        \\-STR
+    );
+    // Blanks of either kind between the parameters, and a comment after.
+    try expectTokens("%YAML \t 1.1  # comment\n---\n",
+        \\+STR
+        \\%YAML 1.1
+        \\+DOC
+        \\-STR
+    );
+    // A near miss is a reserved directive, skipped (suite MUS6/05, MUS6/06).
+    try expectTokens("%YAM 1.1\n%YAMLL 1.1\n---\n",
+        \\+STR
+        \\+DOC
+        \\-STR
+    );
+}
+
+test "directive errors (suite H7TQ, MUS6/00)" {
+    const errors = [_]struct { []const u8, []const u8 }{
+        .{ "%YAML 1.2 foo\n", "1:11 a directive's line holds more than its parameters and a comment" },
+        .{ "%YAML 1.1#...\n", "1:10 a comment must be separated from what comes before it by whitespace" },
+        .{ "%YAML 1\n", "1:8 a YAML version needs a '.' between its numbers" },
+        .{ "%YAML 1.\n", "1:9 a YAML version needs a number here" },
+        .{ "%YAML 99999.1\n", "1:7 a YAML version number is too long" },
+        .{ "%YAML\n", "1:6 a directive's parameters must be separated by blanks" },
+        .{ "%TAG e! x\n", "1:6 a %TAG directive needs a handle, as ! or !! or !name!" },
+        .{ "%TAG !e x\n", "1:6 a %TAG directive needs a handle, as ! or !! or !name!" },
+        .{ "%TAG !e! [x\n", "1:10 a %TAG prefix cannot start with a flow indicator" },
+        .{ "% x\n", "1:1 a directive needs a name after its %" },
+    };
+    inline for (errors) |case| {
+        const got = try dump(testing.allocator, case[0]);
+        defer testing.allocator.free(got);
+        errdefer std.debug.print("input: {s}\ngot:\n{s}\n", .{ case[0], got });
+        try testing.expect(std.mem.endsWith(u8, got, "ERROR " ++ case[1] ++ "\n"));
+    }
+}
+
+test "tags: each form, escapes decoded" {
+    try expectTokens("- !local a\n- !!str b\n- !e!tag%21 c\n- !<tag:yaml.org,2002:str> d\n- ! e\n- !<!bar> f\n",
+        \\+STR
+        \\+SEQ
+        \\-
+        \\!!local
+        \\=a
+        \\-
+        \\!!!str
+        \\=b
+        \\-
+        \\!!e!tag!
+        \\=c
+        \\-
+        \\!tag:yaml.org,2002:str
+        \\=d
+        \\-
+        \\!!
+        \\=e
+        \\-
+        \\!!bar
+        \\=f
+        \\-BLK
+        \\-STR
+    );
+    // In a flow collection a flow indicator may follow a tag (suite WZ62).
+    try expectTokens("{ foo : !!str, !!str : bar }",
+        \\+STR
+        \\{
+        \\?
+        \\=foo
+        \\:
+        \\!!!str
+        \\,
+        \\?
+        \\!!!str
+        \\:
+        \\=bar
+        \\}
+        \\-STR
+    );
+}
+
+test "tag errors (suite U99R, LHL4)" {
+    const errors = [_]struct { []const u8, []const u8 }{
+        .{ "- !!str, xxx\n", "1:8 an anchor, alias or tag must be followed by whitespace" },
+        .{ "---\n!invalid{}tag scalar\n", "2:9 an anchor, alias or tag must be followed by whitespace" },
+        .{ "!!\n", "1:1 a tag needs a suffix after its handle" },
+        .{ "!e! x\n", "1:1 a tag needs a suffix after its handle" },
+        .{ "!<> x\n", "1:1 a verbatim tag needs a URI and a '>' after it" },
+        .{ "!<a x\n", "1:1 a verbatim tag needs a URI and a '>' after it" },
+        .{ "!a%2 x\n", "1:3 a % in a tag needs two hex digits after it" },
+        .{ "!a%ff x\n", "1:6 a tag's % escapes do not spell UTF-8" },
+    };
+    inline for (errors) |case| {
+        const got = try dump(testing.allocator, case[0]);
+        defer testing.allocator.free(got);
+        errdefer std.debug.print("input: {s}\ngot:\n{s}\n", .{ case[0], got });
+        try testing.expect(std.mem.endsWith(u8, got, "ERROR " ++ case[1] ++ "\n"));
+    }
+}
+
+test "anchors and aliases: names run to a blank or flow indicator (suite 2SXE)" {
+    try expectTokens("&a: key: &a value\nfoo:\n  *a:\n",
+        \\+STR
+        \\+MAP
+        \\?
+        \\&a:
+        \\=key
+        \\:
+        \\&a
+        \\=value
+        \\?
+        \\=foo
+        \\:
+        \\*a:
+        \\-BLK
+        \\-STR
+    );
+    try expectTokens("[&x a, *x]",
+        \\+STR
+        \\[
+        \\&x
+        \\=a
+        \\,
+        \\*x
+        \\]
+        \\-STR
+    );
+    try expectTokens("*a : b\n",
+        \\+STR
+        \\+MAP
+        \\?
+        \\*a
+        \\:
+        \\=b
+        \\-BLK
+        \\-STR
+    );
+    try expectTokens("& a\n",
+        \\+STR
+        \\ERROR 1:1 an anchor or alias needs a name
+    );
+    try expectTokens("- &a,\n",
+        \\+STR
+        \\+SEQ
+        \\-
+        \\ERROR 1:5 an anchor, alias or tag must be followed by whitespace
+    );
+}

@@ -67,7 +67,11 @@ pub const Token = struct {
     };
 
     pub const Version = struct { major: u16, minor: u16 };
+    /// `%TAG handle prefix`; the prefix with its `%` escapes decoded.
     pub const TagDirective = struct { handle: []const u8, prefix: []const u8 };
+    /// A node's tag, its `%` escapes decoded: `!` and an empty suffix is
+    /// the non-specific tag; an empty handle is a verbatim one, `!<...>`,
+    /// whose suffix is the whole tag.
     pub const Tag = struct { handle: []const u8, suffix: []const u8 };
     pub const Scalar = struct { value: []const u8, style: ScalarStyle };
 };
@@ -197,7 +201,9 @@ fn fetchByFirstCharacter(s: *Scanner, c: u8) Error!void {
         ']' => s.fetchFlowCollectionEnd(.flow_sequence_end),
         '}' => s.fetchFlowCollectionEnd(.flow_mapping_end),
         ',' => s.fetchFlowEntry(),
-        '*', '&', '!' => s.fail(s.mark, "anchors, aliases and tags are not supported yet"),
+        '&' => s.fetchAnchor(.anchor),
+        '*' => s.fetchAnchor(.alias),
+        '!' => s.fetchTag(),
         '|', '>' => s.fetchBlockScalar(),
         '\'' => s.fetchQuotedScalar(.single_quoted),
         '"' => s.fetchQuotedScalar(.double_quoted),
@@ -263,8 +269,81 @@ fn fetchStreamEnd(s: *Scanner) Error!void {
     try s.append(.stream_end, s.mark, s.mark);
 }
 
+/// Fetches a directive: `%YAML`, `%TAG`, or one YAML reserves, which is
+/// skipped (YAML 1.2.2, 6.8).
 fn fetchDirective(s: *Scanner) Error!void {
-    return s.fail(s.mark, "directives are not supported yet");
+    try s.unrollIndent(-1);
+    try s.removeSimpleKey();
+    s.simple_key_allowed = false;
+    const start = s.mark;
+    s.skip();
+    const name_start = s.mark.offset;
+    while (!isBlankOrBreakOrEnd(s.ch(0))) s.skip();
+    const name = s.input[name_start..s.mark.offset];
+    if (name.len == 0) return s.fail(start, "a directive needs a name after its %");
+    const data: Token.Data = if (std.mem.eql(u8, name, "YAML"))
+        .{ .version_directive = try s.scanVersion() }
+    else if (std.mem.eql(u8, name, "TAG"))
+        .{ .tag_directive = try s.scanTagDirective() }
+    else {
+        while (!isBreakOrEnd(s.ch(0))) s.skip();
+        return;
+    };
+    const end = s.mark;
+    try s.skipDirectiveEnd();
+    try s.append(data, start, end);
+}
+
+/// After a directive's last parameter, only blanks and a comment.
+fn skipDirectiveEnd(s: *Scanner) Error!void {
+    while (isBlank(s.ch(0))) s.skip();
+    if (s.ch(0) == '#') try s.skipComment();
+    if (!isBreakOrEnd(s.ch(0))) return s.fail(s.mark, "a directive's line holds more than its parameters and a comment");
+}
+
+/// `%YAML`'s parameter: blanks, then a major and a minor number.
+fn scanVersion(s: *Scanner) Error!Token.Version {
+    try s.skipDirectiveSeparation();
+    const major = try s.scanVersionNumber();
+    if (s.ch(0) != '.') return s.fail(s.mark, "a YAML version needs a '.' between its numbers");
+    s.skip();
+    return .{ .major = major, .minor = try s.scanVersionNumber() };
+}
+
+fn scanVersionNumber(s: *Scanner) Error!u16 {
+    const start = s.mark;
+    var n: u16 = 0;
+    while (std.ascii.isDigit(s.ch(0))) {
+        n = std.math.mul(u16, n, 10) catch return s.fail(start, "a YAML version number is too long");
+        n += s.ch(0) - '0';
+        s.skip();
+    }
+    if (s.mark.offset == start.offset) return s.fail(start, "a YAML version needs a number here");
+    return n;
+}
+
+/// `%TAG`'s parameters: a handle and the prefix it stands for.
+fn scanTagDirective(s: *Scanner) Error!Token.TagDirective {
+    try s.skipDirectiveSeparation();
+    const handle_start = s.mark;
+    if (s.ch(0) != '!') return s.fail(s.mark, "a %TAG directive needs a handle, as ! or !! or !name!");
+    s.skip();
+    s.skipTagHandleRest();
+    const handle = s.input[handle_start.offset..s.mark.offset];
+    if (handle.len > 1 and handle[handle.len - 1] != '!') return s.fail(handle_start, "a %TAG directive needs a handle, as ! or !! or !name!");
+    try s.skipDirectiveSeparation();
+    // A prefix is a local tag's `!...`, or a URI, which cannot start with
+    // a flow indicator.
+    const prefix_start = s.mark;
+    if (isFlowIndicator(s.ch(0))) return s.fail(s.mark, "a %TAG prefix cannot start with a flow indicator");
+    const prefix = try s.scanUri(.uri);
+    if (prefix.len == 0) return s.fail(prefix_start, "a %TAG directive needs a prefix after its handle");
+    return .{ .handle = handle, .prefix = prefix };
+}
+
+fn skipDirectiveSeparation(s: *Scanner) Error!void {
+    if (!isBlank(s.ch(0))) return s.fail(s.mark, "a directive's parameters must be separated by blanks");
+    while (isBlank(s.ch(0))) s.skip();
 }
 
 fn fetchDocumentIndicator(s: *Scanner, data: Token.Data) Error!void {
@@ -347,6 +426,142 @@ fn fetchPlainScalar(s: *Scanner) Error!void {
     s.simple_key_allowed = false;
     const token = try s.scanPlainScalar();
     try s.tokens.append(s.gpa, token);
+}
+
+const AnchorKind = enum { anchor, alias };
+
+/// Fetches `&name` or `*name`. A name runs to a blank, a line break or a
+/// flow indicator, so `&a:` is named `a:` (YAML 1.2.2, 6.9.2).
+fn fetchAnchor(s: *Scanner, kind: AnchorKind) Error!void {
+    try s.saveSimpleKey();
+    s.simple_key_allowed = false;
+    const start = s.mark;
+    s.skip();
+    const name_start = s.mark.offset;
+    while (s.atAnchorCharacter()) s.skip();
+    const name = s.input[name_start..s.mark.offset];
+    if (name.len == 0) return s.fail(start, "an anchor or alias needs a name");
+    try s.expectPropertyEnd();
+    try s.append(switch (kind) {
+        .anchor => .{ .anchor = name },
+        .alias => .{ .alias = name },
+    }, start, s.mark);
+}
+
+fn atAnchorCharacter(s: *const Scanner) bool {
+    const c = s.ch(0);
+    if (isBlankOrBreakOrEnd(c) or isFlowIndicator(c)) return false;
+    return isPrintable(s.input, s.mark.offset);
+}
+
+/// A node's property (an anchor or a tag) or an alias ends at a blank, a
+/// line break or the end, or in a flow collection a flow indicator.
+fn expectPropertyEnd(s: *Scanner) Error!void {
+    const c = s.ch(0);
+    if (isBlankOrBreakOrEnd(c) or (s.flow_level > 0 and isFlowIndicator(c))) return;
+    return s.fail(s.mark, "an anchor, alias or tag must be followed by whitespace");
+}
+
+/// Fetches a tag (YAML 1.2.2, 6.9.1): verbatim `!<uri>`, a shorthand
+/// `!suffix`, `!!suffix` or `!name!suffix`, or the non-specific `!`.
+fn fetchTag(s: *Scanner) Error!void {
+    try s.saveSimpleKey();
+    s.simple_key_allowed = false;
+    const start = s.mark;
+    const tag = if (s.ch(1) == '<') try s.scanVerbatimTag() else try s.scanShorthandTag();
+    try s.expectPropertyEnd();
+    try s.append(.{ .tag = tag }, start, s.mark);
+}
+
+fn scanVerbatimTag(s: *Scanner) Error!Token.Tag {
+    const start = s.mark;
+    s.skipN(2);
+    const uri = try s.scanUri(.uri);
+    if (uri.len == 0 or s.ch(0) != '>') return s.fail(start, "a verbatim tag needs a URI and a '>' after it");
+    s.skip();
+    return .{ .handle = "", .suffix = uri };
+}
+
+fn scanShorthandTag(s: *Scanner) Error!Token.Tag {
+    const start = s.mark;
+    s.skip();
+    if (s.atPropertyEnd()) return .{ .handle = "!", .suffix = "" };
+    s.skipTagHandleRest();
+    var handle = s.input[start.offset..s.mark.offset];
+    if (handle.len > 1 and handle[handle.len - 1] != '!') {
+        // `!word` with no `!` after it: the primary handle and a suffix.
+        s.mark = start;
+        s.skip();
+        handle = "!";
+    }
+    const suffix = try s.scanUri(.tag_suffix);
+    if (suffix.len == 0) return s.fail(start, "a tag needs a suffix after its handle");
+    return .{ .handle = handle, .suffix = suffix };
+}
+
+/// Whether a blank, a line break, the end, or in a flow a flow indicator
+/// comes next.
+fn atPropertyEnd(s: *const Scanner) bool {
+    const c = s.ch(0);
+    return isBlankOrBreakOrEnd(c) or (s.flow_level > 0 and isFlowIndicator(c));
+}
+
+/// Skips what follows a tag handle's first `!`: a second `!`, or a word
+/// and the `!` after it. Without that `!`, skips the word alone.
+fn skipTagHandleRest(s: *Scanner) void {
+    if (s.ch(0) == '!') return s.skip();
+    while (std.ascii.isAlphanumeric(s.ch(0)) or s.ch(0) == '-') s.skip();
+    if (s.ch(0) == '!') s.skip();
+}
+
+const UriKind = enum {
+    /// A tag shorthand's suffix: no `!` and no flow indicator.
+    tag_suffix,
+    uri,
+};
+
+/// Scans URI characters, decoding `%` escapes; the value is a slice of
+/// the input when there are none. Stops at the first other character.
+fn scanUri(s: *Scanner, kind: UriKind) Error![]const u8 {
+    const start = s.mark.offset;
+    var escapes = false;
+    while (true) {
+        const c = s.ch(0);
+        if (c == '%') {
+            if (!std.ascii.isHex(s.ch(1)) or !std.ascii.isHex(s.ch(2))) return s.fail(s.mark, "a % in a tag needs two hex digits after it");
+            escapes = true;
+            s.skipN(3);
+        } else if (isUriCharacter(c) and !(kind == .tag_suffix and (c == '!' or isFlowIndicator(c)))) {
+            s.skip();
+        } else break;
+    }
+    const text = s.input[start..s.mark.offset];
+    return if (escapes) s.decodeUri(text) else text;
+}
+
+/// `text` with each `%` escape replaced by its byte, in the arena.
+fn decodeUri(s: *Scanner, text: []const u8) Error![]const u8 {
+    const decoded = try s.arena.allocator().alloc(u8, text.len);
+    var len: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) : (len += 1) {
+        if (text[i] == '%') {
+            // scanUri checked the two hex digits.
+            decoded[len] = @intCast(parseHex(text[i + 1 ..][0..2]) orelse unreachable);
+            i += 3;
+        } else {
+            decoded[len] = text[i];
+            i += 1;
+        }
+    }
+    if (!std.unicode.utf8ValidateSlice(decoded[0..len])) return s.fail(s.mark, "a tag's % escapes do not spell UTF-8");
+    return decoded[0..len];
+}
+
+/// ns-uri-char (YAML 1.2.2, 5.6), but for `%`, which `scanUri` reads.
+fn isUriCharacter(c: u8) bool {
+    if (std.ascii.isAlphanumeric(c)) return true;
+    return std.mem.indexOfScalar(u8, "-#;/?:@&=+$,_.!~*'()[]", c) != null;
 }
 
 fn fetchQuotedScalar(s: *Scanner, style: ScalarStyle) Error!void {
