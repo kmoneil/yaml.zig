@@ -276,7 +276,7 @@ fn emitDocumentStart(e: *Emitter, event: Event, first: bool) Error!void {
     const empty = if (e.peekAfter(1)) |next| isEmptyPlain(next) else false;
     if (d.explicit or !first or has_directives or empty) {
         try e.writeIndent();
-        try e.writeIndicator("---", true, false, false);
+        try e.writeIndicator("---", .{ .space_before = true });
     }
     e.open_ended = false;
     e.state = .document_content;
@@ -291,7 +291,7 @@ fn emitDocumentEnd(e: *Emitter, event: Event) Error!void {
     if (event.data != .document_end) return error.UnexpectedEvent;
     try e.writeIndent();
     if (event.data.document_end.explicit) {
-        try e.writeIndicator("...", true, false, false);
+        try e.writeIndicator("...", .{ .space_before = true });
         try e.writeIndent();
     }
     e.open_ended = !event.data.document_end.explicit;
@@ -313,7 +313,7 @@ fn emitNode(e: *Emitter, event: Event, context: Context) Error!void {
 }
 
 fn emitAlias(e: *Emitter, name: []const u8) Error!void {
-    try e.writeIndicator("*", true, false, false);
+    try e.writeIndicator("*", .{ .space_before = true });
     try e.writeText(name);
     // `*a:` would name the anchor `a:`.
     if (e.context.simple_key) try e.writeByte(' ');
@@ -341,7 +341,7 @@ fn nextEnds(e: *const Emitter, comptime kind: std.meta.Tag(Event.Data)) bool {
 
 fn writeProperties(e: *Emitter, properties: Event.Properties) Error!void {
     if (properties.anchor) |anchor| {
-        try e.writeIndicator("&", true, false, false);
+        try e.writeIndicator("&", .{ .space_before = true });
         try e.writeText(anchor);
     }
     if (properties.tag) |tag| try e.writeTag(tag);
@@ -388,17 +388,17 @@ fn popIndent(e: *Emitter) void {
 
 fn emitFlowSequenceItem(e: *Emitter, event: Event, first: bool) Error!void {
     if (first) {
-        try e.writeIndicator("[", true, true, false);
+        try e.writeIndicator("[", .{ .space_before = true, .is_whitespace = true });
         try e.increaseIndent(true, false);
         e.flow_level += 1;
     }
     if (event.data == .sequence_end) {
         e.flow_level -= 1;
         e.popIndent();
-        try e.writeIndicator("]", false, false, false);
+        try e.writeIndicator("]", .{});
         return e.pop();
     }
-    if (!first) try e.writeIndicator(",", false, false, false);
+    if (!first) try e.writeIndicator(",", .{});
     if (e.column > e.options.width) try e.writeIndent();
     try e.push(.flow_sequence_item);
     return e.emitNode(event, .{ .sequence = true, .flow_item = true });
@@ -406,30 +406,30 @@ fn emitFlowSequenceItem(e: *Emitter, event: Event, first: bool) Error!void {
 
 fn emitFlowMappingKey(e: *Emitter, event: Event, first: bool) Error!void {
     if (first) {
-        try e.writeIndicator("{", true, true, false);
+        try e.writeIndicator("{", .{ .space_before = true, .is_whitespace = true });
         try e.increaseIndent(true, false);
         e.flow_level += 1;
     }
     if (event.data == .mapping_end) {
         e.flow_level -= 1;
         e.popIndent();
-        try e.writeIndicator("}", false, false, false);
+        try e.writeIndicator("}", .{});
         return e.pop();
     }
-    if (!first) try e.writeIndicator(",", false, false, false);
+    if (!first) try e.writeIndicator(",", .{});
     if (e.column > e.options.width) try e.writeIndent();
     if (e.checkSimpleKey()) {
         try e.push(.flow_mapping_simple_value);
         return e.emitNode(event, .{ .mapping = true, .simple_key = true });
     }
-    try e.writeIndicator("?", true, false, false);
+    try e.writeIndicator("?", .{ .space_before = true });
     try e.push(.flow_mapping_value);
     return e.emitNode(event, .{ .mapping = true });
 }
 
 fn emitFlowMappingValue(e: *Emitter, event: Event, simple: bool) Error!void {
     if (!simple and e.column > e.options.width) try e.writeIndent();
-    try e.writeIndicator(":", !simple, false, false);
+    try e.writeIndicator(":", .{ .space_before = !simple });
     try e.push(.flow_mapping_key);
     return e.emitNode(event, .{ .mapping = true });
 }
@@ -442,7 +442,7 @@ fn emitBlockSequenceItem(e: *Emitter, event: Event, first: bool) Error!void {
         return e.pop();
     }
     try e.writeIndent();
-    try e.writeIndicator("-", true, false, true);
+    try e.writeIndicator("-", .{ .space_before = true, .is_indention = true });
     try e.push(.block_sequence_item);
     return e.emitNode(event, .{ .sequence = true });
 }
@@ -458,17 +458,17 @@ fn emitBlockMappingKey(e: *Emitter, event: Event, first: bool) Error!void {
         try e.push(.block_mapping_simple_value);
         return e.emitNode(event, .{ .mapping = true, .simple_key = true });
     }
-    try e.writeIndicator("?", true, false, true);
+    try e.writeIndicator("?", .{ .space_before = true, .is_indention = true });
     try e.push(.block_mapping_value);
     return e.emitNode(event, .{ .mapping = true });
 }
 
 fn emitBlockMappingValue(e: *Emitter, event: Event, simple: bool) Error!void {
     if (simple) {
-        try e.writeIndicator(":", false, false, false);
+        try e.writeIndicator(":", .{});
     } else {
         try e.writeIndent();
-        try e.writeIndicator(":", true, false, true);
+        try e.writeIndicator(":", .{ .space_before = true, .is_indention = true });
     }
     try e.push(.block_mapping_key);
     return e.emitNode(event, .{ .mapping = true });
@@ -540,11 +540,21 @@ fn writeIndent(e: *Emitter) Error!void {
     e.indention = true;
 }
 
-fn writeIndicator(e: *Emitter, indicator: []const u8, need_whitespace: bool, is_whitespace: bool, is_indention: bool) Error!void {
-    if (need_whitespace and !e.whitespace) try e.writeByte(' ');
+/// How an indicator sits in its line.
+const Spacing = struct {
+    /// A space goes before it, unless whitespace is there already.
+    space_before: bool = false,
+    /// It counts as whitespace for what comes after it, as `[` and `{` do.
+    is_whitespace: bool = false,
+    /// It counts as indentation, as a block's `-`, `?` and `:` do.
+    is_indention: bool = false,
+};
+
+fn writeIndicator(e: *Emitter, indicator: []const u8, spacing: Spacing) Error!void {
+    if (spacing.space_before and !e.whitespace) try e.writeByte(' ');
     try e.writeText(indicator);
-    e.whitespace = is_whitespace;
-    e.indention = e.indention and is_indention;
+    e.whitespace = spacing.is_whitespace;
+    e.indention = e.indention and spacing.is_indention;
 }
 
 // Scalars
@@ -773,7 +783,7 @@ fn writePlain(e: *Emitter, value: []const u8, allow_breaks: bool) Error!void {
 }
 
 fn writeSingleQuoted(e: *Emitter, value: []const u8, allow_breaks: bool) Error!void {
-    try e.writeIndicator("'", true, false, false);
+    try e.writeIndicator("'", .{ .space_before = true });
     var breaks = false;
     var i: usize = 0;
     while (i < value.len) {
@@ -791,7 +801,7 @@ fn writeSingleQuoted(e: *Emitter, value: []const u8, allow_breaks: bool) Error!v
         breaks = c == '\n';
     }
     if (breaks) try e.writeIndent();
-    try e.writeIndicator("'", false, false, false);
+    try e.writeIndicator("'", .{});
     e.whitespace = false;
     e.indention = false;
 }
@@ -815,7 +825,7 @@ fn writeQuotedBreak(e: *Emitter, after_break: bool) Error!void {
 }
 
 fn writeDoubleQuoted(e: *Emitter, value: []const u8) Error!void {
-    try e.writeIndicator("\"", true, false, false);
+    try e.writeIndicator("\"", .{ .space_before = true });
     var i: usize = 0;
     while (i < value.len) {
         const len = std.unicode.utf8ByteSequenceLength(value[i]) catch 1;
@@ -830,7 +840,7 @@ fn writeDoubleQuoted(e: *Emitter, value: []const u8) Error!void {
         }
         i += len;
     }
-    try e.writeIndicator("\"", false, false, false);
+    try e.writeIndicator("\"", .{});
     e.whitespace = false;
     e.indention = false;
 }
@@ -882,7 +892,7 @@ fn writeBlockHints(e: *Emitter, value: []const u8, parent: isize) Error!void {
 }
 
 fn writeLiteral(e: *Emitter, value: []const u8, parent: isize) Error!void {
-    try e.writeIndicator("|", true, false, false);
+    try e.writeIndicator("|", .{ .space_before = true });
     try e.writeBlockHints(value, parent);
     try e.writeBreak();
     e.indention = true;
@@ -905,7 +915,7 @@ fn writeLiteral(e: *Emitter, value: []const u8, parent: isize) Error!void {
 }
 
 fn writeFolded(e: *Emitter, value: []const u8, parent: isize) Error!void {
-    try e.writeIndicator(">", true, false, false);
+    try e.writeIndicator(">", .{ .space_before = true });
     try e.writeBlockHints(value, parent);
     try e.writeBreak();
     e.indention = true;
@@ -953,14 +963,14 @@ fn needsFoldBreak(value: []const u8, i: usize) bool {
 /// Writes a tag: `!` as itself, one under a handle's prefix as the handle
 /// and the rest, any other verbatim, `!<...>`.
 fn writeTag(e: *Emitter, tag: []const u8) Error!void {
-    if (std.mem.eql(u8, tag, "!")) return e.writeIndicator("!", true, false, false);
+    if (std.mem.eql(u8, tag, "!")) return e.writeIndicator("!", .{ .space_before = true });
     if (e.shorthand(tag)) |s| {
-        try e.writeIndicator(s.handle, true, false, false);
+        try e.writeIndicator(s.handle, .{ .space_before = true });
         return e.writeUri(tag[s.prefix_len..], .tag_suffix);
     }
-    try e.writeIndicator("!<", true, false, false);
+    try e.writeIndicator("!<", .{ .space_before = true });
     try e.writeUri(tag, .uri);
-    try e.writeIndicator(">", false, false, false);
+    try e.writeIndicator(">", .{});
 }
 
 const Shorthand = struct { handle: []const u8, prefix_len: usize };
