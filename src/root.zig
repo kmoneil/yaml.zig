@@ -42,6 +42,14 @@ pub const ParseOptions = construct.ParseOptions;
 pub const ParseError = construct.ParseError;
 /// A document of any shape.
 pub const Value = construct.Value;
+
+const stringify_mod = @import("stringify.zig");
+/// Writes a Zig value as a YAML document; `parseFromSlice` reads it back.
+pub const stringify = stringify_mod.stringify;
+/// `stringify` into a new slice the caller frees.
+pub const stringifyAlloc = stringify_mod.stringifyAlloc;
+pub const StringifyOptions = stringify_mod.StringifyOptions;
+pub const StringifyError = stringify_mod.StringifyError;
 /// Where and why parsing failed: a mark (offset, line and column, from
 /// 0) and a message.
 pub const Diagnostic = Scanner.Diagnostic;
@@ -59,4 +67,5 @@ test {
     _ = @import("construct_test.zig");
     _ = @import("encoding_test.zig");
     _ = @import("Emitter_test.zig");
+    _ = @import("stringify_test.zig");
 }
