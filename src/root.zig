@@ -61,7 +61,7 @@ pub const StringifyOptions = stringify_mod.StringifyOptions;
 pub const StringifyError = stringify_mod.StringifyError;
 /// Where and why parsing failed: a mark (offset, line and column, from
 /// 0) and a message.
-pub const Diagnostic = Scanner.Diagnostic;
+pub const Diagnostic = @import("Diagnostic.zig");
 
 test "the module builds and its tests run" {
     try std.testing.expectEqualStrings("1.2.2", spec_version);

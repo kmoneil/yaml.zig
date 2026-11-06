@@ -402,24 +402,6 @@ fn hashWithin(hasher: *std.hash.Wyhash, node: *const Node, budget: *usize) void 
     }
 }
 
-/// The hash the composer's key sets give `key`: seeded from the input,
-/// so keys chosen to collide under another seed spread like any others.
-pub fn keyHash(c: *const Composer, key: *const Node) u64 {
-    return hashNode(key, c.seed);
-}
-
-/// The hash of `key` under `seed`, which the composer's key sets use with
-/// a seed from the input. Public so a test can find keys that collide
-/// under a seed of its choosing.
-pub fn hashKey(key: *const Node, seed: u64) u64 {
-    return hashNode(key, seed);
-}
-
-/// The hash the composer's anchor table gives `name`.
-pub fn anchorHash(c: *const Composer, name: []const u8) u64 {
-    return SeededStrings.hash(.{ .seed = c.seed }, name);
-}
-
 const KeyContext = struct {
     seed: u64,
     pub fn hash(ctx: KeyContext, key: *Node) u64 {
@@ -441,3 +423,61 @@ const SeededStrings = struct {
         return std.mem.eql(u8, a, b);
     }
 };
+
+// A test of the hashes themselves, here rather than in Composer_test.zig
+// as they are private.
+
+const bits = 10;
+const mask = (@as(u64, 1) << bits) - 1;
+
+/// `count` names that all fall in one of 1,024 buckets under a fixed
+/// seed, as an attacker who knew the seed would choose them: by std's
+/// string hash (Wyhash, seed 0) for anchor names, or by the key hash at
+/// seed 0 for keys.
+fn collidingNames(gpa: Allocator, count: usize, comptime as_keys: bool) ![][]const u8 {
+    const names = try gpa.alloc([]const u8, count);
+    var found: usize = 0;
+    var i: usize = 0;
+    while (found < count) : (i += 1) {
+        var buf: [16]u8 = undefined;
+        const name = try std.fmt.bufPrint(&buf, "k{d}", .{i});
+        const key: Node = .{ .start = .{}, .end = .{}, .tag = schema.tag.str, .data = .{ .scalar = .{ .value = name, .style = .plain } } };
+        const hash = if (as_keys) hashNode(&key, 0) else std.hash.Wyhash.hash(0, name);
+        if (hash & mask != 0) continue;
+        names[found] = try gpa.dupe(u8, name);
+        found += 1;
+    }
+    return names;
+}
+
+/// How many of the 1,024 buckets `hashes` fall in.
+fn buckets(gpa: Allocator, hashes: []const u64) !usize {
+    var seen: std.AutoHashMapUnmanaged(u64, void) = .empty;
+    for (hashes) |h| try seen.put(gpa, h & mask, {});
+    return seen.count();
+}
+
+test "keys and anchors built to collide under a fixed seed spread under the composer's" {
+    const testing = std.testing;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const keys = try collidingNames(a, 400, true);
+    const anchors = try collidingNames(a, 400, false);
+    var input: std.ArrayList(u8) = .empty;
+    for (keys, anchors) |key, anchor| try input.print(a, "{s}: &{s} v\n", .{ key, anchor });
+    var c: Composer = .init(testing.allocator, input.items, .{});
+    defer c.deinit();
+    const root = (try c.next()).?.root;
+    var key_hashes: [400]u64 = undefined;
+    var anchor_hashes: [400]u64 = undefined;
+    for (root.data.mapping.pairs, anchors, 0..) |pair, anchor, i| {
+        try testing.expectEqual(0, hashNode(pair.key, 0) & mask);
+        key_hashes[i] = hashNode(pair.key, c.seed);
+        anchor_hashes[i] = SeededStrings.hash(.{ .seed = c.seed }, anchor);
+    }
+    // 400 random hashes fill about 330 of 1,024 buckets; one is what the
+    // fixed seed gives. Allow a wide margin either side of random.
+    try testing.expect(try buckets(a, &key_hashes) > 250);
+    try testing.expect(try buckets(a, &anchor_hashes) > 250);
+}

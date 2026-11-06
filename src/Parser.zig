@@ -20,6 +20,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Scanner = @import("Scanner.zig");
+const schema = @import("schema.zig");
 
 const Parser = @This();
 
@@ -110,9 +111,6 @@ const State = enum {
     flow_mapping_empty_value,
     end,
 };
-
-/// The prefix of the `!!` handle when no %TAG directive gives one.
-pub const core_prefix = "tag:yaml.org,2002:";
 
 scanner: Scanner,
 state: State = .stream_start,
@@ -428,7 +426,7 @@ fn tagPrefix(p: *const Parser, handle: []const u8) ?[]const u8 {
 
 fn defaultPrefix(handle: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, handle, "!")) return "!";
-    if (std.mem.eql(u8, handle, "!!")) return core_prefix;
+    if (std.mem.eql(u8, handle, "!!")) return schema.core_prefix;
     return null;
 }
 

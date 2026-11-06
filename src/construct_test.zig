@@ -277,6 +277,23 @@ const Machine = struct {
 };
 const JobSpec = struct { name: []const u8, machine: Machine, env: yaml.ArrayHashMap(u16) = .{} };
 
+test "diagnostics: a detail too long for its buffer is cut where a character begins" {
+    const S = struct { a: u8 };
+    // An odd and an even number of bytes before the key's é's, so one of
+    // the two cuts would land inside one.
+    for ([_][]const u8{ "", "a" }) |lead| {
+        var text: std.ArrayList(u8) = .empty;
+        defer text.deinit(testing.allocator);
+        try text.appendSlice(testing.allocator, lead);
+        for (0..300) |_| try text.appendSlice(testing.allocator, "é");
+        try text.appendSlice(testing.allocator, ": 1\n");
+        var diagnostic: yaml.Diagnostic = .{};
+        try testing.expectError(error.UnknownField, yaml.parseFromSlice(S, testing.allocator, text.items, .{ .diagnostic = &diagnostic }));
+        try testing.expect(std.mem.endsWith(u8, diagnostic.detail(), "..."));
+        try testing.expect(std.unicode.utf8ValidateSlice(diagnostic.detail()));
+    }
+}
+
 test "diagnostics: an unknown field named, the fields listed, the near one suggested" {
     try expectLine(JobSpec, "name: x\nmachine:\n  types: [e2]\n  zone: a\n",
         \\4:3: machine: unknown field "zone"; expected one of: types, zones, spot, image (did you mean "zones"?)

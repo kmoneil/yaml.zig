@@ -25,6 +25,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Parser = @import("Parser.zig");
 const Scanner = @import("Scanner.zig");
+const chars = @import("chars.zig");
 const schema = @import("schema.zig");
 
 const Emitter = @This();
@@ -170,7 +171,7 @@ fn checkAnchor(name: []const u8) Error!void {
     if (name.len == 0) return error.InvalidName;
     var i: usize = 0;
     while (i < name.len) : (i += std.unicode.utf8ByteSequenceLength(name[i]) catch 1) {
-        if (isBlankOrBreak(name[i]) or isFlowIndicator(name[i]) or !Scanner.isPrintable(name, i)) return error.InvalidName;
+        if (isBlankOrBreak(name[i]) or isFlowIndicator(name[i]) or !chars.isPrintable(name, i)) return error.InvalidName;
     }
 }
 
@@ -529,12 +530,9 @@ fn writeTagDirective(e: *Emitter, directive: Scanner.Token.TagDirective) Error!v
     try e.writeBreak();
 }
 
-fn isFlowIndicator(c: u8) bool {
-    return switch (c) {
-        ',', '[', ']', '{', '}' => true,
-        else => false,
-    };
-}
+const isBlank = chars.isBlank;
+const isBlankOrBreak = chars.isBlankOrBreak;
+const isFlowIndicator = chars.isFlowIndicator;
 
 /// Starts a line at the current indentation, unless the line is at it.
 fn writeIndent(e: *Emitter) Error!void {
@@ -657,7 +655,7 @@ fn analyze(value: []const u8) Analysis {
         const end = i + len;
         const followed_by_whitespace = end >= value.len or isBlankOrBreak(value[end]);
         noteIndicator(&n, value[i], i == 0, preceded_by_whitespace, followed_by_whitespace);
-        if (value[i] == '\r' or !Scanner.isPrintable(value, i)) n.special = true;
+        if (value[i] == '\r' or !chars.isPrintable(value, i)) n.special = true;
         noteSpacing(&n, value[i], i == 0, end >= value.len);
         preceded_by_whitespace = isBlankOrBreak(value[i]);
         i = end;
@@ -745,10 +743,6 @@ fn allowed(n: Notes) Analysis {
     return a;
 }
 
-fn isBlankOrBreak(c: u8) bool {
-    return c == ' ' or c == '\t' or c == '\n' or c == '\r';
-}
-
 /// Writes the character starting at `value[i]` and returns its length.
 fn writeCharacter(e: *Emitter, value: []const u8, i: usize) Error!usize {
     const len = std.unicode.utf8ByteSequenceLength(value[i]) catch 1;
@@ -765,10 +759,6 @@ fn foldsAt(e: *const Emitter, value: []const u8, i: usize) bool {
     if (e.column <= e.options.width) return false;
     if (i == 0 or isBlank(value[i - 1])) return false;
     return i + 1 < value.len and !isBlank(value[i + 1]);
-}
-
-fn isBlank(c: u8) bool {
-    return c == ' ' or c == '\t';
 }
 
 fn writePlain(e: *Emitter, value: []const u8, allow_breaks: bool) Error!void {
@@ -838,7 +828,7 @@ fn writeDoubleQuoted(e: *Emitter, value: []const u8) Error!void {
         const point = std.unicode.utf8Decode(value[i..][0..len]) catch unreachable;
         if (escapeOf(point)) |escape| {
             try e.writeText(escape);
-        } else if (!Scanner.isPrintable(value, i)) {
+        } else if (!chars.isPrintable(value, i)) {
             var buf: [10]u8 = undefined;
             try e.writeText(hexEscape(&buf, point));
         } else {
@@ -988,7 +978,7 @@ const Shorthand = struct { handle: []const u8, prefix_len: usize };
 fn shorthand(e: *const Emitter, tag: []const u8) ?Shorthand {
     var best: ?Shorthand = null;
     for (e.tag_directives) |d| consider(&best, tag, d.handle, d.prefix);
-    if (!e.redefines("!!")) consider(&best, tag, "!!", Parser.core_prefix);
+    if (!e.redefines("!!")) consider(&best, tag, "!!", schema.core_prefix);
     if (!e.redefines("!")) consider(&best, tag, "!", "!");
     return best;
 }

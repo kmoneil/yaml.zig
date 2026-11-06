@@ -22,16 +22,16 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const encoding = @import("encoding.zig");
+const chars = @import("chars.zig");
 
 const Scanner = @This();
 
-/// A place in the input. Lines and columns count from 0, and a column
-/// counts characters (code points), not bytes.
-pub const Mark = struct {
-    offset: usize = 0,
-    line: usize = 0,
-    column: usize = 0,
-};
+/// Where and why the last `next` failed.
+pub const Diagnostic = @import("Diagnostic.zig");
+
+/// A place in the input (`Diagnostic.Mark`): lines and columns from 0, a
+/// column counting characters.
+pub const Mark = Diagnostic.Mark;
 
 /// How a scalar is written: plain, quoted either way, or a block scalar,
 /// literal (`|`) or folded (`>`).
@@ -83,59 +83,6 @@ pub const Token = struct {
     pub const Tag = struct { handle: []const u8, suffix: []const u8 };
     pub const Scalar = struct { value: []const u8, style: ScalarStyle };
 };
-
-/// Why the last `next` failed with `error.SyntaxError`, and where.
-pub const Diagnostic = struct {
-    mark: Mark = .{},
-    /// What went wrong, in words fixed for each kind of error.
-    message: []const u8 = "",
-    /// Where in the document construction was, as `path` gives it.
-    path_buffer: [256]u8 = undefined,
-    path_len: usize = 0,
-    /// The message with what it is about filled in, as `detail` gives it.
-    detail_buffer: [512]u8 = undefined,
-    detail_len: usize = 0,
-
-    /// Where in the document typed construction failed, from its root:
-    /// `machine.types[2]`, a map's key quoted when it is not a plain
-    /// word. Empty at the root, and for errors before construction.
-    pub fn path(d: *const Diagnostic) []const u8 {
-        return d.path_buffer[0..d.path_len];
-    }
-
-    /// The message with what it names filled in, where construction knows
-    /// more than the message says: the key no field has and the fields
-    /// there are, the field missing, what was found where something else
-    /// was expected. Otherwise the message.
-    pub fn detail(d: *const Diagnostic) []const u8 {
-        return if (d.detail_len > 0) d.detail_buffer[0..d.detail_len] else d.message;
-    }
-
-    /// Sets the detail, cut short (ending `...`) if it does not fit.
-    pub fn setDetail(d: *Diagnostic, comptime format_text: []const u8, args: anytype) void {
-        d.detail_len = writeCut(&d.detail_buffer, format_text, args);
-    }
-
-    /// Writes `line:column: path: detail`, the line and column from 1 and
-    /// the path left out when empty: a file's name before it makes the
-    /// line a compiler would print.
-    pub fn format(d: *const Diagnostic, w: *std.Io.Writer) std.Io.Writer.Error!void {
-        try w.print("{d}:{d}: ", .{ d.mark.line + 1, d.mark.column + 1 });
-        if (d.path_len > 0) try w.print("{s}: ", .{d.path()});
-        try w.writeAll(d.detail());
-    }
-};
-
-/// Formats into `buffer`, ending the text `...` when it does not fit, and
-/// returns its length.
-pub fn writeCut(buffer: []u8, comptime format_text: []const u8, args: anytype) usize {
-    var w: std.Io.Writer = .fixed(buffer);
-    w.print(format_text, args) catch {
-        @memcpy(buffer[buffer.len - 3 ..], "...");
-        return buffer.len;
-    };
-    return w.end;
-}
 
 /// Scanning's errors.
 pub const Error = error{
@@ -1341,53 +1288,23 @@ fn fail(s: *Scanner, mark: Mark, message: []const u8) error{SyntaxError} {
 
 // Characters
 
-fn isBlank(c: u8) bool {
-    return c == ' ' or c == '\t';
-}
-
-fn isBreak(c: u8) bool {
-    return c == '\n' or c == '\r';
-}
+const isBlank = chars.isBlank;
+const isBreak = chars.isBreak;
+const isBlankOrBreak = chars.isBlankOrBreak;
+const isFlowIndicator = chars.isFlowIndicator;
+const isPrintable = chars.isPrintable;
 
 /// 0 stands for the end of the input.
 fn isBreakOrEnd(c: u8) bool {
     return isBreak(c) or c == 0;
 }
 
-fn isBlankOrBreak(c: u8) bool {
-    return isBlank(c) or isBreak(c);
-}
-
 fn isBlankOrBreakOrEnd(c: u8) bool {
     return isBlankOrBreak(c) or c == 0;
-}
-
-fn isFlowIndicator(c: u8) bool {
-    return switch (c) {
-        ',', '[', ']', '{', '}' => true,
-        else => false,
-    };
 }
 
 /// How many bytes the UTF-8 sequence starting with `c` takes; 1 for a
 /// byte that cannot start one, so the scanner always moves.
 fn utf8Length(c: u8) usize {
     return std.unicode.utf8ByteSequenceLength(c) catch 1;
-}
-
-/// Whether the character at `offset` is one YAML allows in text (nb-char
-/// and the line breaks, 5.1 and 5.4): tab, line breaks and the printable
-/// ASCII, and past ASCII all but the C1 controls but NEL, the
-/// surrogates, U+FFFE, U+FFFF, and the byte order mark U+FEFF, which
-/// only a document's start may hold.
-pub fn isPrintable(input: []const u8, offset: usize) bool {
-    const c = input[offset];
-    if (c < 0x80) return c == '\t' or c == '\n' or c == '\r' or (c >= 0x20 and c != 0x7F);
-    const len = std.unicode.utf8ByteSequenceLength(c) catch return false;
-    if (offset + len > input.len) return false;
-    const cp = std.unicode.utf8Decode(input[offset..][0..len]) catch return false;
-    return switch (cp) {
-        0x80...0x84, 0x86...0x9F, 0xD800...0xDFFF, 0xFEFF, 0xFFFE, 0xFFFF => false,
-        else => true,
-    };
 }

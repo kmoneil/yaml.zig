@@ -7,7 +7,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const Diagnostic = @import("Scanner.zig").Diagnostic;
+const Diagnostic = @import("Diagnostic.zig");
 
 /// The encodings a YAML stream may be in.
 pub const Encoding = enum { utf8, utf16le, utf16be, utf32le, utf32be };

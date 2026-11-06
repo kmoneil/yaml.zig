@@ -3,8 +3,9 @@
 //! A struct is a mapping of its fields in order, a slice, array or tuple
 //! a sequence, a tagged union a mapping of one key (or, for a field with
 //! no value, the field's name), an optional's null `null`, a pointer the
-//! value it points at, a map with `keys()` and `values()` (std's array
-//! hash maps) a mapping, and a `Value` what it holds. A string or an
+//! value it points at, a struct with pub `keys`, `values` and `count`
+//! (std's array hash maps, yaml.ArrayHashMap) a mapping of its keys to
+//! its values, and a `Value` what it holds. A string or an
 //! enum's name is plain when a reader would read the plain text back as
 //! a string, and quoted when not (`"true"`, `"123"`, `""`); a value of a
 //! non-exhaustive enum with no name is its number; a float
@@ -34,8 +35,9 @@ pub const StringifyOptions = struct {
     emit_null_optional_fields: bool = true,
 };
 
-/// What writing can fail with: the emitter's errors.
-pub const StringifyError = Emitter.Error;
+/// What writing can fail with: the writer's errors, memory, and a string
+/// that is not UTF-8, which YAML cannot hold.
+pub const StringifyError = std.Io.Writer.Error || Allocator.Error || error{InvalidUtf8};
 
 /// Writes `value` as one YAML document to `writer`.
 pub fn stringify(gpa: Allocator, value: anytype, options: StringifyOptions, writer: *std.Io.Writer) StringifyError!void {
@@ -54,8 +56,9 @@ pub fn stringify(gpa: Allocator, value: anytype, options: StringifyOptions, writ
     try s.emit(.stream_end);
 }
 
-/// `stringify` into a new slice the caller frees.
-pub fn stringifyAlloc(gpa: Allocator, value: anytype, options: StringifyOptions) StringifyError![]u8 {
+/// `stringify` into a new slice the caller frees. Its writer fails only
+/// for want of memory, so its errors are StringifyError's but that.
+pub fn stringifyAlloc(gpa: Allocator, value: anytype, options: StringifyOptions) (Allocator.Error || error{InvalidUtf8})![]u8 {
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
     stringify(gpa, value, options, &out.writer) catch |err| return switch (err) {
@@ -73,9 +76,17 @@ const Stringifier = struct {
     options: StringifyOptions,
 
     fn emit(s: *Stringifier, data: Event.Data) StringifyError!void {
-        try s.emitter.emit(.{ .start = .{}, .end = .{}, .data = data });
+        s.emitter.emit(.{ .start = .{}, .end = .{}, .data = data }) catch |err| return switch (err) {
+            // Its events come in a stream's order, collections balanced
+            // as the value nests, and name no anchor and no tag.
+            error.UnexpectedEvent, error.InvalidName => unreachable,
+            else => |e| e,
+        };
     }
 
+    /// Whether `T` is written as a map: std's array hash maps and
+    /// yaml.ArrayHashMap have these, and a struct of a caller's that has
+    /// all three is taken for one.
     fn flow(s: *const Stringifier) bool {
         return s.options.style == .flow;
     }
@@ -152,7 +163,7 @@ const Stringifier = struct {
             inline for (0..info.field_types.len) |i| try s.write(value[i]);
             return s.emit(.sequence_end);
         }
-        if (comptime isMap(T)) return s.writeMap(value);
+        if (comptime isMapType(T)) return s.writeMap(value);
         try s.emit(.{ .mapping_start = .{ .flow = s.flow() } });
         inline for (info.field_names, info.field_types) |name, Field| {
             const field = @field(value, name);
@@ -165,7 +176,7 @@ const Stringifier = struct {
         try s.emit(.mapping_end);
     }
 
-    fn isMap(comptime T: type) bool {
+    fn isMapType(comptime T: type) bool {
         return @hasDecl(T, "keys") and @hasDecl(T, "values") and @hasDecl(T, "count");
     }
 

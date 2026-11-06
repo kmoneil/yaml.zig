@@ -30,7 +30,6 @@ const encoding = @import("encoding.zig");
 const schema = @import("schema.zig");
 const Node = Composer.Node;
 const Diagnostic = Composer.Diagnostic;
-const Scanner = @import("Scanner.zig");
 
 /// How `parseFromSlice` reads a document.
 pub const ParseOptions = struct {
@@ -159,13 +158,16 @@ const Builder = struct {
     /// Where construction is in the document, from its root.
     path: std.ArrayList(Segment) = .empty,
 
-    /// Fails at `node`, with the path to it; an "expected ..." message
-    /// gets a detail saying what was found instead.
+    /// Fails at `node`, with the path to it.
     fn fail(b: *const Builder, node: *const Node, err: ParseError, message: []const u8) ParseError {
-        const d = b.locate(node, message) orelse return err;
-        const expected = std.mem.startsWith(u8, message, "expected") and std.mem.find(u8, message, "found") == null;
-        if (err == error.UnexpectedType and expected) d.setDetail("{s}, found {f}", .{ message, Found{ .node = node.target() } });
+        _ = b.locate(node, message);
         return err;
+    }
+
+    /// Fails at `node`, which is not the `what` expected there, with the
+    /// path to it and a detail saying what it is instead.
+    fn failExpected(b: *const Builder, node: *const Node, comptime what: []const u8) ParseError {
+        return b.failDetail(node, error.UnexpectedType, "expected " ++ what, "expected " ++ what ++ ", found {f}", .{Found{ .node = node.target() }});
     }
 
     /// Fails at `node`, with the path to it and a detail.
@@ -180,7 +182,7 @@ const Builder = struct {
     fn locate(b: *const Builder, node: *const Node, message: []const u8) ?*Diagnostic {
         const d = b.options.diagnostic orelse return null;
         d.* = .{ .mark = node.start, .message = message };
-        d.path_len = Scanner.writeCut(&d.path_buffer, "{f}", .{PathText{ .segments = b.path.items }});
+        d.setPath("{f}", .{PathText{ .segments = b.path.items }});
         return d;
     }
 
@@ -223,7 +225,7 @@ const Builder = struct {
 
     /// A union's field with no value, as in `{off: }`.
     fn buildVoid(b: *const Builder, node: *const Node) ParseError!void {
-        if (!isNull(node)) return b.fail(node, error.UnexpectedType, "expected nothing here, as for a union field with no value");
+        if (!isNull(node)) return b.failExpected(node, "nothing here, as for a union field with no value");
     }
 
     fn buildOptional(b: *Builder, comptime Child: type, node: *const Node, depth: usize) ParseError!?Child {
@@ -249,7 +251,7 @@ const Builder = struct {
     }
 
     fn scalarOf(b: *const Builder, node: *const Node, comptime what: []const u8) ParseError![]const u8 {
-        if (node.data != .scalar) return b.fail(node, error.UnexpectedType, "expected " ++ what);
+        if (node.data != .scalar) return b.failExpected(node, what);
         return node.data.scalar.value;
     }
 
@@ -275,8 +277,8 @@ const Builder = struct {
 
     fn buildBool(b: *const Builder, node: *const Node) ParseError!bool {
         const text = try b.scalarOf(node, "a boolean");
-        if (!hasTag(node, schema.tag.bool)) return b.fail(node, error.UnexpectedType, "expected a boolean");
-        return schema.parseBool(text) orelse b.fail(node, error.UnexpectedType, "expected a boolean");
+        if (!hasTag(node, schema.tag.bool)) return b.failExpected(node, "a boolean");
+        return schema.parseBool(text) orelse b.failExpected(node, "a boolean");
     }
 
     fn buildInt(b: *const Builder, comptime T: type, node: *const Node) ParseError!T {
@@ -284,12 +286,12 @@ const Builder = struct {
         // `build` saw that the text is an integer: null here is too big.
         if (hasTag(node, schema.tag.int)) return schema.parseIntAs(T, text) orelse b.tooBig(T, node, text);
         if (hasTag(node, schema.tag.float)) {
-            const x = schema.parseFloat(text) orelse return b.fail(node, error.UnexpectedType, "expected an integer");
+            const x = schema.parseFloat(text) orelse return b.failExpected(node, "an integer");
             if (@trunc(x) != x or !std.math.isFinite(x)) return b.fail(node, error.UnexpectedType, "expected an integer, found a fraction");
             if (!wholeFits(T, x)) return b.tooBig(T, node, text);
             return @trunc(x);
         }
-        return b.fail(node, error.UnexpectedType, "expected an integer");
+        return b.failExpected(node, "an integer");
     }
 
     /// Whether the whole number `x` is in `T`'s range. The bounds are
@@ -311,14 +313,14 @@ const Builder = struct {
     fn buildFloat(b: *const Builder, comptime T: type, node: *const Node) ParseError!T {
         const text = try b.scalarOf(node, "a number");
         if (hasTag(node, schema.tag.float)) {
-            const x = schema.parseFloat(text) orelse return b.fail(node, error.UnexpectedType, "expected a number");
+            const x = schema.parseFloat(text) orelse return b.failExpected(node, "a number");
             return @floatCast(x);
         }
         if (hasTag(node, schema.tag.int)) {
             const n = schema.parseInt(text) orelse return b.fail(node, error.Overflow, "the integer does not fit");
             return @floatFromInt(n);
         }
-        return b.fail(node, error.UnexpectedType, "expected a number");
+        return b.failExpected(node, "a number");
     }
 
     fn buildEnum(b: *const Builder, comptime T: type, node: *const Node) ParseError!T {
@@ -361,7 +363,7 @@ const Builder = struct {
     }
 
     fn itemsOf(b: *const Builder, node: *const Node) ParseError![]const *Node {
-        if (node.data != .sequence) return b.fail(node, error.UnexpectedType, "expected a sequence");
+        if (node.data != .sequence) return b.failExpected(node, "a sequence");
         return node.data.sequence.items;
     }
 
@@ -400,7 +402,7 @@ const Builder = struct {
     }
 
     fn pairsOf(b: *const Builder, node: *const Node) ParseError![]const Node.Pair {
-        if (node.data != .mapping) return b.fail(node, error.UnexpectedType, "expected a mapping");
+        if (node.data != .mapping) return b.failExpected(node, "a mapping");
         return node.data.mapping.pairs;
     }
 
