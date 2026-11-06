@@ -10,6 +10,10 @@
 //! - construct: composition and building a Value under tight alias and
 //!   depth limits fail only as documented; a Value built is written by
 //!   stringify and read back the same.
+//! - typed: building a struct with a field of each kind of type, from
+//!   mappings of its field names to values at the edges of those types,
+//!   fails only as documented, with no leak, and what it builds is
+//!   written by stringify and read back the same.
 //! - emit: what parses, emitted, reads back to the same documents.
 //!
 //! `zig build test` replays a fixed set of draws for each; `zig build
@@ -27,6 +31,10 @@ test "fuzz: parse: any input, events that nest, no leak" {
 
 test "fuzz: construct: a Value built is stringified and read back the same" {
     try fuzzing.run({}, fuzzConstruct, 300);
+}
+
+test "fuzz: typed: a struct of every kind of field built, stringified and read back the same" {
+    try fuzzing.run({}, fuzzTyped, 400);
 }
 
 test "fuzz: emit: what parses, emitted, reads back the same" {
@@ -203,6 +211,142 @@ fn hasNan(v: yaml.Value) bool {
         } else false,
         else => false,
     };
+}
+
+const Level = enum(u8) { a, b, c };
+const Open = enum(u8) { a, b, _ };
+
+/// A field of each kind of type construction builds.
+const Typed = struct {
+    small: i8 = 0,
+    byte: u8 = 0,
+    long: i64 = 0,
+    ulong: u64 = 0,
+    huge: i128 = 0,
+    uhuge: u128 = 0,
+    half: f16 = 0,
+    single: f32 = 0,
+    double: f64 = 0,
+    flag: bool = false,
+    level: Level = .a,
+    open: Open = .a,
+    mode: union(enum) { off, every: u32, name: []const u8 } = .off,
+    name: ?[]const u8 = null,
+    pair: [2]u8 = .{ 0, 0 },
+    tuple: struct { u8, []const u8 } = .{ 0, "" },
+    text: [:0]const u8 = "",
+    ptr: ?*const u8 = null,
+    items: []const i16 = &.{},
+    map: yaml.ArrayHashMap(u16) = .{},
+    child: ?*const Typed = null,
+};
+
+/// Values a field of `Typed` is given: integers at each width's ends and
+/// one past, floats that round to those ends, the edges of f16 and f32,
+/// and the shapes the other fields take.
+const typed_values = [_][]const u8{
+    "0",                     "-1",                                      "127",
+    "128",                   "-128",                                    "-129",
+    "255",                   "256",                                     "0x7F",
+    "0o777",                 "1.0",                                     "1.5",
+    "-0.0",                  "65504",                                   "65520",
+    "3.4e38",                "3.5e38",                                  "1e300",
+    ".inf",                  "-.inf",                                   ".nan",
+    "9223372036854775807",   "9223372036854775808",                     "-9223372036854775808",
+    "-9223372036854775809",  "18446744073709551615",                    "18446744073709551616",
+    "9223372036854774784.0", "9223372036854775808.0",                   "-9223372036854777856.0",
+    "1.8446744073709552e19", "170141183460469231731687303715884105727", "170141183460469231731687303715884105728",
+    "1.7014118346046923e38", "3.402823669209385e38",                    "true",
+    "~",                     "",                                        "a",
+    "b",                     "z",                                       "off",
+    "every",                 "{every: 7}",                              "{name: x}",
+    "{off: }",               "[1, 2]",                                  "[1, 2, 3]",
+    "[3, x]",                "[]",                                      "{k: 1, j: 65536}",
+    "{}",                    "x y",                                     "'7'",
+    "!!int foo",             "!!float 2",                               "{byte: 1, child: {long: 2}}",
+    "*a",                    "&a 5",                                    "7",
+};
+
+/// Whole pairs at the edges a field's type turns on: drawn as a field
+/// and a value apart, each would be rare, as one bad pair before it
+/// stops the build.
+const typed_edges = [_][]const u8{
+    "long: 9223372036854775808.0",  "long: 9223372036854774784.0", "long: -9223372036854777856.0",
+    "ulong: 1.8446744073709552e19", "ulong: 18446744073709551615", "ulong: -1.0",
+    "huge: 1.7014118346046923e38",  "uhuge: 3.402823669209385e38", "byte: 256.0",
+    "small: -129.0",                "small: -128.0",               "half: 65520",
+    "single: 3.5e38",               "open: 7",                     "open: 255",
+    "level: 2",                     "level: 3",                    "items: [32768]",
+};
+
+/// A mapping of `Typed`'s field names to `typed_values`, or a time in
+/// four a pair from `typed_edges`, block or flow; or, a time in four, any
+/// input.
+fn drawTyped(d: *Draw, arena: std.mem.Allocator) ![]const u8 {
+    if (d.index(4) == 0) return drawInput(d, arena);
+    const names = @typeInfo(Typed).@"struct".field_names;
+    var text: std.ArrayList(u8) = .empty;
+    const flow = d.boolean();
+    if (flow) try text.append(arena, '{');
+    const count: usize = d.atMost(u8, 1, 8);
+    for (0..count) |i| {
+        if (flow and i > 0) try text.appendSlice(arena, ", ");
+        if (d.index(4) == 0) {
+            try text.appendSlice(arena, d.pick([]const u8, &typed_edges));
+        } else {
+            try text.appendSlice(arena, names[d.index(names.len)]);
+            try text.appendSlice(arena, ": ");
+            try text.appendSlice(arena, d.pick([]const u8, &typed_values));
+        }
+        if (!flow) try text.append(arena, '\n');
+    }
+    if (flow) try text.append(arena, '}');
+    return text.items;
+}
+
+fn fuzzTyped(_: void, d: *Draw) !void {
+    var arena_state: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    defer arena_state.deinit();
+    const input = try drawTyped(d, arena_state.allocator());
+    const options: yaml.ParseOptions = .{
+        .ignore_unknown_fields = d.boolean(),
+        .duplicate_keys = if (d.boolean()) .refuse else .keep,
+        .max_alias_nodes = 2_000,
+    };
+    const parsed = yaml.parseFromSlice(Typed, testing.allocator, input, options) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        // Each a refusal it documents.
+        else => return,
+    };
+    defer parsed.deinit();
+    const text = try yaml.stringifyAlloc(testing.allocator, parsed.value, .{ .style = if (d.boolean()) .block else .flow });
+    defer testing.allocator.free(text);
+    errdefer std.debug.print("input:\n{s}\nstringified:\n{s}\n", .{ input, text });
+    const again = try yaml.parseFromSlice(Typed, testing.allocator, text, .{});
+    defer again.deinit();
+    try expectSameTyped(parsed.value, again.value);
+}
+
+/// `expectEqualDeep` but for NaN, equal to itself here, and the map,
+/// compared by its keys and values.
+fn expectSameTyped(a: Typed, b: Typed) anyerror!void {
+    inline for (@typeInfo(Typed).@"struct".field_names) |name| {
+        const x = @field(a, name);
+        const y = @field(b, name);
+        const T = @TypeOf(x);
+        if (comptime std.mem.eql(u8, name, "map")) {
+            try testing.expectEqualDeep(x.keys(), y.keys());
+            try testing.expectEqualDeep(x.values(), y.values());
+        } else if (comptime std.mem.eql(u8, name, "child")) {
+            if (x == null or y == null) {
+                try testing.expect(x == null and y == null);
+            } else try expectSameTyped(x.?.*, y.?.*);
+        } else if (comptime @typeInfo(T) == .float) {
+            if (std.math.isNan(x)) try testing.expect(std.math.isNan(y)) else try testing.expectEqual(x, y);
+        } else {
+            try testing.expectEqualDeep(x, y);
+        }
+    }
 }
 
 fn fuzzEmit(_: void, d: *Draw) !void {

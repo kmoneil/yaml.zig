@@ -133,6 +133,13 @@ test "a float into an integer: up to the type's edge, and not past it" {
     try expectFailure(u0, "1.0", .{}, error.Overflow, 1, 1);
 }
 
+test "an integer into a u128, past an i128 too" {
+    try testing.expectEqual(std.math.maxInt(u128), try yaml.parseFromSliceLeaky(u128, testing.allocator, "340282366920938463463374607431768211455", .{}));
+    try testing.expectEqual(std.math.maxInt(u128), try yaml.parseFromSliceLeaky(u128, testing.allocator, "0xffffffffffffffffffffffffffffffff", .{}));
+    try expectFailure(u128, "340282366920938463463374607431768211456", .{}, error.Overflow, 1, 1);
+    try expectFailure(u8, "-1", .{}, error.Overflow, 1, 1);
+}
+
 test "a scalar whose text is not what its tag says is refused, wherever it is built" {
     for ([_][]const u8{ "!!int foo", "!!int 1.5", "!!float foo", "!!bool yes", "!!null foo" }) |text| {
         try expectFailure(yaml.Value, text, .{}, error.UnexpectedType, 1, 1);

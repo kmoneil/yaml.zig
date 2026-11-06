@@ -280,10 +280,8 @@ const Builder = struct {
 
     fn buildInt(b: *const Builder, comptime T: type, node: *const Node) ParseError!T {
         const text = try b.scalarOf(node, "an integer");
-        if (hasTag(node, schema.tag.int)) {
-            const n = schema.parseInt(text) orelse return b.failDetail(node, error.Overflow, "the integer does not fit", "the integer {s} is past what an i128 holds", .{text});
-            return std.math.cast(T, n) orelse b.tooBig(T, node, text);
-        }
+        // `build` saw that the text is an integer: null here is too big.
+        if (hasTag(node, schema.tag.int)) return schema.parseIntAs(T, text) orelse b.tooBig(T, node, text);
         if (hasTag(node, schema.tag.float)) {
             const x = schema.parseFloat(text) orelse return b.fail(node, error.UnexpectedType, "expected an integer");
             if (@trunc(x) != x or !std.math.isFinite(x)) return b.fail(node, error.UnexpectedType, "expected an integer, found a fraction");

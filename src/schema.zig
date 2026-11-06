@@ -141,10 +141,16 @@ fn isJsonFloat(value: []const u8) bool {
 /// The value of a scalar the core or JSON schema reads as an integer; null
 /// when it is not one, or does not fit an i128.
 pub fn parseInt(value: []const u8) ?i128 {
+    return parseIntAs(i128, value);
+}
+
+/// `parseInt` into any integer type `T`: null when the scalar is not an
+/// integer, or does not fit a `T`.
+pub fn parseIntAs(comptime T: type, value: []const u8) ?T {
     if (!isCoreInt(value)) return null;
-    if (std.mem.startsWith(u8, value, "0o")) return std.fmt.parseInt(i128, value[2..], 8) catch null;
-    if (std.mem.startsWith(u8, value, "0x")) return std.fmt.parseInt(i128, value[2..], 16) catch null;
-    return std.fmt.parseInt(i128, value, 10) catch null;
+    if (std.mem.startsWith(u8, value, "0o")) return std.fmt.parseInt(T, value[2..], 8) catch null;
+    if (std.mem.startsWith(u8, value, "0x")) return std.fmt.parseInt(T, value[2..], 16) catch null;
+    return std.fmt.parseInt(T, value, 10) catch null;
 }
 
 /// The value of a scalar the core or JSON schema reads as a float; null

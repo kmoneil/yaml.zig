@@ -6,7 +6,8 @@
 //! value it points at, a map with `keys()` and `values()` (std's array
 //! hash maps) a mapping, and a `Value` what it holds. A string or an
 //! enum's name is plain when a reader would read the plain text back as
-//! a string, and quoted when not (`"true"`, `"123"`, `""`); a float
+//! a string, and quoted when not (`"true"`, `"123"`, `""`); a value of a
+//! non-exhaustive enum with no name is its number; a float
 //! always has a point or an exponent, so `1.0` does not read back as an
 //! integer, and its infinities and NaN are `.inf`, `-.inf` and `.nan`.
 //!
@@ -104,7 +105,8 @@ const Stringifier = struct {
             .float, .comptime_float => try s.writeFloat(@as(f64, value)),
             .null => try s.scalar("null", .plain),
             .optional => if (value) |v| try s.write(v) else try s.scalar("null", .plain),
-            .@"enum" => try s.string(@tagName(value)),
+            // @tagName of a value with no name is a panic, or undefined.
+            .@"enum" => if (std.enums.tagName(T, value)) |name| try s.string(name) else try s.format("{d}", .{@backingInt(value)}),
             .enum_literal => try s.string(@tagName(value)),
             .@"struct" => try s.writeStruct(value),
             .@"union" => try s.writeUnion(value),

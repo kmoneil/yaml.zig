@@ -79,10 +79,19 @@ test "round trip: a struct of every kind of field" {
 test "round trip: numbers at their edges" {
     try expectRoundTrip([_]i64{ std.math.minInt(i64), -1, 0, std.math.maxInt(i64) }, .{});
     try expectRoundTrip([_]u64{ 0, std.math.maxInt(u64) }, .{});
+    // Past an i128 (found by the typed fuzz target, 2^127 into a u128).
+    try expectRoundTrip([_]i128{ std.math.minInt(i128), std.math.maxInt(i128) }, .{});
+    try expectRoundTrip([_]u128{ 1 << 127, std.math.maxInt(u128) }, .{});
     try expectRoundTrip([_]f64{ 1, -0.5, 1e300, -1e-300, 0.1, std.math.inf(f64), -std.math.inf(f64) }, .{});
     const text = try yaml.stringifyAlloc(testing.allocator, std.math.nan(f64), .{});
     defer testing.allocator.free(text);
     try testing.expect(std.math.isNan(try yaml.parseFromSliceLeaky(f64, testing.allocator, text, .{})));
+}
+
+test "a non-exhaustive enum's value with no name is its number" {
+    const Open = enum(u8) { a, b, _ };
+    try expectText([_]Open{ .b, @fromBackingInt(7) }, .{ .style = .flow }, "[b, 7]\n");
+    try expectRoundTrip([_]Open{ .a, @fromBackingInt(7), @fromBackingInt(255) }, .{});
 }
 
 test "round trip: strings that read as other things when plain" {
