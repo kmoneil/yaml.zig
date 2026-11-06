@@ -124,6 +124,8 @@ head: usize = 0,
 tokens_parsed: usize = 0,
 stream_start_produced: bool = false,
 stream_end_produced: bool = false,
+/// The `stream_end` token is in the queue: nothing follows it.
+stream_end_fetched: bool = false,
 /// The indentation column of the innermost block collection: -1 before
 /// the first one.
 indent: isize = -1,
@@ -188,7 +190,7 @@ pub fn next(s: *Scanner) Error!Token {
 /// Fetches until the token at the head of the queue is settled: there is
 /// one, and no possible simple key begins at it.
 fn fetchMoreTokens(s: *Scanner) Error!void {
-    while (s.head == s.tokens.items.len or try s.keyMayBeginAtHead()) {
+    while (!s.stream_end_fetched and (s.head == s.tokens.items.len or try s.keyMayBeginAtHead())) {
         try s.fetchNextToken();
     }
 }
@@ -313,9 +315,16 @@ fn fetchStreamEnd(s: *Scanner) Error!void {
         s.mark.line += 1;
     }
     try s.unrollIndent(-1);
-    try s.removeSimpleKey();
+    // No `:` can come now for any possible key, even a flow mapping's,
+    // which no line break ends: without this, one in a flow mapping left
+    // open would hold the queue forever (found by the emit fuzz target).
+    for (s.simple_keys.items) |*key| {
+        if (key.possible and key.required) return s.fail(key.mark, "could not find the ':' this key needs");
+        key.possible = false;
+    }
     s.simple_key_allowed = false;
     try s.append(.stream_end, s.mark, s.mark);
+    s.stream_end_fetched = true;
 }
 
 /// Fetches a directive: `%YAML`, `%TAG`, or one YAML reserves, which is

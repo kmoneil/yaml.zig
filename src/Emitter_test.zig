@@ -179,21 +179,23 @@ test "a key that does not fit on a line is explicit" {
 /// Text chosen to be hard to write: indicators, blanks at the edges,
 /// breaks, controls, Unicode, and what a schema would read as no string.
 const awkward = [_][]const u8{
-    "",                "plain",            "two words",                " leading",
-    "trailing ",       "a: b",             "a #b",                     "#comment",
-    "- item",          "? key",            ":colon",                   "[flow]",
-    "{map}",           "a, b",             "*alias",                   "&anchor",
-    "!tag",            "|block",           ">folded",                  "'single'",
-    "\"double\"",      "%directive",       "@at",                      "`tick",
-    "---",             "...",              "--- x",                    "line\nbreak",
-    "\nleading break", "trailing break\n", "two\n\nbreaks",            "space \nbreak",
-    "break\n space",   "tab\there",        "\ttab first",              "control\x01",
-    "bell\x07",        "esc\x1b",          "nel\u{85}",                "bom\u{feff}",
+    "",                           "plain",            "two words",                " leading",
+    "trailing ",                  "a: b",             "a #b",                     "#comment",
+    "- item",                     "? key",            ":colon",                   "[flow]",
+    "{map}",                      "a, b",             "*alias",                   "&anchor",
+    "!tag",                       "|block",           ">folded",                  "'single'",
+    "\"double\"",                 "%directive",       "@at",                      "`tick",
+    "---",                        "...",              "--- x",                    "line\nbreak",
+    "\nleading break",            "trailing break\n", "two\n\nbreaks",            "space \nbreak",
+    "break\n space",              "tab\there",        "\ttab first",              "control\x01",
+    "bell\x07",                   "esc\x1b",          "nel\u{85}",                "bom\u{feff}",
     "ls\u{2028}",
     "中文",
-    "emoji \u{1F600}", "\\backslash",      "123",                      "1.5",
-    "true",            "null",             "~",                        "0x1F",
-    ".inf",            "cr\rhere",         "a" ++ repeat(" word", 30), repeat("very long line ", 10) ++ repeat("\nand another line ", 10),
+    "emoji \u{1F600}",            "\\backslash",      "123",                      "1.5",
+    "true",                       "null",             "~",                        "0x1F",
+    ".inf",                       "cr\rhere",         "a" ++ repeat(" word", 30), repeat("very long line ", 10) ++ repeat("\nand another line ", 10),
+    // A long line with a tab beside each space (found by fuzzing).
+    repeat("word \tword\t ", 10),
 };
 
 fn roundTripValue(value: []const u8, style: Parser.ScalarStyle, comptime place: enum { block, flow, key }) !void {

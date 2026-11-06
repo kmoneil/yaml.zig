@@ -660,25 +660,29 @@ fn writeCharacter(e: *Emitter, value: []const u8, i: usize) Error!usize {
 }
 
 /// Whether a long line breaks at the space `value[i]`, which reads back
-/// as the space: past the width, at a lone space, not the text's last.
-fn foldsAt(e: *const Emitter, value: []const u8, i: usize, after_space: bool) bool {
-    if (after_space or e.column <= e.options.width) return false;
-    return i + 1 < value.len and value[i + 1] != ' ';
+/// as the space: past the width, with text on both sides. A blank either
+/// side would end one line or begin the next, where reading drops it (a
+/// tab after a space, found by the emit fuzz target).
+fn foldsAt(e: *const Emitter, value: []const u8, i: usize) bool {
+    if (e.column <= e.options.width) return false;
+    if (i == 0 or isBlank(value[i - 1])) return false;
+    return i + 1 < value.len and !isBlank(value[i + 1]);
+}
+
+fn isBlank(c: u8) bool {
+    return c == ' ' or c == '\t';
 }
 
 fn writePlain(e: *Emitter, value: []const u8, allow_breaks: bool) Error!void {
     if (!e.whitespace and (value.len > 0 or e.flow_level > 0)) try e.writeByte(' ');
-    var spaces = false;
     var i: usize = 0;
     while (i < value.len) {
         if (value[i] == ' ') {
-            const fold = allow_breaks and e.foldsAt(value, i, spaces);
+            const fold = allow_breaks and e.foldsAt(value, i);
             if (fold) try e.writeIndent() else try e.writeByte(' ');
-            spaces = true;
             i += 1;
         } else {
             i += try e.writeCharacter(value, i);
-            spaces = false;
         }
     }
     e.whitespace = false;
@@ -687,13 +691,12 @@ fn writePlain(e: *Emitter, value: []const u8, allow_breaks: bool) Error!void {
 
 fn writeSingleQuoted(e: *Emitter, value: []const u8, allow_breaks: bool) Error!void {
     try e.writeIndicator("'", true, false, false);
-    var spaces = false;
     var breaks = false;
     var i: usize = 0;
     while (i < value.len) {
         const c = value[i];
         if (c == ' ') {
-            const fold = allow_breaks and i != 0 and e.foldsAt(value, i, spaces);
+            const fold = allow_breaks and e.foldsAt(value, i);
             if (fold) try e.writeIndent() else try e.writeByte(' ');
             i += 1;
         } else if (c == '\n') {
@@ -702,7 +705,6 @@ fn writeSingleQuoted(e: *Emitter, value: []const u8, allow_breaks: bool) Error!v
         } else {
             i += try e.writeQuotedCharacter(value, i, breaks);
         }
-        spaces = c == ' ';
         breaks = c == '\n';
     }
     if (breaks) try e.writeIndent();
@@ -842,7 +844,7 @@ fn writeFolded(e: *Emitter, value: []const u8, parent: isize) Error!void {
             leading_spaces = value[i] == ' ' or value[i] == '\t';
         }
         // A more-indented line is not folded when read: it is not broken.
-        const fold = !breaks and !leading_spaces and value[i] == ' ' and e.foldsAt(value, i, false);
+        const fold = !breaks and !leading_spaces and value[i] == ' ' and e.foldsAt(value, i);
         if (fold) {
             try e.writeIndent();
             i += 1;

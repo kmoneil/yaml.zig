@@ -68,4 +68,5 @@ test {
     _ = @import("encoding_test.zig");
     _ = @import("Emitter_test.zig");
     _ = @import("stringify_test.zig");
+    _ = @import("fuzz_test.zig");
 }

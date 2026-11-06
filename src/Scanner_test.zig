@@ -532,6 +532,29 @@ test "depth: flow and block collections count toward max_depth" {
     while ((try s.next()).data != .stream_end) {}
 }
 
+test "a flow mapping left open ends at the input's end (found by fuzzing)" {
+    const inputs = [_][]const u8{ "{[\na#b\n", "{a", "{[", "{\"a\"", "{ a\n b", "[{a", "{{{" };
+    for (inputs) |input| {
+        var s: Scanner = .init(testing.allocator, input);
+        defer s.deinit();
+        var count: usize = 0;
+        while (count < 100) : (count += 1) {
+            const token = s.next() catch break;
+            if (token.data == .stream_end) break;
+        }
+        errdefer std.debug.print("input: {s}\n", .{input});
+        try testing.expect(count < 100);
+    }
+    // The parser reports the collection left open.
+    var p: @import("Parser.zig") = .init(testing.allocator, "{[\na#b\n");
+    defer p.deinit();
+    const err = while (true) {
+        const e = p.next() catch |err| break err;
+        if (e.data == .stream_end) break error.TestUnexpectedResult;
+    };
+    try testing.expectEqual(error.SyntaxError, err);
+}
+
 test "next after the end gives the end again" {
     var s: Scanner = .init(testing.allocator, "a");
     defer s.deinit();

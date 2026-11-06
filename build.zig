@@ -14,6 +14,13 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests, zigvet and gnarl");
     test_step.dependOn(&b.addRunArtifact(tests).step);
 
+    // The fuzz targets alone (src/fuzz_test.zig): `zig build fuzz` replays
+    // their seeded draws, `zig build fuzz --fuzz` fuzzes them. Only the
+    // LLVM backend emits the fuzzer's instrumentation.
+    const fuzz_filter = b.option([]const u8, "fuzz-filter", "Fuzz only the targets whose names hold this") orelse "fuzz:";
+    const fuzz_tests = b.addTest(.{ .root_module = mod, .filters = &.{fuzz_filter}, .use_llvm = true });
+    b.step("fuzz", "Replay the fuzz targets' seeded draws (--fuzz to fuzz)").dependOn(&b.addRunArtifact(fuzz_tests).step);
+
     // The yaml-test-suite harness (test/main.zig) over the suite's data
     // tree (build.zig.zon's yaml_test_suite, a lazy dependency), held to
     // test/suite-skip.txt. `zig build test` fails on a regression or a
