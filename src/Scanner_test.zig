@@ -944,3 +944,143 @@ test "anchors and aliases: names run to a blank or flow indicator (suite 2SXE)" 
         \\ERROR 1:5 an anchor, alias or tag must be followed by whitespace
     );
 }
+
+test "flow: a value may adjoin a JSON-like key (suite C2DT, 5T43, 9MMW)" {
+    try expectTokens("{\"a\":b, \"c\"::d, [x]:y}",
+        \\+STR
+        \\{
+        \\?
+        \\"a
+        \\:
+        \\=b
+        \\,
+        \\?
+        \\"c
+        \\:
+        \\=:d
+        \\,
+        \\?
+        \\[
+        \\=x
+        \\]
+        \\:
+        \\=y
+        \\}
+        \\-STR
+    );
+    // After a plain scalar, `:` with no blank after it is still text.
+    try expectTokens("[a:b]",
+        \\+STR
+        \\[
+        \\=a:b
+        \\]
+        \\-STR
+    );
+}
+
+test "flow: in a mapping a key's ':' may be on a later line (suite 4MUZ, VJP3/01, K3WX)" {
+    try expectTokens("{\"foo\"\n: bar, \"baz\" # c\n :qux}",
+        \\+STR
+        \\{
+        \\?
+        \\"foo
+        \\:
+        \\=bar
+        \\,
+        \\?
+        \\"baz
+        \\:
+        \\=qux
+        \\}
+        \\-STR
+    );
+    // After a plain scalar, `:qux` on the next line is text: here the
+    // scalar's next line.
+    try expectTokens("{baz\n :qux}",
+        \\+STR
+        \\{
+        \\=baz :qux
+        \\}
+        \\-STR
+    );
+    try expectTokens("k: {\n k\n :\n v\n }",
+        \\+STR
+        \\+MAP
+        \\?
+        \\=k
+        \\:
+        \\{
+        \\?
+        \\=k
+        \\:
+        \\=v
+        \\}
+        \\-BLK
+        \\-STR
+    );
+    // In a sequence it may not: no key, and the parser reports the `:`.
+    try expectTokens("[ key\n  : value ]",
+        \\+STR
+        \\[
+        \\=key
+        \\:
+        \\=value
+        \\]
+        \\-STR
+    );
+}
+
+test "flow: lines indented past the block, with spaces (suite 9C9N, VJP3/00, Y79Y)" {
+    const errors = [_]struct { []const u8, []const u8 }{
+        .{ "---\nflow: [a,\nb,\nc]\n", "3:1" },
+        .{ "k: {\nk\n:\nv\n}\n", "2:1" },
+        .{ "- [\n\tfoo,\n foo\n ]\n", "2:2" },
+        .{ "k: [a\nb]\n", "2:1" },
+        .{ "k: [\"a\nb\"]\n", "2:1" },
+    };
+    inline for (errors) |case| {
+        const got = try dump(testing.allocator, case[0]);
+        defer testing.allocator.free(got);
+        errdefer std.debug.print("input: {s}\ngot:\n{s}\n", .{ case[0], got });
+        const message = " a flow collection's lines must be indented past its block's, with spaces\n";
+        const quoted = " a quoted scalar's lines must be indented past its block's, with spaces\n";
+        try testing.expect(std.mem.endsWith(u8, got, "ERROR " ++ case[1] ++ message) or
+            std.mem.endsWith(u8, got, "ERROR " ++ case[1] ++ quoted));
+    }
+    // A line holding only a tab, or a comment, is no line of the collection.
+    try expectTokens("- [\n\t\n# c\n foo\n ]\n",
+        \\+STR
+        \\+SEQ
+        \\-
+        \\[
+        \\=foo
+        \\]
+        \\-BLK
+        \\-STR
+    );
+    // At the top there is no block to be past.
+    try expectTokens("[\na,\n\tb\n]",
+        \\+STR
+        \\[
+        \\=a
+        \\,
+        \\=b
+        \\]
+        \\-STR
+    );
+}
+
+test "flow: multi-line plain scalars fold, and end at flow indicators" {
+    try expectTokens("- [ one\n   two, three ]",
+        \\+STR
+        \\+SEQ
+        \\-
+        \\[
+        \\=one two
+        \\,
+        \\=three
+        \\]
+        \\-BLK
+        \\-STR
+    );
+}

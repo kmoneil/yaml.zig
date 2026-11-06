@@ -95,6 +95,9 @@ const SimpleKey = struct {
     mark: Mark = .{},
     /// A tab came before it on its line, so it cannot open a block mapping.
     after_tab: bool = false,
+    /// The level is a flow mapping, where a key may span lines and has no
+    /// length limit (YAML 1.2.2, 7.4.1). Kept as keys come and go.
+    flow_mapping: bool = false,
 };
 
 /// The longest an implicit key may be, in characters (YAML 1.2.2, 7.4.2).
@@ -120,10 +123,25 @@ indents: std.ArrayList(isize) = .empty,
 /// Whether a simple key may begin where the next token does.
 simple_key_allowed: bool = false,
 /// One for the block context and one for each flow collection open.
+/// Only the innermost level saves a key, so a deeper level's key was
+/// always saved after an outer one's: keys lie in input order by level.
 simple_keys: std.ArrayList(SimpleKey) = .empty,
+/// No level below this holds a possible key: where the search for the
+/// earliest one starts.
+key_floor: usize = 0,
+/// No level below this holds a possible key that can go stale.
+stale_floor: usize = 0,
 flow_level: usize = 0,
 /// A tab was in the whitespace just before the next token, on its line.
 tab_before: bool = false,
+/// The last token was a JSON-like node (a quoted scalar or a flow
+/// collection), after which a `:` in a flow collection is a value
+/// indicator even with no blank after it: `{"a":b}`.
+after_json_node: bool = false,
+/// Where the line the scanner is on begins.
+line_start: usize = 0,
+/// A token has been fetched on the current line.
+line_has_token: bool = false,
 diagnostic: Diagnostic = .{},
 
 pub fn init(gpa: Allocator, input: []const u8) Scanner {
@@ -165,10 +183,10 @@ fn fetchMoreTokens(s: *Scanner) Error!void {
 
 fn keyMayBeginAtHead(s: *Scanner) Error!bool {
     try s.staleSimpleKeys();
-    for (s.simple_keys.items) |key| {
-        if (key.possible and key.token_number == s.tokens_parsed) return true;
-    }
-    return false;
+    const keys = s.simple_keys.items;
+    while (s.key_floor < keys.len and !keys[s.key_floor].possible) s.key_floor += 1;
+    // The outermost possible key is the earliest.
+    return s.key_floor < keys.len and keys[s.key_floor].token_number == s.tokens_parsed;
 }
 
 fn fetchNextToken(s: *Scanner) Error!void {
@@ -177,8 +195,25 @@ fn fetchNextToken(s: *Scanner) Error!void {
     try s.staleSimpleKeys();
     try s.unrollIndent(@intCast(s.mark.column));
     if (s.mark.offset >= s.input.len) return s.fetchStreamEnd();
+    if (!s.line_has_token) {
+        s.line_has_token = true;
+        if (s.flow_level > 0) try s.checkFlowLineIndent();
+    }
     if (s.mark.column == 0 and try s.fetchLineStartToken()) return;
-    return s.fetchByFirstCharacter(s.ch(0));
+    const after_json_node = s.after_json_node;
+    s.after_json_node = false;
+    return s.fetchByFirstCharacter(s.ch(0), after_json_node);
+}
+
+/// A line that begins in a flow collection must be indented past the
+/// block around the collection, with spaces (YAML 1.2.2, 7: the flow
+/// nodes in a block are at its indentation plus one). Called with a
+/// token, or a scalar's next line, on the line.
+fn checkFlowLineIndent(s: *Scanner) Error!void {
+    var i = s.line_start;
+    while (i < s.input.len and s.input[i] == ' ') i += 1;
+    if (@as(isize, @intCast(i - s.line_start)) > s.indent) return;
+    return s.fail(s.mark, "a flow collection's lines must be indented past its block's, with spaces");
 }
 
 /// Fetches a token only a line's first column can hold: a directive or
@@ -194,7 +229,7 @@ fn fetchLineStartToken(s: *Scanner) Error!bool {
     return true;
 }
 
-fn fetchByFirstCharacter(s: *Scanner, c: u8) Error!void {
+fn fetchByFirstCharacter(s: *Scanner, c: u8, after_json_node: bool) Error!void {
     return switch (c) {
         '[' => s.fetchFlowCollectionStart(.flow_sequence_start),
         '{' => s.fetchFlowCollectionStart(.flow_mapping_start),
@@ -207,7 +242,8 @@ fn fetchByFirstCharacter(s: *Scanner, c: u8) Error!void {
         '|', '>' => s.fetchBlockScalar(),
         '\'' => s.fetchQuotedScalar(.single_quoted),
         '"' => s.fetchQuotedScalar(.double_quoted),
-        '-', '?', ':' => s.fetchIndicatorOrPlain(c),
+        '-', '?' => s.fetchIndicatorOrPlain(c),
+        ':' => if (after_json_node and s.flow_level > 0) s.fetchValue() else s.fetchIndicatorOrPlain(c),
         '#', '@', '`', '%' => s.fail(s.mark, "found a character that cannot start any token"),
         else => s.fetchPlainOrInvalid(),
     };
@@ -358,7 +394,7 @@ fn fetchDocumentIndicator(s: *Scanner, data: Token.Data) Error!void {
 fn fetchFlowCollectionStart(s: *Scanner, data: Token.Data) Error!void {
     // The collection may be a simple key: `[a, b]: c`.
     try s.saveSimpleKey();
-    try s.simple_keys.append(s.gpa, .{});
+    try s.simple_keys.append(s.gpa, .{ .flow_mapping = data == .flow_mapping_start });
     s.flow_level += 1;
     s.simple_key_allowed = true;
     try s.appendIndicator(data);
@@ -372,6 +408,7 @@ fn fetchFlowCollectionEnd(s: *Scanner, data: Token.Data) Error!void {
     }
     s.simple_key_allowed = false;
     try s.appendIndicator(data);
+    s.after_json_node = true;
 }
 
 fn fetchFlowEntry(s: *Scanner) Error!void {
@@ -569,6 +606,7 @@ fn fetchQuotedScalar(s: *Scanner, style: ScalarStyle) Error!void {
     s.simple_key_allowed = false;
     const token = try s.scanQuotedScalar(style);
     try s.tokens.append(s.gpa, token);
+    s.after_json_node = true;
 }
 
 /// Appends a one-character indicator token and moves past it.
@@ -623,12 +661,17 @@ fn unrollIndent(s: *Scanner, column: isize) Error!void {
 fn saveSimpleKey(s: *Scanner) Error!void {
     if (!s.simple_key_allowed) return;
     try s.removeSimpleKey();
-    s.simple_keys.items[s.simple_keys.items.len - 1] = .{
+    const level = s.simple_keys.items.len - 1;
+    s.key_floor = @min(s.key_floor, level);
+    s.stale_floor = @min(s.stale_floor, level);
+    const key = &s.simple_keys.items[level];
+    key.* = .{
         .possible = true,
         .required = s.flow_level == 0 and s.indent == @as(isize, @intCast(s.mark.column)),
         .token_number = s.tokens_parsed + s.tokens.items.len - s.head,
         .mark = s.mark,
         .after_tab = s.tab_before,
+        .flow_mapping = key.flow_mapping,
     };
 }
 
@@ -641,11 +684,16 @@ fn removeSimpleKey(s: *Scanner) Error!void {
 }
 
 /// Drops each possible simple key the next token can no longer end: one
-/// on an earlier line, or more than 1024 characters back.
+/// on an earlier line, or more than 1024 characters back. A key in a
+/// flow mapping is never stale: only a `,` or the mapping's end drops it.
+/// Keys lie in input order by level, so the first that is not stale
+/// ends the search.
 fn staleSimpleKeys(s: *Scanner) Error!void {
-    for (s.simple_keys.items) |*key| {
-        if (!key.possible) continue;
-        if (key.mark.line == s.mark.line and s.mark.column - key.mark.column <= max_simple_key_length) continue;
+    const keys = s.simple_keys.items;
+    while (s.stale_floor < keys.len) : (s.stale_floor += 1) {
+        const key = &keys[s.stale_floor];
+        if (!key.possible or key.flow_mapping) continue;
+        if (key.mark.line == s.mark.line and s.mark.column - key.mark.column <= max_simple_key_length) return;
         if (key.required) return s.fail(key.mark, "could not find the ':' this key needs");
         key.possible = false;
     }
@@ -752,6 +800,7 @@ fn skipPlainBreaks(s: *Scanner, line_start: *usize) Error!usize {
         while (s.ch(0) == ' ') s.skip();
         try s.skipTabInIndentation();
         while (isBlank(s.ch(0))) s.skip();
+        if (s.flow_level > 0 and !isBreakOrEnd(s.ch(0)) and s.ch(0) != '#') try s.checkFlowLineIndent();
     }
     line_start.* = s.mark.offset;
     return breaks;
@@ -973,7 +1022,7 @@ fn skipQuotedIndentation(s: *Scanner, start: Mark) Error!void {
     while (s.ch(0) == ' ') s.skip();
     const spaces: isize = @intCast(s.mark.column);
     while (isBlank(s.ch(0))) s.skip();
-    if (isBreak(s.ch(0)) or s.flow_level > 0 or spaces > s.indent) return;
+    if (isBreak(s.ch(0)) or spaces > s.indent) return;
     if (s.mark.offset >= s.input.len) return s.fail(start, "found the end of the input inside a quoted scalar");
     return s.fail(s.mark, "a quoted scalar's lines must be indented past its block's, with spaces");
 }
@@ -1177,6 +1226,8 @@ fn skipBreak(s: *Scanner) void {
     s.mark.offset += if (s.ch(0) == '\r' and s.ch(1) == '\n') 2 else 1;
     s.mark.line += 1;
     s.mark.column = 0;
+    s.line_start = s.mark.offset;
+    s.line_has_token = false;
 }
 
 fn fail(s: *Scanner, mark: Mark, message: []const u8) error{SyntaxError} {
