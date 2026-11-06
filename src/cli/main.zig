@@ -15,6 +15,7 @@ const usage =
     \\       yaml json [--indent <n>] [options] <file>
     \\       yaml from-json <file>
     \\       yaml events <file>
+    \\       yaml skill [--install <dir>]
     \\       yaml --help
     \\
     \\check reads every document of each file, and reports each file that
@@ -31,6 +32,11 @@ const usage =
     \\json prints each document of a file as JSON, one a line, or indented
     \\with --indent. from-json prints a JSON file as YAML. events prints
     \\the events a file reads to, in the yaml-test-suite's notation.
+    \\
+    \\skill prints what an AI agent needs to work with yaml: each command
+    \\with an example, the errors seen most and how to fix them, the exit
+    \\status. --install <dir> writes <dir>/yaml/SKILL.md, a stub that has
+    \\the agent run `yaml skill`, so it is never out of date.
     \\
     \\A file named - is read from standard input. UTF-16 and UTF-32 are
     \\read too, by their byte order mark or their first bytes.
@@ -54,7 +60,21 @@ const usage =
 /// The most a file may hold: a mark counts in 32 bits.
 const max_bytes = yaml.Scanner.max_input;
 
-const Command = enum { check, get, json, @"from-json", events };
+const Command = enum { check, get, json, @"from-json", events, skill };
+
+const commands = "check, get, json, from-json, events or skill";
+
+/// The agent skill: `yaml skill` prints it (t59).
+const skill_text = @embedFile("skill.md");
+
+/// What `yaml skill --install` writes: the skill's frontmatter, so an
+/// agent knows when to load it, and a line that hands over to `yaml
+/// skill`, so it never needs updating (as karte's does).
+const skill_stub = skill_text[0 .. (std.mem.find(u8, skill_text[4..], "\n---\n") orelse unreachable) + 4 + "\n---\n".len] ++
+    \\
+    \\Run `yaml skill` and follow what it prints: it is the guide to the yaml installed on this machine, current for its version.
+    \\
+;
 
 const Options = struct {
     format: enum { text, json } = .text,
@@ -62,6 +82,8 @@ const Options = struct {
     document: ?usize = null,
     as_json: bool = false,
     indent: u8 = 0,
+    /// skill: the directory to write yaml/SKILL.md under.
+    install: ?[]const u8 = null,
 };
 
 const Args = struct {
@@ -101,10 +123,10 @@ pub fn main(init: std.process.Init) !u8 {
 }
 
 fn parseArgs(arena: Allocator, argv: []const []const u8) Allocator.Error!Parsed {
-    if (argv.len == 0) return .{ .usage_error = "a command is needed: check, get, json, from-json or events" };
+    if (argv.len == 0) return .{ .usage_error = "a command is needed: " ++ commands };
     if (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h")) return .help;
     const command = std.meta.stringToEnum(Command, argv[0]) orelse
-        return .{ .usage_error = try std.fmt.allocPrint(arena, "no command `{s}`: check, get, json, from-json or events", .{argv[0]}) };
+        return .{ .usage_error = try std.fmt.allocPrint(arena, "no command `{s}`: " ++ commands, .{argv[0]}) };
     var options: Options = .{};
     var operands: std.ArrayList([]const u8) = .empty;
     var i: usize = 1;
@@ -133,6 +155,7 @@ fn wrongOperands(arena: Allocator, command: Command, n: usize) Allocator.Error!?
         .check => .{ 1, std.math.maxInt(usize), "one file or more" },
         .get => .{ 2, 2, "a path and a file" },
         .json, .@"from-json", .events => .{ 1, 1, "one file" },
+        .skill => .{ 0, 0, "no file" },
     };
     if (n >= want[0] and n <= want[1]) return null;
     return try std.fmt.allocPrint(arena, "{t} takes {s}", .{ command, want[2] });
@@ -151,6 +174,8 @@ fn setOption(arena: Allocator, options: *Options, name: []const u8, value: []con
         options.composer.max_depth = std.fmt.parseInt(usize, value, 10) catch return "--max-depth is a number";
     } else if (std.mem.eql(u8, name, "--document")) {
         options.document = std.fmt.parseInt(usize, value, 10) catch return "--document is a number, from 0";
+    } else if (std.mem.eql(u8, name, "--install")) {
+        options.install = value;
     } else if (std.mem.eql(u8, name, "--indent")) {
         options.indent = std.fmt.parseInt(u8, value, 10) catch return "--indent is 0, 1, 2, 3, 4 or 8";
         if (json.whitespace(options.indent) == null) return "--indent is 0, 1, 2, 3, 4 or 8";
@@ -170,6 +195,7 @@ fn run(gpa: Allocator, io: Io, out: *Io.Writer, args: Args) !u8 {
         .json => toJson(arena, io, out, args),
         .@"from-json" => fromJson(arena, io, out, args),
         .events => events(arena, io, out, args),
+        .skill => skill(arena, io, out, args),
     };
 }
 
@@ -433,6 +459,31 @@ fn events(arena: Allocator, io: Io, out: *Io.Writer, args: Args) !u8 {
     }
 }
 
+/// Prints the skill, or with --install writes its stub, and says where.
+fn skill(arena: Allocator, io: Io, out: *Io.Writer, args: Args) !u8 {
+    const dir = args.options.install orelse {
+        try out.writeAll(skill_text);
+        return 0;
+    };
+    const sub = try std.fs.path.join(arena, &.{ dir, "yaml" });
+    const path = try std.fs.path.join(arena, &.{ sub, "SKILL.md" });
+    Io.Dir.cwd().createDirPath(io, sub) catch |err| {
+        std.debug.print("yaml: {s}: {t}\n", .{ sub, err });
+        return 2;
+    };
+    Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = skill_stub }) catch |err| {
+        std.debug.print("yaml: {s}: {t}\n", .{ path, err });
+        return 2;
+    };
+    try out.print("wrote {s}\n", .{path});
+    return 0;
+}
+
 test {
     _ = tree;
+}
+
+test "the skill's stub is its frontmatter and a hand-over" {
+    try std.testing.expect(std.mem.startsWith(u8, skill_stub, "---\nname: yaml\ndescription: "));
+    try std.testing.expect(std.mem.endsWith(u8, skill_stub, "---\n\nRun `yaml skill` and follow what it prints: it is the guide to the yaml installed on this machine, current for its version.\n"));
 }

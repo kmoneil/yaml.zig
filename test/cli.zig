@@ -50,8 +50,10 @@ const cases = [_]Case{
     .{ .argv = &.{ "events", "alias.yaml" }, .exit = 0, .stdout = "+STR\n+DOC\n+MAP\n=VAL :base\n+MAP {} &b\n=VAL :k\n=VAL :v\n-MAP\n=VAL :use\n=ALI *b\n-MAP\n-DOC\n-STR\n" },
     .{ .argv = &.{ "events", "bad.yaml" }, .exit = 1, .stdout = "+STR\n+DOC\n+MAP\n=VAL :list\n+SEQ []\n=VAL :1\n", .stderr = "bad.yaml:2:1: a flow collection's lines must be indented past its block's, with spaces\nnext: 3\n^\n" },
     // usage
-    .{ .argv = &.{}, .exit = 2, .stderr = "yaml: a command is needed: check, get, json, from-json or events\nRun `yaml --help` for the usage.\n" },
-    .{ .argv = &.{ "lint", "good.yaml" }, .exit = 2, .stderr = "yaml: no command `lint`: check, get, json, from-json or events\nRun `yaml --help` for the usage.\n" },
+    .{ .argv = &.{}, .exit = 2, .stderr = "yaml: a command is needed: check, get, json, from-json, events or skill\nRun `yaml --help` for the usage.\n" },
+    .{ .argv = &.{ "lint", "good.yaml" }, .exit = 2, .stderr = "yaml: no command `lint`: check, get, json, from-json, events or skill\nRun `yaml --help` for the usage.\n" },
+    .{ .argv = &.{ "skill", "good.yaml" }, .exit = 2, .stderr = "yaml: skill takes no file\nRun `yaml --help` for the usage.\n" },
+    .{ .argv = &.{ "skill", "--install", "agents" }, .exit = 0, .stdout = "wrote agents/yaml/SKILL.md\n" },
     .{ .argv = &.{ "get", ".a" }, .exit = 2, .stderr = "yaml: get takes a path and a file\nRun `yaml --help` for the usage.\n" },
     .{ .argv = &.{ "json", "--indent", "5", "good.yaml" }, .exit = 2, .stderr = "yaml: --indent is 0, 1, 2, 3, 4 or 8\nRun `yaml --help` for the usage.\n" },
 };
@@ -81,6 +83,83 @@ test "yaml, each command end to end" {
         try std.testing.expectEqualStrings(case.stderr, result.stderr);
         try std.testing.expectEqual(std.process.Child.Term{ .exited = case.exit }, result.term);
     }
+}
+
+/// Runs the binary in `dir` with `args`, its stdout and then its stderr.
+fn runIn(gpa: std.mem.Allocator, io: Io, dir: Io.Dir, exe: []const u8, args: []const []const u8) ![]u8 {
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(gpa);
+    try argv.append(gpa, exe);
+    try argv.appendSlice(gpa, args);
+    const result = try std.process.run(gpa, io, .{ .argv = argv.items, .cwd = .{ .dir = dir } });
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+    return std.mem.concat(gpa, u8, &.{ result.stdout, result.stderr });
+}
+
+/// A command line's words, split at spaces, a word in single quotes kept
+/// whole.
+fn words(gpa: std.mem.Allocator, line: []const u8) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    var i: usize = 0;
+    while (i < line.len) {
+        if (line[i] == ' ') {
+            i += 1;
+            continue;
+        }
+        const quoted = line[i] == '\'';
+        const start = if (quoted) i + 1 else i;
+        const end = std.mem.findScalarPos(u8, line, start, if (quoted) '\'' else ' ') orelse line.len;
+        try out.append(gpa, line[start..end]);
+        i = if (quoted) end + 1 else end;
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+test "the skill's examples print what it shows" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    for (files) |file| try tmp.dir.writeFile(io, .{ .sub_path = file[0], .data = file[1] });
+    const exe = try Io.Dir.cwd().realPathFileAlloc(io, test_options.yaml_exe, gpa);
+    defer gpa.free(exe);
+    const skill = try runIn(gpa, io, tmp.dir, exe, &.{"skill"});
+    defer gpa.free(skill);
+    var examples: usize = 0;
+    var blocks = std.mem.splitSequence(u8, skill, "```console\n");
+    _ = blocks.next();
+    while (blocks.next()) |rest| {
+        const block = rest[0 .. std.mem.find(u8, rest, "```\n") orelse return error.UnclosedBlock];
+        // Each `$ yaml` line, and the lines after it up to the next, what
+        // it prints, its stdout and then its stderr.
+        var lines = std.mem.splitScalar(u8, block, '\n');
+        var command: ?[]const u8 = lines.next();
+        while (command) |line| {
+            if (!std.mem.startsWith(u8, line, "$ yaml ")) return error.NoCommand;
+            var shown: std.ArrayList(u8) = .empty;
+            defer shown.deinit(gpa);
+            command = null;
+            while (lines.next()) |next| {
+                if (std.mem.startsWith(u8, next, "$ ")) {
+                    command = next;
+                    break;
+                }
+                // The block's last line break ends a line, and makes none.
+                if (next.len == 0 and lines.peek() == null) break;
+                try shown.appendSlice(gpa, next);
+                try shown.append(gpa, '\n');
+            }
+            const args = try words(gpa, line["$ yaml ".len..]);
+            defer gpa.free(args);
+            const got = try runIn(gpa, io, tmp.dir, exe, args);
+            defer gpa.free(got);
+            errdefer std.debug.print("in the skill: {s}\n", .{line});
+            try std.testing.expectEqualStrings(shown.items, got);
+            examples += 1;
+        }
+    }
+    try std.testing.expect(examples >= 10);
 }
 
 test "yaml --help prints the usage" {

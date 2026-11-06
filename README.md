@@ -355,6 +355,11 @@ $ yaml from-json data.json > data.yaml
   options; a file named `-` is standard input. The exit status is 0 on
   success, 1 when a file is not YAML (or a path has no value), 2 on a
   usage error or a file that could not be read. `yaml --help` says all.
+- `yaml skill` prints a skill for AI coding agents: each command with an
+  example, the errors seen most and their fixes. `yaml skill --install
+  ~/.claude/skills` (or another agent's skills directory) installs a
+  stub that has the agent run `yaml skill`, so it never goes out of
+  date. A test runs every example in it.
 
 ## What it reads
 
