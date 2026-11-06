@@ -20,6 +20,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Parser = @import("Parser.zig");
+const schema = @import("schema.zig");
 
 const Composer = @This();
 
@@ -33,13 +34,17 @@ pub const Error = Parser.Error || error{
     UndefinedAlias,
     /// A mapping has two equal keys.
     DuplicateKey,
+    /// A plain scalar the schema has no tag for (the JSON schema reads
+    /// only null, booleans and numbers).
+    NotInSchema,
 };
 
 pub const Node = struct {
     start: Mark,
     end: Mark,
-    /// The node's tag, resolved against its document's directives; null
-    /// when it has none, `!` when it has the non-specific tag.
+    /// The node's tag: the one written, resolved against its document's
+    /// directives, or for a node with none or the non-specific `!`, the
+    /// one the schema gives it (`schema.tag`). Null for an alias.
     tag: ?[]const u8 = null,
     anchor: ?[]const u8 = null,
     data: Data,
@@ -81,6 +86,8 @@ pub const Document = struct {
 pub const Options = struct {
     /// What to do with a mapping's second key equal to an earlier one.
     duplicate_keys: enum { refuse, keep } = .refuse,
+    /// How nodes with no specific tag get one.
+    schema: schema.Schema = .core,
 };
 
 /// How much of two nodes equality and hashing look at before giving up:
@@ -186,14 +193,35 @@ fn composeNode(c: *Composer) Error!*Node {
     }
 }
 
-/// A node for `event`, its anchor recorded.
+/// A node for `event`, its tag resolved and its anchor recorded.
 fn newNode(c: *Composer, event: Event, properties: Event.Properties, data: Node.Data) Error!*Node {
     const node = try c.arena.allocator().create(Node);
-    node.* = .{ .start = event.start, .end = event.end, .tag = properties.tag, .anchor = properties.anchor, .data = data };
+    const tag = if (data == .alias) null else try c.resolveTag(event.start, properties.tag, data);
+    node.* = .{ .start = event.start, .end = event.end, .tag = tag, .anchor = properties.anchor, .data = data };
     if (properties.anchor) |name| {
         try c.anchors.putContext(c.parser.scanner.gpa, name, node, .{ .seed = c.seed });
     }
     return node;
+}
+
+/// A node's tag: the one written if it is specific, or else the one its
+/// kind, its style and the schema give it.
+fn resolveTag(c: *Composer, mark: Mark, written: ?[]const u8, data: Node.Data) Error![]const u8 {
+    if (written) |tag| {
+        if (!std.mem.eql(u8, tag, "!")) return tag;
+    }
+    return switch (data) {
+        .sequence => schema.tag.seq,
+        .mapping => schema.tag.map,
+        .scalar => |s| if (written != null or s.style != .plain)
+            schema.tag.str
+        else
+            schema.resolvePlain(c.options.schema, s.value) orelse {
+                c.diagnostic = .{ .mark = mark, .message = "the JSON schema reads a plain scalar only as null, true, false or a number" };
+                return error.NotInSchema;
+            },
+        .alias => unreachable,
+    };
 }
 
 fn aliasNode(c: *Composer, event: Event, name: []const u8) Error!*Node {
@@ -271,10 +299,10 @@ fn duplicate(c: *Composer, key: *const Node) Error {
 
 // Equality and hashing
 
-/// Whether two nodes are equal as keys: the same kind, tag and content,
-/// through aliases. An untagged plain scalar and an untagged quoted one
-/// are not equal, since a schema may read the plain one as other than a
-/// string. Gives up, as not equal, past `node_budget` nodes.
+/// Whether two nodes are equal as keys: the same kind and tag, and the
+/// same content, a scalar's by value (`schema.equalValues`: `1` and `0x1`
+/// are equal integers), through aliases. Gives up, as not equal, past
+/// `node_budget` nodes.
 pub fn equal(a: *const Node, b: *const Node) bool {
     var budget: usize = node_budget;
     return equalWithin(a, b, &budget);
@@ -286,9 +314,9 @@ fn equalWithin(a_node: *const Node, b_node: *const Node, budget: *usize) bool {
     if (a == b) return true;
     if (budget.* == 0) return false;
     budget.* -= 1;
-    if (!std.mem.eql(u8, effectiveTag(a), effectiveTag(b))) return false;
+    if (!std.mem.eql(u8, a.tag.?, b.tag.?)) return false;
     return switch (a.data) {
-        .scalar => |s| b.data == .scalar and std.mem.eql(u8, s.value, b.data.scalar.value),
+        .scalar => |s| b.data == .scalar and schema.equalValues(a.tag.?, s.value, b.data.scalar.value),
         .sequence => |s| b.data == .sequence and equalItems(s.items, b.data.sequence.items, budget),
         .mapping => |m| b.data == .mapping and equalPairs(m.pairs, b.data.mapping.pairs, budget),
         .alias => unreachable,
@@ -319,16 +347,6 @@ fn equalPairs(a: []const Node.Pair, b: []const Node.Pair, budget: *usize) bool {
     return true;
 }
 
-/// A node's tag for comparing keys: its own, or for an untagged node what
-/// it is known to be without a schema.
-fn effectiveTag(node: *const Node) []const u8 {
-    if (node.tag) |tag| return tag;
-    return switch (node.data) {
-        .scalar => |s| if (s.style == .plain) "?" else "!",
-        else => "!",
-    };
-}
-
 /// A hash agreeing with `equal`: equal nodes hash the same.
 fn hashNode(node: *const Node, seed: u64) u64 {
     var hasher: std.hash.Wyhash = .init(seed);
@@ -341,10 +359,10 @@ fn hashWithin(hasher: *std.hash.Wyhash, node: *const Node, budget: *usize) void 
     const n = node.target();
     if (budget.* == 0) return;
     budget.* -= 1;
-    hasher.update(effectiveTag(n));
+    hasher.update(n.tag.?);
     hasher.update(&.{@backingInt(std.meta.activeTag(n.data))});
     switch (n.data) {
-        .scalar => |s| hasher.update(s.value),
+        .scalar => |s| schema.hashValue(hasher, n.tag.?, s.value),
         .sequence => |s| for (s.items) |item| hashWithin(hasher, item, budget),
         // Pairs may be in any order: their count only.
         .mapping => |m| hasher.update(std.mem.asBytes(&m.pairs.len)),

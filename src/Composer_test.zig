@@ -71,6 +71,13 @@ test "duplicate keys: scalars, collections, through aliases" {
         "&k a: 1\n*k : 2\n",
         "!!str a: 1\n!!str a: 2\n",
         "{a: 1, a: 2}",
+        // Under the core schema, keys are equal by value.
+        "a: 1\n\"a\": 2\n",
+        "1: a\n0x1: b\n",
+        "~: a\nnull: b\n",
+        "true: a\nTrue: b\n",
+        "1.5: a\n15e-1: b\n",
+        "0.0: a\n-0.0: b\n",
     };
     for (duplicates) |input| {
         var c: Composer = .init(testing.allocator, input, .{});
@@ -79,13 +86,14 @@ test "duplicate keys: scalars, collections, through aliases" {
         try testing.expectError(error.DuplicateKey, c.next());
         try testing.expectEqualStrings("a mapping cannot have two equal keys", c.diagnostic.message);
     }
-    // Before a schema, a plain key and a quoted one may differ: `1` may be
-    // a number. A tag or the content tells others apart.
+    // A number and a string differ, and so do other tags or contents.
     const distinct = [_][]const u8{
-        "a: 1\n\"a\": 2\n",
+        "1: a\n\"1\": b\n",
         "[1, 2]: a\n[2, 1]: b\n",
         "!!str a: 1\n!!int a: 2\n",
         "{x: 1}: a\n{x: 2}: b\n",
+        "1: a\n1.0: b\n",
+        ".nan: a\n.NaN: b\n",
     };
     for (distinct) |input| {
         var c: Composer = .init(testing.allocator, input, .{});
@@ -116,6 +124,25 @@ test "duplicate keys in a mapping big enough to use the key set, and keeping the
         defer c.deinit();
         try testing.expectEqual(101, (try first(&c)).data.mapping.pairs.len);
     }
+}
+
+test "tags: resolved by the schema, or as written" {
+    const input = "- 1\n- '1'\n- !foo 1\n- ! 1\n- [a]\n- !!set {a}\n- ~\n";
+    var c: Composer = .init(testing.allocator, input, .{});
+    defer c.deinit();
+    const items = (try first(&c)).data.sequence.items;
+    const want = [_][]const u8{
+        "tag:yaml.org,2002:int", "tag:yaml.org,2002:str", "!foo",                   "tag:yaml.org,2002:str",
+        "tag:yaml.org,2002:seq", "tag:yaml.org,2002:set", "tag:yaml.org,2002:null",
+    };
+    for (items, want) |item, tag| try testing.expectEqualStrings(tag, item.tag.?);
+    var failsafe: Composer = .init(testing.allocator, input, .{ .schema = .failsafe });
+    defer failsafe.deinit();
+    try testing.expectEqualStrings("tag:yaml.org,2002:str", (try first(&failsafe)).data.sequence.items[0].tag.?);
+    var json: Composer = .init(testing.allocator, "[1, true, null, word]", .{ .schema = .json });
+    defer json.deinit();
+    try testing.expectError(error.NotInSchema, json.next());
+    try testing.expectEqual(16, json.diagnostic.mark.column);
 }
 
 test "a cyclic key costs no more than the budget" {
