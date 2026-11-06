@@ -256,12 +256,22 @@ const Builder = struct {
         if (hasTag(node, schema.tag.float)) {
             const x = schema.parseFloat(text) orelse return b.fail(node, error.UnexpectedType, "expected an integer");
             if (@trunc(x) != x or !std.math.isFinite(x)) return b.fail(node, error.UnexpectedType, "expected an integer, found a fraction");
-            const max: f64 = @floatFromInt(std.math.maxInt(T));
-            const min: f64 = @floatFromInt(std.math.minInt(T));
-            if (x > max or x < min) return b.tooBig(T, node, text);
-            return @intFromFloat(x);
+            if (!wholeFits(T, x)) return b.tooBig(T, node, text);
+            return @trunc(x);
         }
         return b.fail(node, error.UnexpectedType, "expected an integer");
+    }
+
+    /// Whether the whole number `x` is in `T`'s range. The bounds are
+    /// powers of two, which an f64 holds exactly: `maxInt(T)` as an f64
+    /// rounds up to 2^bits for a type wider than 53 bits, past the range,
+    /// and converting that is a panic, or in ReleaseFast undefined.
+    fn wholeFits(comptime T: type, x: f64) bool {
+        const info = @typeInfo(T).int;
+        const signed = info.signedness == .signed;
+        const upper: f64 = comptime std.math.ldexp(@as(f64, 1), info.bits - @intFromBool(signed));
+        const lower: f64 = if (signed) -upper else 0;
+        return x >= lower and x < upper;
     }
 
     fn tooBig(b: *const Builder, comptime T: type, node: *const Node, text: []const u8) ParseError {

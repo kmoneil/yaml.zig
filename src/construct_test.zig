@@ -112,6 +112,27 @@ test "errors, each with where it is" {
     try expectFailure(u8, "[x, y]", .{ .schema = .json }, error.NotInSchema, 1, 2);
 }
 
+test "a float into an integer: up to the type's edge, and not past it" {
+    // As f64s, maxInt(i64) and maxInt(u64) round up to 2^63 and 2^64,
+    // which do not fit: the edge is the largest f64 below them.
+    try testing.expectEqual(9223372036854774784, try yaml.parseFromSliceLeaky(i64, testing.allocator, "9223372036854774784.0", .{}));
+    try testing.expectEqual(-9223372036854775808, try yaml.parseFromSliceLeaky(i64, testing.allocator, "-9223372036854775808.0", .{}));
+    try testing.expectEqual(18446744073709549568, try yaml.parseFromSliceLeaky(u64, testing.allocator, "1.8446744073709549568e19", .{}));
+    try testing.expectEqual(255, try yaml.parseFromSliceLeaky(u8, testing.allocator, "255.0", .{}));
+    try testing.expectEqual(-128, try yaml.parseFromSliceLeaky(i8, testing.allocator, "-128.0", .{}));
+    try testing.expectEqual(0, try yaml.parseFromSliceLeaky(u0, testing.allocator, "0.0", .{}));
+    // 2^63, the next f64 below -2^63, 2^64, 2^127, 2^128.
+    try expectFailure(i64, "9223372036854775808.0", .{}, error.Overflow, 1, 1);
+    try expectFailure(i64, "-9223372036854777856.0", .{}, error.Overflow, 1, 1);
+    try expectFailure(u64, "1.8446744073709552e19", .{}, error.Overflow, 1, 1);
+    try expectFailure(i128, "1.7014118346046923e38", .{}, error.Overflow, 1, 1);
+    try expectFailure(u128, "3.402823669209385e38", .{}, error.Overflow, 1, 1);
+    try expectFailure(u8, "256.0", .{}, error.Overflow, 1, 1);
+    try expectFailure(i8, "-129.0", .{}, error.Overflow, 1, 1);
+    try expectFailure(u64, "-1.0", .{}, error.Overflow, 1, 1);
+    try expectFailure(u0, "1.0", .{}, error.Overflow, 1, 1);
+}
+
 test "options: unknown fields skipped, duplicate keys keep the last" {
     const S = struct { a: u8 };
     try testing.expectEqual(1, (try yaml.parseFromSliceLeaky(S, testing.allocator, "a: 1\nz: [deep, {x: y}]\n", .{ .ignore_unknown_fields = true })).a);
