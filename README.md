@@ -66,8 +66,11 @@ A node fits a type by the tag the schema gives it: a boolean for
 `bool`, an integer for an integer type, a number for a float, null for
 an optional's null, a sequence for a slice, array or tuple, a mapping
 for a struct (by field name, defaults filled) or a tagged union (one
-key, the field), and a string for a string or an enum's name.
-`parseFromSliceLeaky` builds into an allocator you free as a whole.
+key, the field), and a string for a string or an enum's name. A
+mapping whose keys are not known at compile time (environment
+variables, say) goes in a `yaml.ArrayHashMap(T)`, which keeps their
+order. `parseFromSliceLeaky` builds into an allocator you free as a
+whole.
 
 ### A document of any shape
 
@@ -137,7 +140,12 @@ test "write a value as YAML, and read it back" {
 flow style, indentation, line width, and whether a struct's null
 optional fields are written.
 
-### Errors say where and why
+### Errors say where, and why
+
+An error names the path to the value and what it found: `machine:
+unknown field "zone"; expected one of: types, zones, spot, image (did
+you mean "zones"?)`, `machine.types[2]: expected a string, found a
+mapping`, `machine: missing field "types"`.
 
 <!-- example: examples/errors.zig -->
 ```zig
@@ -160,6 +168,13 @@ test "an error says where and why" {
     try std.testing.expectEqual(0, diagnostic.mark.line);
     try std.testing.expectEqual(5, diagnostic.mark.column);
     try std.testing.expectEqualStrings("the integer does not fit the type asked for", diagnostic.message);
+
+    // Printed, from 1, with the path to the value and what it is: put a
+    // file's name before it and it reads as a compiler's error does.
+    var buf: [256]u8 = undefined;
+    var line: std.Io.Writer = .fixed(&buf);
+    try line.print("{f}", .{diagnostic});
+    try std.testing.expectEqualStrings("1:6: cpu: the integer 300 does not fit a u8", line.buffered());
 }
 ```
 

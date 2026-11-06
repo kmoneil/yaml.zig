@@ -159,3 +159,65 @@ fn parseAndFree(allocator: std.mem.Allocator) !void {
 test "every allocation may fail, and nothing leaks when one does" {
     try testing.checkAllAllocationFailures(testing.allocator, parseAndFree, .{});
 }
+
+/// The line a tool prints for a failed read: `line:column: path: detail`.
+fn expectLine(comptime T: type, input: []const u8, expected: []const u8) !void {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var diagnostic: yaml.Diagnostic = .{};
+    if (yaml.parseFromSliceLeaky(T, arena.allocator(), input, .{ .diagnostic = &diagnostic })) |_| {
+        return error.TestUnexpectedResult;
+    } else |_| {}
+    var buf: [1024]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try w.print("{f}", .{diagnostic});
+    try testing.expectEqualStrings(expected, w.buffered());
+}
+
+const Machine = struct {
+    types: []const []const u8,
+    zones: []const []const u8 = &.{},
+    spot: bool = false,
+    image: []const u8 = "debian",
+};
+const JobSpec = struct { name: []const u8, machine: Machine, env: yaml.ArrayHashMap(u16) = .{} };
+
+test "diagnostics: an unknown field named, the fields listed, the near one suggested" {
+    try expectLine(JobSpec, "name: x\nmachine:\n  types: [e2]\n  zone: a\n",
+        \\4:3: machine: unknown field "zone"; expected one of: types, zones, spot, image (did you mean "zones"?)
+    );
+    try expectLine(JobSpec, "name: x\nmachine:\n  types: [e2]\n  colour: red\n",
+        \\4:3: machine: unknown field "colour"; expected one of: types, zones, spot, image
+    );
+}
+
+test "diagnostics: a missing field named, at the mapping without it" {
+    try expectLine(JobSpec, "name: x\nmachine:\n  spot: true\n",
+        \\3:3: machine: missing field "types"
+    );
+    try expectLine(JobSpec, "machine: {types: []}\n",
+        \\1:1: missing field "name"
+    );
+}
+
+test "diagnostics: a wrong type three levels deep, a sequence index in the path" {
+    try expectLine(JobSpec, "name: x\nmachine:\n  types:\n  - e2\n  - n2\n  - {big: yes}\n",
+        \\6:5: machine.types[2]: expected a string, found a mapping
+    );
+    try expectLine(JobSpec, "name: x\nmachine: {types: [a], spot: maybe}\n",
+        \\2:29: machine.spot: expected a boolean, found the string "maybe"
+    );
+    try expectLine(JobSpec, "name: x\nmachine: {types: [a]}\nenv: {\"PORT NUMBER\": 70000}\n",
+        \\3:22: env."PORT NUMBER": the integer 70000 does not fit a u16
+    );
+}
+
+test "diagnostics: an enum's names, and errors before construction print plainly" {
+    const S = struct { level: enum { debug, info, warn } };
+    try expectLine(S, "level: wran\n",
+        \\1:8: level: no value is named "wran"; expected one of: debug, info, warn (did you mean "warn"?)
+    );
+    try expectLine(S, "level: [debug\n",
+        \\2:1: a flow sequence's entries need a ',' between them, and a ']' after
+    );
+}

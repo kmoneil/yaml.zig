@@ -17,4 +17,11 @@ test "an error says where and why" {
     try std.testing.expectEqual(0, diagnostic.mark.line);
     try std.testing.expectEqual(5, diagnostic.mark.column);
     try std.testing.expectEqualStrings("the integer does not fit the type asked for", diagnostic.message);
+
+    // Printed, from 1, with the path to the value and what it is: put a
+    // file's name before it and it reads as a compiler's error does.
+    var buf: [256]u8 = undefined;
+    var line: std.Io.Writer = .fixed(&buf);
+    try line.print("{f}", .{diagnostic});
+    try std.testing.expectEqualStrings("1:6: cpu: the integer 300 does not fit a u8", line.buffered());
 }

@@ -28,6 +28,7 @@ const encoding = @import("encoding.zig");
 const schema = @import("schema.zig");
 const Node = Composer.Node;
 const Diagnostic = Composer.Diagnostic;
+const Scanner = @import("Scanner.zig");
 
 /// How `parseFromSlice` reads a document.
 pub const ParseOptions = struct {
@@ -111,6 +112,7 @@ fn build(comptime T: type, result: Allocator, scratch: Allocator, bytes: []const
     const document = try composeOne(&composer, options);
     var builder: Builder = .{ .allocator = result, .scratch = scratch, .options = options, .seed = composer.seed };
     defer builder.visiting.deinit(scratch);
+    defer builder.path.deinit(scratch);
     const root: *const Node = if (document) |d| d.root else &empty_document;
     return builder.build(T, root, 0);
 }
@@ -143,9 +145,40 @@ const Builder = struct {
     alias_nodes: usize = 0,
     /// The seed of every map built, from a hash of the input.
     seed: u64 = 0,
+    /// Where construction is in the document, from its root.
+    path: std.ArrayList(Segment) = .empty,
 
+    /// Fails at `node`, with the path to it; an "expected ..." message
+    /// gets a detail saying what was found instead.
     fn fail(b: *const Builder, node: *const Node, err: ParseError, message: []const u8) ParseError {
-        return report(b.options, .{ .mark = node.start, .message = message }, err);
+        const d = b.locate(node, message) orelse return err;
+        const expected = std.mem.startsWith(u8, message, "expected") and std.mem.indexOf(u8, message, "found") == null;
+        if (err == error.UnexpectedType and expected) d.setDetail("{s}, found {f}", .{ message, Found{ .node = node.target() } });
+        return err;
+    }
+
+    /// Fails at `node`, with the path to it and a detail.
+    fn failDetail(b: *const Builder, node: *const Node, err: ParseError, message: []const u8, comptime detail: []const u8, args: anytype) ParseError {
+        const d = b.locate(node, message) orelse return err;
+        d.setDetail(detail, args);
+        return err;
+    }
+
+    /// Sets the caller's diagnostic to `node`'s place and the path to it;
+    /// null when the caller gave none.
+    fn locate(b: *const Builder, node: *const Node, message: []const u8) ?*Diagnostic {
+        const d = b.options.diagnostic orelse return null;
+        d.* = .{ .mark = node.start, .message = message };
+        d.path_len = Scanner.writeCut(&d.path_buffer, "{f}", .{PathText{ .segments = b.path.items }});
+        return d;
+    }
+
+    fn pushPath(b: *Builder, segment: Segment) ParseError!void {
+        try b.path.append(b.scratch, segment);
+    }
+
+    fn popPath(b: *Builder) void {
+        _ = b.path.pop();
     }
 
     fn build(b: *Builder, comptime T: type, node: *const Node, depth: usize) ParseError!T {
@@ -204,7 +237,7 @@ const Builder = struct {
     }
 
     fn scalarOf(b: *const Builder, node: *const Node, comptime what: []const u8) ParseError![]const u8 {
-        if (node.data != .scalar) return b.fail(node, error.UnexpectedType, "expected " ++ what ++ ", found a collection");
+        if (node.data != .scalar) return b.fail(node, error.UnexpectedType, "expected " ++ what);
         return node.data.scalar.value;
     }
 
@@ -217,18 +250,22 @@ const Builder = struct {
     fn buildInt(b: *const Builder, comptime T: type, node: *const Node) ParseError!T {
         const text = try b.scalarOf(node, "an integer");
         if (hasTag(node, schema.tag.int)) {
-            const n = schema.parseInt(text) orelse return b.fail(node, error.Overflow, "the integer does not fit");
-            return std.math.cast(T, n) orelse b.fail(node, error.Overflow, "the integer does not fit the type asked for");
+            const n = schema.parseInt(text) orelse return b.failDetail(node, error.Overflow, "the integer does not fit", "the integer {s} is past what an i128 holds", .{text});
+            return std.math.cast(T, n) orelse b.tooBig(T, node, text);
         }
         if (hasTag(node, schema.tag.float)) {
             const x = schema.parseFloat(text) orelse return b.fail(node, error.UnexpectedType, "expected an integer");
             if (@trunc(x) != x or !std.math.isFinite(x)) return b.fail(node, error.UnexpectedType, "expected an integer, found a fraction");
             const max: f64 = @floatFromInt(std.math.maxInt(T));
             const min: f64 = @floatFromInt(std.math.minInt(T));
-            if (x > max or x < min) return b.fail(node, error.Overflow, "the integer does not fit the type asked for");
+            if (x > max or x < min) return b.tooBig(T, node, text);
             return @intFromFloat(x);
         }
         return b.fail(node, error.UnexpectedType, "expected an integer");
+    }
+
+    fn tooBig(b: *const Builder, comptime T: type, node: *const Node, text: []const u8) ParseError {
+        return b.failDetail(node, error.Overflow, "the integer does not fit the type asked for", "the integer {s} does not fit a {s}", .{ text, @typeName(T) });
     }
 
     fn buildFloat(b: *const Builder, comptime T: type, node: *const Node) ParseError!T {
@@ -253,7 +290,10 @@ const Builder = struct {
             const raw = std.math.cast(Tag, n) orelse return b.fail(node, error.UnexpectedType, "no value of the enum has this number");
             return std.enums.fromInt(T, raw) orelse b.fail(node, error.UnexpectedType, "no value of the enum has this number");
         }
-        return b.fail(node, error.UnexpectedType, "no value of the enum has this name");
+        const names = @typeInfo(T).@"enum".field_names;
+        return b.failDetail(node, error.UnexpectedType, "no value of the enum has this name", "no value is named \"{s}\"; expected one of: {s}{f}", .{
+            text, comptime joinNames(names), Suggestion{ .name = nearest(names, text) },
+        });
     }
 
     fn buildString(b: *const Builder, comptime T: type, node: *const Node) ParseError!T {
@@ -291,8 +331,22 @@ const Builder = struct {
         defer b.leave(node);
         const sentinel = @typeInfo(T).pointer.sentinel();
         const out = if (sentinel) |s| try b.allocator.allocSentinel(Child, items.len, s) else try b.allocator.alloc(Child, items.len);
-        for (items, out) |item, *slot| slot.* = try b.build(Child, item, depth + 1);
+        for (items, out, 0..) |item, *slot, i| slot.* = try b.buildItem(Child, item, i, depth);
         return out;
+    }
+
+    /// Builds the item at `index` of a sequence, the index on the path.
+    fn buildItem(b: *Builder, comptime T: type, item: *const Node, index: usize, depth: usize) ParseError!T {
+        try b.pushPath(.{ .index = index });
+        defer b.popPath();
+        return b.build(T, item, depth + 1);
+    }
+
+    /// Builds the value at `name` of a mapping, the name on the path.
+    fn buildNamed(b: *Builder, comptime T: type, value: *const Node, name: []const u8, depth: usize) ParseError!T {
+        try b.pushPath(.{ .name = name });
+        defer b.popPath();
+        return b.build(T, value, depth + 1);
     }
 
     fn buildArray(b: *Builder, comptime T: type, comptime Child: type, node: *const Node, depth: usize) ParseError!T {
@@ -301,7 +355,7 @@ const Builder = struct {
         try b.enter(node);
         defer b.leave(node);
         var out: T = undefined;
-        for (items, &out) |item, *slot| slot.* = try b.build(Child, item, depth + 1);
+        for (items, &out, 0..) |item, *slot, i| slot.* = try b.buildItem(Child, item, i, depth);
         return out;
     }
 
@@ -323,14 +377,22 @@ const Builder = struct {
             const key = pair.key.target();
             const name = try b.scalarOf(key, "a field name");
             if (!try b.buildField(T, &out, &seen, name, pair.value, depth)) {
-                if (!b.options.ignore_unknown_fields) return b.fail(key, error.UnknownField, "no field of the struct has this name");
+                if (!b.options.ignore_unknown_fields) return b.unknownField(info.field_names, key, name, "no field of the struct has this name");
             }
         }
         inline for (info.field_names, info.field_types, info.field_attrs, 0..) |name, Field, attrs, i| {
             if (!seen[i]) @field(out, name) = attrs.defaultValue(Field) orelse
-                return b.fail(node, error.MissingField, "the mapping has no key for a field with no default");
+                return b.failDetail(node, error.MissingField, "the mapping has no key for a field with no default", "missing field \"{s}\"", .{name});
         }
         return out;
+    }
+
+    /// Fails at `key`, which no field in `names` has, naming them and the
+    /// nearest if one is near.
+    fn unknownField(b: *const Builder, comptime names: anytype, key: *const Node, name: []const u8, message: []const u8) ParseError {
+        return b.failDetail(key, error.UnknownField, message, "unknown field \"{s}\"; expected one of: {s}{f}", .{
+            name, comptime joinNames(names), Suggestion{ .name = nearest(names, name) },
+        });
     }
 
     /// A `map.ArrayHashMap`: each scalar key's text to its value built as
@@ -345,7 +407,7 @@ const Builder = struct {
         for (pairs) |pair| {
             const key = pair.key.target();
             if (key.data != .scalar) return b.fail(key, error.UnexpectedType, "a map's keys are scalars, and this is a collection");
-            const value = try b.build(T.yaml_map_value, pair.value, depth + 1);
+            const value = try b.buildNamed(T.yaml_map_value, pair.value, key.data.scalar.value, depth);
             const entry = out.map.getOrPutAssumeCapacityContext(key.data.scalar.value, out.context);
             if (!entry.found_existing) entry.key_ptr.* = try b.allocator.dupe(u8, key.data.scalar.value);
             entry.value_ptr.* = value;
@@ -359,7 +421,7 @@ const Builder = struct {
         const info = @typeInfo(T).@"struct";
         inline for (info.field_names, info.field_types, 0..) |field, Field, i| {
             if (std.mem.eql(u8, field, name)) {
-                @field(out, field) = try b.build(Field, value, depth + 1);
+                @field(out, field) = try b.buildNamed(Field, value, field, depth);
                 seen[i] = true;
                 return true;
             }
@@ -374,7 +436,7 @@ const Builder = struct {
         try b.enter(node);
         defer b.leave(node);
         var out: T = undefined;
-        inline for (info.field_types, 0..) |Field, i| out[i] = try b.build(Field, items[i], depth + 1);
+        inline for (info.field_types, 0..) |Field, i| out[i] = try b.buildItem(Field, items[i], i, depth);
         return out;
     }
 
@@ -395,9 +457,9 @@ const Builder = struct {
         try b.enter(node);
         defer b.leave(node);
         inline for (info.field_names, info.field_types) |field, Field| {
-            if (std.mem.eql(u8, field, name)) return @unionInit(T, field, try b.build(Field, pairs[0].value, depth + 1));
+            if (std.mem.eql(u8, field, name)) return @unionInit(T, field, try b.buildNamed(Field, pairs[0].value, field, depth));
         }
-        return b.fail(pairs[0].key, error.UnknownField, "no field of the union has this name");
+        return b.unknownField(info.field_names, pairs[0].key, name, "no field of the union has this name");
     }
 
     fn buildValue(b: *Builder, node: *const Node, depth: usize) ParseError!Value {
@@ -407,7 +469,7 @@ const Builder = struct {
                 try b.enter(node);
                 defer b.leave(node);
                 const out = try b.allocator.alloc(Value, s.items.len);
-                for (s.items, out) |item, *slot| slot.* = try b.build(Value, item, depth + 1);
+                for (s.items, out, 0..) |item, *slot, i| slot.* = try b.buildItem(Value, item, i, depth);
                 return .{ .sequence = out };
             },
             .mapping => |m| {
@@ -416,7 +478,7 @@ const Builder = struct {
                 const out = try b.allocator.alloc(Value.Pair, m.pairs.len);
                 for (m.pairs, out) |pair, *slot| slot.* = .{
                     .key = try b.build(Value, pair.key, depth + 1),
-                    .value = try b.build(Value, pair.value, depth + 1),
+                    .value = try b.buildNamed(Value, pair.value, keyName(pair.key), depth),
                 };
                 return .{ .mapping = out };
             },
@@ -439,6 +501,127 @@ const Builder = struct {
         return .{ .string = try b.allocator.dupe(u8, text) };
     }
 };
+
+/// A step of the path from a document's root: a mapping's key, or a
+/// sequence's index.
+const Segment = union(enum) { name: []const u8, index: usize };
+
+/// A key as the path names it: a scalar's text, or `?` for a collection.
+fn keyName(key: *const Node) []const u8 {
+    const k = key.target();
+    return if (k.data == .scalar) k.data.scalar.value else "?";
+}
+
+/// The path as `Diagnostic.path` writes it: `a.b[2]."c d"`.
+const PathText = struct {
+    segments: []const Segment,
+
+    pub fn format(p: PathText, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        for (p.segments, 0..) |segment, i| switch (segment) {
+            .index => |n| try w.print("[{d}]", .{n}),
+            .name => |name| {
+                if (i > 0) try w.writeByte('.');
+                if (isWord(name)) try w.writeAll(name) else try w.print("\"{f}\"", .{std.zig.fmtString(name)});
+            },
+        };
+    }
+};
+
+/// Whether `text` needs no quotes in a path: letters, digits, `_`, `-`.
+fn isWord(text: []const u8) bool {
+    if (text.len == 0) return false;
+    for (text) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '_' and c != '-') return false;
+    }
+    return true;
+}
+
+/// What a node is, for "found ...": `a mapping`, `null`, `the integer
+/// 300`, `the string "web"` (its first 40 bytes).
+const Found = struct {
+    node: *const Node,
+
+    pub fn format(f: Found, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        const n = f.node;
+        switch (n.data) {
+            .sequence => return w.writeAll("a sequence"),
+            .mapping => return w.writeAll("a mapping"),
+            .alias => return w.writeAll("an alias"),
+            .scalar => |s| return writeScalar(w, n.tag orelse "", s.value),
+        }
+    }
+
+    fn writeScalar(w: *std.Io.Writer, tag: []const u8, text: []const u8) std.Io.Writer.Error!void {
+        if (std.mem.eql(u8, tag, schema.tag.null)) return w.writeAll("null");
+        if (std.mem.eql(u8, tag, schema.tag.bool)) return w.print("the boolean {s}", .{text});
+        if (std.mem.eql(u8, tag, schema.tag.int)) return w.print("the integer {s}", .{text});
+        if (std.mem.eql(u8, tag, schema.tag.float)) return w.print("the float {s}", .{text});
+        if (!std.mem.eql(u8, tag, schema.tag.str)) return w.print("a scalar tagged {s}", .{tag});
+        const shown = cutUtf8(text, 40);
+        try w.print("the string \"{f}\"{s}", .{ std.zig.fmtString(shown), if (shown.len < text.len) "..." else "" });
+    }
+};
+
+/// The first `max` bytes of `text`, or fewer so as not to cut a
+/// character.
+fn cutUtf8(text: []const u8, max: usize) []const u8 {
+    if (text.len <= max) return text;
+    var end = max;
+    while (end > 0 and text[end] & 0xC0 == 0x80) end -= 1;
+    return text[0..end];
+}
+
+/// `names` joined with commas, at compile time.
+fn joinNames(comptime names: anytype) []const u8 {
+    comptime {
+        var out: []const u8 = "";
+        for (names, 0..) |name, i| out = out ++ (if (i == 0) "" else ", ") ++ name;
+        return out;
+    }
+}
+
+/// ` (did you mean "x"?)` when a name is near, else nothing.
+const Suggestion = struct {
+    name: ?[]const u8,
+
+    pub fn format(s: Suggestion, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        if (s.name) |n| try w.print(" (did you mean \"{s}\"?)", .{n});
+    }
+};
+
+/// The name in `names` nearest `name`, if it is near: at most one edit
+/// away for a short name, two for one of four letters or more, letters'
+/// case not counting.
+fn nearest(comptime names: anytype, name: []const u8) ?[]const u8 {
+    var best: ?[]const u8 = null;
+    var best_distance: usize = if (name.len >= 4) 3 else 2;
+    inline for (names) |candidate| {
+        const d = editDistance(candidate, name);
+        if (d < best_distance) {
+            best = candidate;
+            best_distance = d;
+        }
+    }
+    return best;
+}
+
+/// Levenshtein distance, ignoring case; past 32 bytes, too far to tell.
+fn editDistance(a: []const u8, b: []const u8) usize {
+    if (a.len > 32 or b.len > 32) return std.math.maxInt(usize);
+    var row: [33]usize = undefined;
+    for (0..b.len + 1) |j| row[j] = j;
+    for (a, 0..) |ca, i| {
+        var diagonal = row[0];
+        row[0] = i + 1;
+        for (b, 0..) |cb, j| {
+            const above = row[j + 1];
+            const cost: usize = @intFromBool(std.ascii.toLower(ca) != std.ascii.toLower(cb));
+            row[j + 1] = @min(@min(above + 1, row[j] + 1), diagonal + cost);
+            diagonal = above;
+        }
+    }
+    return row[b.len];
+}
 
 fn hasTag(node: *const Node, tag: []const u8) bool {
     return std.mem.eql(u8, node.tag orelse return false, tag);

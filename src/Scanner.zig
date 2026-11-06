@@ -85,8 +85,55 @@ pub const Token = struct {
 /// Why the last `next` failed with `error.SyntaxError`, and where.
 pub const Diagnostic = struct {
     mark: Mark = .{},
+    /// What went wrong, in words fixed for each kind of error.
     message: []const u8 = "",
+    /// Where in the document construction was, as `path` gives it.
+    path_buffer: [256]u8 = undefined,
+    path_len: usize = 0,
+    /// The message with what it is about filled in, as `detail` gives it.
+    detail_buffer: [512]u8 = undefined,
+    detail_len: usize = 0,
+
+    /// Where in the document typed construction failed, from its root:
+    /// `machine.types[2]`, a map's key quoted when it is not a plain
+    /// word. Empty at the root, and for errors before construction.
+    pub fn path(d: *const Diagnostic) []const u8 {
+        return d.path_buffer[0..d.path_len];
+    }
+
+    /// The message with what it names filled in, where construction knows
+    /// more than the message says: the key no field has and the fields
+    /// there are, the field missing, what was found where something else
+    /// was expected. Otherwise the message.
+    pub fn detail(d: *const Diagnostic) []const u8 {
+        return if (d.detail_len > 0) d.detail_buffer[0..d.detail_len] else d.message;
+    }
+
+    /// Sets the detail, cut short (ending `...`) if it does not fit.
+    pub fn setDetail(d: *Diagnostic, comptime format_text: []const u8, args: anytype) void {
+        d.detail_len = writeCut(&d.detail_buffer, format_text, args);
+    }
+
+    /// Writes `line:column: path: detail`, the line and column from 1 and
+    /// the path left out when empty: a file's name before it makes the
+    /// line a compiler would print.
+    pub fn format(d: *const Diagnostic, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        try w.print("{d}:{d}: ", .{ d.mark.line + 1, d.mark.column + 1 });
+        if (d.path_len > 0) try w.print("{s}: ", .{d.path()});
+        try w.writeAll(d.detail());
+    }
 };
+
+/// Formats into `buffer`, ending the text `...` when it does not fit, and
+/// returns its length.
+pub fn writeCut(buffer: []u8, comptime format_text: []const u8, args: anytype) usize {
+    var w: std.Io.Writer = .fixed(buffer);
+    w.print(format_text, args) catch {
+        @memcpy(buffer[buffer.len - 3 ..], "...");
+        return buffer.len;
+    };
+    return w.end;
+}
 
 /// Scanning's errors.
 pub const Error = error{
