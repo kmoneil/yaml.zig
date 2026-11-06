@@ -193,3 +193,29 @@ test "parser errors (suite 9KBC, 3HFZ, SF5V, SR86, ZXT5, 9HCY)" {
         try testing.expect(std.mem.endsWith(u8, got, "ERROR " ++ case[1] ++ "\n"));
     }
 }
+
+fn parseAll(p: *Parser) Parser.Error!void {
+    while ((try p.next()).data != .stream_end) {}
+}
+
+test "a document may have max_tag_directives %TAG directives, and no more" {
+    const gpa = testing.allocator;
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(gpa);
+    // Two documents of 64 each: the bound is a document's, not the stream's.
+    for (0..2) |_| {
+        for (0..64) |i| try text.print(gpa, "%TAG !h{d}! p{d}:\n", .{ i, i });
+        try text.appendSlice(gpa, "--- !h63!x a\n...\n");
+    }
+    var p: Parser = .init(gpa, text.items);
+    defer p.deinit();
+    try parseAll(&p);
+
+    // The 65th is refused where it is.
+    try text.insertSlice(gpa, 0, "%TAG !extra! q:\n");
+    var over: Parser = .init(gpa, text.items);
+    defer over.deinit();
+    try testing.expectError(error.TagDirectiveLimit, parseAll(&over));
+    try testing.expectEqual(64, over.diagnostic.mark.line);
+    try testing.expectEqual(0, over.diagnostic.mark.column);
+}

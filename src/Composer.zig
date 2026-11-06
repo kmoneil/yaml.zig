@@ -98,6 +98,9 @@ pub const Options = struct {
     schema: schema.Schema = .core,
     /// The most collections open at once (`Scanner.max_depth`).
     max_depth: usize = 10_000,
+    /// The most %TAG directives a document may have
+    /// (`Parser.max_tag_directives`).
+    max_tag_directives: usize = 64,
 };
 
 /// How much of two nodes equality and hashing look at before giving up:
@@ -131,6 +134,7 @@ pub fn init(gpa: Allocator, input: []const u8, options: Options) Composer {
     std.crypto.hash.Blake3.hash(input, &digest, .{});
     var parser: Parser = .init(gpa, input);
     parser.scanner.max_depth = options.max_depth;
+    parser.max_tag_directives = options.max_tag_directives;
     return .{
         .parser = parser,
         .options = options,

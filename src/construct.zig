@@ -44,6 +44,8 @@ pub const ParseOptions = struct {
     /// The deepest construction goes into a document, and the most
     /// collections the scanner lets be open at once.
     max_depth: usize = 1_000,
+    /// The most %TAG directives a document may have.
+    max_tag_directives: usize = 64,
     /// Set to where and why parsing or construction failed.
     diagnostic: ?*Diagnostic = null,
 };
@@ -107,6 +109,7 @@ fn build(comptime T: type, result: Allocator, scratch: Allocator, bytes: []const
         .schema = options.schema,
         .duplicate_keys = options.duplicate_keys,
         .max_depth = options.max_depth,
+        .max_tag_directives = options.max_tag_directives,
     });
     defer composer.deinit();
     const document = try composeOne(&composer, options);

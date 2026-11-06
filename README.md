@@ -272,11 +272,13 @@ test "events in, YAML out: reformat a stream" {
 | Nodes built through aliases (a "billion laughs" document) | 1,000,000 | `ParseOptions.max_alias_nodes` |
 | Depth construction goes into a document | 1,000 | `ParseOptions.max_depth` |
 | Collections open at once in the scanner | 10,000 | `Scanner.max_depth`, `Composer.Options.max_depth` |
+| %TAG directives in a document | 64 | `ParseOptions.max_tag_directives`, `Composer.Options.max_tag_directives`, `Parser.max_tag_directives` |
 | A cyclic document built into a value | refused | `error.Cycle` |
 
 Mapping keys and anchor names, which come from the input, are kept in
 hash maps seeded from a hash of the input, so keys built to collide
-cost what any keys do. Nothing recurses on the input's depth but
+cost what any keys do. A tag is resolved by looking through its
+document's %TAG directives, so their number is held too. Nothing recurses on the input's depth but
 construction, which is held to `max_depth`.
 
 ## Build

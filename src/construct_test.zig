@@ -177,6 +177,11 @@ fn parseAndFree(allocator: std.mem.Allocator) !void {
     defer value.deinit();
 }
 
+test "limits: %TAG directives, through ParseOptions" {
+    try expectFailure(u8, "%TAG !a! x:\n%TAG !b! y:\n--- 1\n", .{ .max_tag_directives = 1 }, error.TagDirectiveLimit, 2, 1);
+    try testing.expectEqual(1, try yaml.parseFromSliceLeaky(u8, testing.allocator, "%TAG !a! x:\n--- 1\n", .{ .max_tag_directives = 1 }));
+}
+
 test "every allocation may fail, and nothing leaks when one does" {
     try testing.checkAllAllocationFailures(testing.allocator, parseAndFree, .{});
 }

@@ -133,7 +133,7 @@ fn fuzzParse(_: void, d: *Draw) !void {
     var count: usize = 0;
     while (count < 8 * input.len + 64) : (count += 1) {
         const event = parser.next() catch |err| switch (err) {
-            error.SyntaxError, error.DepthLimit => {
+            error.SyntaxError, error.DepthLimit, error.TagDirectiveLimit => {
                 try testing.expect(parser.diagnostic.mark.offset <= input.len);
                 try testing.expect(parser.diagnostic.message.len > 0);
                 return;
@@ -210,7 +210,7 @@ fn fuzzEmit(_: void, d: *Draw) !void {
     const arena = arena_state.allocator();
     const input = try drawInput(d, arena);
     const text = emitAll(arena, input, .{ .width = d.atMost(u8, 8, 80), .indent = d.atMost(u8, 2, 8) }) catch |err| switch (err) {
-        error.SyntaxError, error.DepthLimit => return,
+        error.SyntaxError, error.DepthLimit, error.TagDirectiveLimit => return,
         else => return err,
     };
     errdefer std.debug.print("input:\n{s}\nemitted:\n{s}\n", .{ input, text });

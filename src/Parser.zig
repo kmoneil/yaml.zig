@@ -29,8 +29,9 @@ pub const Token = Scanner.Token;
 pub const ScalarStyle = Scanner.ScalarStyle;
 /// Where and why parsing failed (`Scanner.Diagnostic`).
 pub const Diagnostic = Scanner.Diagnostic;
-/// The scanner's errors: the parser adds none but its own syntax errors.
-pub const Error = Scanner.Error;
+/// Parsing's errors: the scanner's, its own syntax errors, and a
+/// document with more %TAG directives than `max_tag_directives`.
+pub const Error = Scanner.Error || error{TagDirectiveLimit};
 
 /// A step of the stream: a start or end of the stream, a document or a
 /// collection, a scalar, or an alias; with the marks of its text.
@@ -121,6 +122,10 @@ tag_directives: std.ArrayList(Token.TagDirective) = .empty,
 /// The stream has just begun, or the last document ended with `...`:
 /// the next may be bare, or have directives.
 after_end_marker: bool = true,
+/// The most %TAG directives a document may have. A tag is resolved by
+/// looking through them, so with no bound their number would make
+/// parsing quadratic: 80,000 of them, 1.3 MB, took 2.6 s.
+max_tag_directives: usize = 64,
 diagnostic: Diagnostic = .{},
 
 /// A parser over `input`, UTF-8 (`encoding.toUtf8` for others).
@@ -271,6 +276,10 @@ fn parseDirective(p: *Parser, token: Token, version: *?Token.Version) Error!void
             version.* = v;
         },
         .tag_directive => |d| {
+            if (p.tag_directives.items.len >= p.max_tag_directives) {
+                p.diagnostic = .{ .mark = token.start, .message = "a document has more %TAG directives than max_tag_directives" };
+                return error.TagDirectiveLimit;
+            }
             if (p.tagPrefix(d.handle) != null) return p.fail(token.start, "a document may have one %TAG directive for a handle");
             try p.tag_directives.append(p.scanner.gpa, d);
         },
