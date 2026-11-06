@@ -36,7 +36,10 @@ pub fn path(d: *const Diagnostic) []const u8 {
 /// The message with what it names filled in, where construction knows
 /// more than the message says: the key no field has and the fields
 /// there are, the field missing, what was found where something else was
-/// expected. Otherwise the message.
+/// expected. Otherwise the message. It may quote the input, a key and up
+/// to 40 bytes of a value found where something else was expected, its
+/// control characters escaped: where values may be secret, log `message`
+/// and `path`, which quote no value.
 pub fn detail(d: *const Diagnostic) []const u8 {
     return if (d.detail_len > 0) d.detail_buffer[0..d.detail_len] else d.message;
 }

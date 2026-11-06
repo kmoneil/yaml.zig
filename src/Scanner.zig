@@ -156,6 +156,8 @@ after_json_node: bool = false,
 line_start: usize = 0,
 /// A token has been fetched on the current line.
 line_has_token: bool = false,
+/// The error `next` failed with, which every later call gives again.
+failed: ?Error = null,
 diagnostic: Diagnostic = .{},
 
 /// A scanner over `input`, UTF-8 (`encoding.toUtf8` for others). It
@@ -173,10 +175,19 @@ pub fn deinit(s: *Scanner) void {
     s.* = undefined;
 }
 
-/// The next token. After `stream_end`, `stream_end` again. On
-/// `error.SyntaxError`, `diagnostic` says what and where; the scanner
-/// cannot go on after one.
+/// The next token. After `stream_end`, `stream_end` again. On an error,
+/// `diagnostic` says what and where, and the scanner cannot go on: each
+/// later call gives the same error.
 pub fn next(s: *Scanner) Error!Token {
+    if (s.failed) |err| return err;
+    return s.nextToken() catch |err| {
+        s.failed = err;
+        return err;
+    };
+}
+
+/// `next`, from a state no error has left half-changed.
+fn nextToken(s: *Scanner) Error!Token {
     if (s.stream == .end_given) return .{ .start = s.mark, .end = s.mark, .data = .stream_end };
     try s.fetchMoreTokens();
     const token = s.tokens.items[s.head];
@@ -305,6 +316,12 @@ fn fetchStreamStart(s: *Scanner) Error!void {
     s.simple_key_allowed = true;
     s.stream = .scanning;
     try s.simple_keys.append(s.gpa, .{});
+    // Columns and indentation are compared as isizes: an input longer than
+    // an isize holds (2 GiB on a 32-bit target) could have a line whose
+    // column would not fit one.
+    if (s.input.len > std.math.maxInt(isize)) {
+        return s.fail(s.mark, "the input is longer than this target can count in a signed size");
+    }
     if (encoding.detect(s.input) != .utf8) {
         return s.fail(s.mark, "this input is UTF-16 or UTF-32: decode it to UTF-8 first (encoding.toUtf8)");
     }

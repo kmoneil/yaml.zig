@@ -65,6 +65,24 @@ pub fn build(b: *std.Build) void {
         suite_step.dependOn(&verbose.step);
     }
 
+    // The security catalog (test/security/CATALOG.md): every covered row
+    // names a test that exists, and every `security: ...` test is in a
+    // row. It reads files the build does not track: always run it.
+    const catalog_tool = b.addExecutable(.{ .name = "security-catalog", .root_module = b.createModule(.{
+        .root_source_file = b.path("tools/security_catalog.zig"),
+        .target = b.graph.host,
+        .optimize = .safe,
+    }) });
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = catalog_tool.root_module })).step);
+    const check_catalog = b.addRunArtifact(catalog_tool);
+    check_catalog.setCwd(b.path("."));
+    check_catalog.addArgs(&.{ "test/security/CATALOG.md", "test/security" });
+    check_catalog.has_side_effects = true;
+    test_step.dependOn(&check_catalog.step);
+    const security_step = b.step("security", "Run the security suite and check its catalog (test/security)");
+    security_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = securityModule(b, target, optimize, mod) })).step);
+    security_step.dependOn(&check_catalog.step);
+
     // zigvet (github.com/kmoneil/zigvet) reports code the compiler accepts
     // that is almost certainly wrong. A program on the PATH, not a package.
     // `zig build test` runs it too, so no change is tested without it.
@@ -105,6 +123,7 @@ fn addTests(b: *std.Build, step: *std.Build.Step, target: std.Build.ResolvedTarg
         .imports = &.{.{ .name = "yaml", .module = yaml }},
     });
     step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = examples_mod })).step);
+    step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = securityModule(b, target, optimize, yaml) })).step);
     const suite_mod = b.createModule(.{
         .root_source_file = b.path("test/main.zig"),
         .target = target,
@@ -118,6 +137,17 @@ fn addTests(b: *std.Build, step: *std.Build.Step, target: std.Build.ResolvedTarg
     quiet.addArgs(&.{ "check", "--quiet" });
     step.dependOn(&quiet.step);
     return harness;
+}
+
+/// The security suite (test/security, karte t44), a test per known
+/// attack on a YAML library, through the public API only.
+fn securityModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, yaml: *std.Build.Module) *std.Build.Module {
+    return b.createModule(.{
+        .root_source_file = b.path("test/security/security_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "yaml", .module = yaml }},
+    });
 }
 
 /// The yaml-test-suite's data tree (build.zig.zon's yaml_test_suite, a

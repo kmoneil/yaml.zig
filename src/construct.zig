@@ -30,6 +30,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Composer = @import("Composer.zig");
+const chars = @import("chars.zig");
 const encoding = @import("encoding.zig");
 const schema = @import("schema.zig");
 const Node = Composer.Node;
@@ -284,7 +285,7 @@ const Builder = struct {
         const text = node.data.scalar.value;
         if (schema.fitsTag(tag, text)) return;
         return b.failDetail(node, error.UnexpectedType, "a scalar's text is not what its tag says", "the scalar \"{f}\" is tagged !!{s} but is not {s}", .{
-            std.zig.fmtString(cutUtf8(text, 40)), tag[schema.core_prefix.len..], tagSays(tag),
+            Shown{ .text = cutUtf8(text, 40) }, tag[schema.core_prefix.len..], tagSays(tag),
         });
     }
 
@@ -363,8 +364,8 @@ const Builder = struct {
             return std.enums.fromInt(T, raw) orelse b.fail(node, error.UnexpectedType, "no value of the enum has this number");
         }
         const names = @typeInfo(T).@"enum".field_names;
-        return b.failDetail(node, error.UnexpectedType, "no value of the enum has this name", "no value is named \"{s}\"; expected one of: {s}{f}", .{
-            text, comptime joinNames(names), Suggestion{ .name = nearest(names, text) },
+        return b.failDetail(node, error.UnexpectedType, "no value of the enum has this name", "no value is named \"{f}\"; expected one of: {s}{f}", .{
+            Shown{ .text = text }, comptime joinNames(names), Suggestion{ .name = nearest(names, text) },
         });
     }
 
@@ -462,8 +463,8 @@ const Builder = struct {
     /// Fails at `key`, which no field in `names` has, naming them and the
     /// nearest if one is near.
     fn unknownField(b: *const Builder, comptime names: anytype, key: *const Node, name: []const u8, message: []const u8) ParseError {
-        return b.failDetail(key, error.UnknownField, message, "unknown field \"{s}\"; expected one of: {s}{f}", .{
-            name, comptime joinNames(names), Suggestion{ .name = nearest(names, name) },
+        return b.failDetail(key, error.UnknownField, message, "unknown field \"{f}\"; expected one of: {s}{f}", .{
+            Shown{ .text = name }, comptime joinNames(names), Suggestion{ .name = nearest(names, name) },
         });
     }
 
@@ -656,7 +657,7 @@ const PathText = struct {
             .index => |n| try w.print("[{d}]", .{n}),
             .name => |name| {
                 if (i > 0) try w.writeByte('.');
-                if (isWord(name)) try w.writeAll(name) else try w.print("\"{f}\"", .{std.zig.fmtString(name)});
+                if (isWord(name)) try w.writeAll(name) else try w.print("\"{f}\"", .{Shown{ .text = name }});
             },
         };
     }
@@ -691,9 +692,50 @@ const Found = struct {
         if (std.mem.eql(u8, tag, schema.tag.bool)) return w.print("the boolean {s}", .{text});
         if (std.mem.eql(u8, tag, schema.tag.int)) return w.print("the integer {s}", .{text});
         if (std.mem.eql(u8, tag, schema.tag.float)) return w.print("the float {s}", .{text});
-        if (!std.mem.eql(u8, tag, schema.tag.str)) return w.print("a scalar tagged {s}", .{tag});
+        if (!std.mem.eql(u8, tag, schema.tag.str)) return w.print("a scalar tagged {f}", .{Shown{ .text = tag }});
         const shown = cutUtf8(text, 40);
-        try w.print("the string \"{f}\"{s}", .{ std.zig.fmtString(shown), if (shown.len < text.len) "..." else "" });
+        try w.print("the string \"{f}\"{s}", .{ Shown{ .text = shown }, if (shown.len < text.len) "..." else "" });
+    }
+};
+
+/// Text from the input as a diagnostic shows it: a printable character
+/// as it is, any script's included, and escaped what a terminal or a log
+/// would act on, controls, line breaks of any kind and bytes that are not
+/// UTF-8, and `"` and `\`, so the input cannot write into the terminal
+/// reading the message or forge a line of a log (CWE-117, CWE-150).
+const Shown = struct {
+    text: []const u8,
+
+    pub fn format(s: Shown, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        var i: usize = 0;
+        while (i < s.text.len) {
+            const len = std.unicode.utf8ByteSequenceLength(s.text[i]) catch 1;
+            if (shownAsIs(s.text, i, len)) {
+                try w.writeAll(s.text[i..][0..len]);
+                i += len;
+                continue;
+            }
+            switch (s.text[i]) {
+                '"' => try w.writeAll("\\\""),
+                '\\' => try w.writeAll("\\\\"),
+                '\n' => try w.writeAll("\\n"),
+                '\r' => try w.writeAll("\\r"),
+                '\t' => try w.writeAll("\\t"),
+                else => |c| try w.print("\\x{X:0>2}", .{c}),
+            }
+            i += 1;
+        }
+    }
+
+    /// Whether the character of `len` bytes at `text[i]` is written as
+    /// it is: printable, and no line break (NEL, U+2028 and U+2029 are
+    /// ones to a terminal or a reader of logs).
+    fn shownAsIs(text: []const u8, i: usize, len: usize) bool {
+        const c = text[i];
+        if (c < 0x20 or c == '"' or c == '\\' or !chars.isPrintable(text, i)) return false;
+        if (len == 1) return true;
+        const point = std.unicode.utf8Decode(text[i..][0..len]) catch return false;
+        return point != 0x85 and point != 0x2028 and point != 0x2029;
     }
 };
 

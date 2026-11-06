@@ -347,6 +347,13 @@ hash maps seeded from a hash of the input, so keys built to collide
 cost what any keys do. A tag is resolved by looking through its
 document's %TAG directives, so their number is held too.
 
+Every known attack on a YAML library, and where this one stands on it
+(a test that proves the defence, a card, or why it does not apply), is
+a row of [test/security/CATALOG.md](test/security/CATALOG.md): alias
+expansion, depth, hash flooding, hangs, code execution through tags,
+type confusion, numbers, encodings, injection into what is written, and
+input in diagnostics. `zig build security` runs its tests and checks it.
+
 Nothing recurses on the input's depth but construction, which is held
 to `max_depth`. Each level, a collection or a pointer followed, takes
 about 1.7 KiB of stack in a Debug build and 0.35 KiB in a release one,
@@ -365,6 +372,9 @@ on macOS) and 128 KiB in release. On a smaller stack, lower
   with the library built ReleaseSafe and ReleaseFast, where a panic in
   Debug is one or undefined behaviour; `zig build test test-release`
   runs all three modes.
+- `zig build security`: the security suite (test/security) and its
+  catalog, every row's test there and every test in a row; `zig build
+  test` runs both too.
 - `zig build suite`: the suite's counts; `-- show <case>`,
   `-- show-emit <case>`, `-- errors`, `-- list [--all]`, `-- readme`.
 - `zig build fuzz`: the fuzz targets' seeded runs, `--fuzz` to fuzz.
