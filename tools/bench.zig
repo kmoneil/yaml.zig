@@ -2,6 +2,11 @@
 //! reads a document of typical config records, and what it allocates.
 //! `zig build bench -- rss STAGE [records]`: the memory one stage holds
 //! resident, in a process of its own.
+//! `zig build bench -- write PATH [records]`: the document, to a file.
+//! `zig build bench -- file STAGE RUNS PATH`: one stage over a file, one
+//! run to warm up and then RUNS, the median in ms on a line; `read` only
+//! reads the file. The interface of tools/compare's harnesses for other
+//! libraries (t54).
 //!
 //! Each stage runs `runs` times (7 by default) over one document it
 //! generates (20,000 records, about 4.9 MB, by default): the scanner's
@@ -180,6 +185,36 @@ fn resident(io: Io, args: []const []const u8) !void {
     try stdout.interface.flush();
 }
 
+/// `write PATH [records]`: the document `document` generates, to a file.
+fn write(io: Io, args: []const []const u8) !void {
+    const count = if (args.len > 3) try std.fmt.parseInt(usize, args[3], 10) else 20_000;
+    const text = try document(std.heap.smp_allocator, count);
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = args[2], .data = text });
+}
+
+/// `file STAGE RUNS PATH`: `stage` over the file's text, a run to warm up
+/// and then RUNS, the median in ms; `read` stops once the file is read.
+fn timeFile(io: Io, args: []const []const u8) !void {
+    const gpa = std.heap.smp_allocator;
+    const runs = try std.fmt.parseInt(usize, args[3], 10);
+    const text = try Io.Dir.cwd().readFileAlloc(io, args[4], gpa, .unlimited);
+    if (std.mem.eql(u8, args[2], "read")) return;
+    const stage = std.meta.stringToEnum(Stage, args[2]) orelse return error.UnknownStage;
+    if (stage == .stringify or runs == 0 or runs > 64) return error.Usage;
+    std.mem.doNotOptimizeAway(try run(stage, gpa, text, &.{}));
+    var times: [64]u64 = undefined;
+    for (times[0..runs]) |*t| {
+        const start = Io.Clock.awake.now(io);
+        std.mem.doNotOptimizeAway(try run(stage, gpa, text, &.{}));
+        t.* = @intCast(start.durationTo(Io.Clock.awake.now(io)).nanoseconds);
+    }
+    std.mem.sort(u64, times[0..runs], {}, std.sort.asc(u64));
+    var buf: [64]u8 = undefined;
+    var stdout = Io.File.stdout().writerStreaming(io, &buf);
+    try stdout.interface.print("{d:.1}\n", .{@as(f64, @floatFromInt(times[runs / 2])) / 1e6});
+    try stdout.interface.flush();
+}
+
 const Stage = enum { scan, parse, compose, value, typed, stringify };
 
 /// Runs `stage` over `text` once; what it returns keeps the work from
@@ -227,6 +262,8 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len > 2 and std.mem.eql(u8, args[1], "rss")) return resident(io, args);
+    if (args.len > 2 and std.mem.eql(u8, args[1], "write")) return write(io, args);
+    if (args.len > 4 and std.mem.eql(u8, args[1], "file")) return timeFile(io, args);
     const records = if (args.len > 1) try std.fmt.parseInt(usize, args[1], 10) else 20_000;
     const runs = if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 7;
     if (runs == 0) return error.NoRuns;

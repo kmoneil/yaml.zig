@@ -376,6 +376,37 @@ $ yaml from-json data.json > data.yaml
   and a mapping with two equal keys is refused unless
   `duplicate_keys = .keep` (a struct field then takes the last).
 
+## Speed
+
+The bench's 4.9 MB of config records read by each library in its
+release build, on one machine (an M-series Mac, 2026-11-06, with other
+work running: times move by up to 10% run to run).
+`tools/compare/run.sh` builds every library at a pinned version and
+prints this table again:
+
+| Built | Library | ms | MB/s | Peak MB |
+| --- | --- | ---: | ---: | ---: |
+| events | **yaml.zig** | 21.3 | 228 | 3.9 |
+| events | libyaml 0.2.5 | 44.2 | 110 | 0.3 |
+| events | saphyr-parser 0.3.3 | 59.6 | 81 | 0.5 |
+| node tree | **yaml.zig** | 22.2 | 219 | 55.8 |
+| node tree | rapidyaml 0.16.0 | 15.9 | 305 | 146.7 |
+| node tree | libyaml 0.2.5 | 61.2 | 79 | 137.7 |
+| node tree | go-yaml v3.0.1 (yaml.Node) | 130.9 | 37 | 151.8 |
+| dynamic value | **yaml.zig** (Value) | 28.6 | 170 | 20.3 |
+| dynamic value | saphyr 0.3.3 | 77.2 | 63 | 78.9 |
+| dynamic value | js-yaml 5.5.0 | 76.9 | 63 | 304.2 |
+| dynamic value | go-yaml v3.0.1 (any) | 185.2 | 26 | 244.0 |
+| typed | **yaml.zig** | 29.1 | 167 | 18.6 |
+| typed | serde_yaml 0.9.34 | 75.1 | 65 | 82.9 |
+| typed | serde-saphyr 2.1.1 | 163.4 | 30 | 19.6 |
+| typed | go-yaml v3.0.1 | 167.7 | 29 | 224.0 |
+
+Peak MB is the most a parse holds resident, less what reading the file
+does. yaml.zig runs on Zig's `smp_allocator`, the others on `malloc`;
+rapidyaml's tree leaves its scalars untyped and its keys unchecked for
+duplicates, where yaml.zig's resolves each tag and refuses an equal key.
+
 ## Limits for untrusted input
 
 | Limit | Default | Where |
@@ -423,6 +454,9 @@ on macOS) and 200 KiB in release. On a smaller stack, lower
   `-- show-emit <case>`, `-- errors`, `-- list [--all]`, `-- readme`.
 - `zig build fuzz`: the fuzz targets' seeded runs, `--fuzz` to fuzz.
 - `zig build docs`: the API reference into `zig-out/docs`.
+- `tools/compare/run.sh`: the Speed table, each library built at a
+  pinned version and run on the same document. It needs the network and
+  a C and C++ compiler, Go, Rust and Node; one missing is left out.
 - `zig build doc-examples`: check this README's examples against
   `examples/` (`-- --fix` to rewrite them).
 - `zig build fmt`: format.

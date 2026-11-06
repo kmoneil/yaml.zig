@@ -1,0 +1,15 @@
+[package]
+name = "yaml-compare"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+saphyr = "=0.3.3"
+saphyr-parser = "=0.3.3"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "=0.9.34"
+serde-saphyr = "=2.1.1"
+
+[profile.release]
+lto = true
+codegen-units = 1
