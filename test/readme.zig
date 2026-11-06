@@ -38,8 +38,8 @@ pub fn table(arena: Allocator, tally: check.Tally) ![]const u8 {
 
 /// Where the table's text lies in `readme`, between its marker lines.
 fn span(readme: []const u8) ?struct { start: usize, end: usize } {
-    const start = (std.mem.indexOf(u8, readme, open) orelse return null) + open.len;
-    const end = std.mem.indexOfPos(u8, readme, start, close) orelse return null;
+    const start = (std.mem.find(u8, readme, open) orelse return null) + open.len;
+    const end = std.mem.findPos(u8, readme, start, close) orelse return null;
     return .{ .start = start, .end = end };
 }
 

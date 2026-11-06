@@ -15,7 +15,7 @@
 //! collide under a fixed seed cannot be found for a seed nobody knows
 //! before the input exists.
 //!
-//! Nodes live as long as the composer.
+//! Nodes live as long as the composer. Not threadsafe.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -33,7 +33,7 @@ pub const Event = Parser.Event;
 /// Where and why composing failed (`Scanner.Diagnostic`).
 pub const Diagnostic = Parser.Diagnostic;
 
-/// Composing's errors: the parser's, and the two of composition.
+/// Composing's errors: the parser's, and composition's own three.
 pub const Error = Parser.Error || error{
     /// An alias names no anchor before it in its document.
     UndefinedAlias,

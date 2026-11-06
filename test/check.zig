@@ -56,7 +56,7 @@ pub fn run(arena: Allocator, io: Io, root: Io.Dir, case: suite.Case, check: Chec
 }
 
 pub fn readCaseFile(arena: Allocator, io: Io, root: Io.Dir, case: suite.Case, file: []const u8) ![]u8 {
-    const path = try std.fmt.allocPrint(arena, "{s}/{s}", .{ case.name, file });
+    const path = try arena.print("{s}/{s}", .{ case.name, file });
     return root.readFileAlloc(io, path, arena, .limited(16 * 1024 * 1024));
 }
 
@@ -87,7 +87,7 @@ pub const Rejection = struct {
     message: []const u8,
 
     pub fn describe(r: Rejection, arena: Allocator) ![]const u8 {
-        return std.fmt.allocPrint(arena, "{s} error at {d}:{d}: {s}", .{ @tagName(r.stage), r.mark.line + 1, r.mark.column + 1, r.message });
+        return arena.print("{s} error at {d}:{d}: {s}", .{ @tagName(r.stage), r.mark.line + 1, r.mark.column + 1, r.message });
     }
 };
 
@@ -111,14 +111,14 @@ pub const Parsed = struct {
 /// Parses `input`, writing its events in the suite's notation, on an
 /// allocator of its own that checks for leaks.
 pub fn parse(input: []const u8, w: *Io.Writer) !Parsed {
-    var debug: std.heap.DebugAllocator(.{}) = .init;
+    var safe: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
     var parsed: Parsed = .{};
     {
-        var parser: yaml.Parser = .init(debug.allocator(), input);
+        var parser: yaml.Parser = .init(safe.allocator(), input);
         defer parser.deinit();
         parsed.rejection = try parseInto(&parser, input.len, w, &parsed.runaway);
     }
-    parsed.leaked = debug.deinit() == .leak;
+    parsed.leaked = safe.deinit() > 0;
     return parsed;
 }
 
@@ -179,7 +179,7 @@ pub fn firstDifference(arena: Allocator, want: []const u8, got: []const u8) !?[]
         const w = want_lines.next();
         const g = got_lines.next();
         if (w != null and g != null and std.mem.eql(u8, w.?, g.?)) continue;
-        return try std.fmt.allocPrint(arena, "line {d}: want `{s}`, got `{s}`", .{ line, w orelse "(the end)", g orelse "(the end)" });
+        return try arena.print("line {d}: want `{s}`, got `{s}`", .{ line, w orelse "(the end)", g orelse "(the end)" });
     }
 }
 
@@ -216,7 +216,7 @@ pub const SkipList = struct {
     }
 
     fn key(arena: Allocator, check: Check, case: []const u8) ![]const u8 {
-        return std.fmt.allocPrint(arena, "{s} {s}", .{ @tagName(check), case });
+        return arena.print("{s} {s}", .{ @tagName(check), case });
     }
 };
 

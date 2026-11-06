@@ -124,6 +124,8 @@ fn decodeUtf32(allocator: Allocator, bytes: []const u8, big: bool, diagnostic: ?
     return out.toOwnedSlice(allocator);
 }
 
+/// Appends `point`, which the caller found is no surrogate and at most
+/// U+10FFFF, so UTF-8 can encode it.
 fn appendPoint(allocator: Allocator, out: *std.ArrayList(u8), point: u21) Allocator.Error!void {
     var buf: [4]u8 = undefined;
     const len = std.unicode.utf8Encode(point, &buf) catch unreachable;

@@ -98,7 +98,7 @@ fn isJsonInt(value: []const u8) bool {
 }
 
 fn withoutSign(value: []const u8, signs: []const u8) []const u8 {
-    if (value.len > 0 and std.mem.indexOfScalar(u8, signs, value[0]) != null) return value[1..];
+    if (value.len > 0 and std.mem.findScalar(u8, signs, value[0]) != null) return value[1..];
     return value;
 }
 
@@ -108,14 +108,14 @@ fn isCoreFloat(value: []const u8) bool {
     if (isAny(value, &.{ ".nan", ".NaN", ".NAN" })) return true;
     const unsigned = withoutSign(value, "-+");
     if (isAny(unsigned, &.{ ".inf", ".Inf", ".INF" })) return true;
-    const mantissa_end = std.mem.indexOfAny(u8, unsigned, "eE") orelse unsigned.len;
+    const mantissa_end = std.mem.findAny(u8, unsigned, "eE") orelse unsigned.len;
     if (!isCoreMantissa(unsigned[0..mantissa_end])) return false;
     return mantissa_end == unsigned.len or isExponent(unsigned[mantissa_end + 1 ..]);
 }
 
 /// `\.[0-9]+` or `[0-9]+(\.[0-9]*)?`.
 fn isCoreMantissa(text: []const u8) bool {
-    const point = std.mem.indexOfScalar(u8, text, '.') orelse return allDigits(text, 10);
+    const point = std.mem.findScalar(u8, text, '.') orelse return allDigits(text, 10);
     if (point == 0) return allDigits(text[1..], 10);
     return allDigits(text[0..point], 10) and (point + 1 == text.len or allDigits(text[point + 1 ..], 10));
 }
@@ -128,9 +128,9 @@ fn isExponent(text: []const u8) bool {
 /// `-?(0|[1-9][0-9]*)(\.[0-9]*)?([eE][-+]?[0-9]+)?`.
 fn isJsonFloat(value: []const u8) bool {
     const unsigned = withoutSign(value, "-");
-    const mantissa_end = std.mem.indexOfAny(u8, unsigned, "eE") orelse unsigned.len;
+    const mantissa_end = std.mem.findAny(u8, unsigned, "eE") orelse unsigned.len;
     const mantissa = unsigned[0..mantissa_end];
-    const point = std.mem.indexOfScalar(u8, mantissa, '.') orelse mantissa.len;
+    const point = std.mem.findScalar(u8, mantissa, '.') orelse mantissa.len;
     if (!isJsonInt(mantissa[0..point])) return false;
     if (point < mantissa.len and point + 1 < mantissa.len and !allDigits(mantissa[point + 1 ..], 10)) return false;
     return mantissa_end == unsigned.len or isExponent(unsigned[mantissa_end + 1 ..]);

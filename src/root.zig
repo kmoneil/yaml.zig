@@ -4,8 +4,8 @@
 //! The pipeline follows the spec's stages: a scanner turns text into
 //! tokens, a parser turns tokens into events, a composer turns events
 //! into a node graph, and construction turns nodes into typed Zig
-//! values. An emitter goes the other way. The scanner is begun; the
-//! rest is not written yet.
+//! values. An emitter goes the other way, and `stringify` writes Zig
+//! values through it. Each stage can be used alone.
 
 const std = @import("std");
 

@@ -78,7 +78,8 @@ pub const ParseError = Composer.Error || encoding.Error || error{
     DepthLimit,
 };
 
-/// A value and the arena that holds what it points at.
+/// A value and the arena that holds what it points at, which `deinit`
+/// frees. Not threadsafe.
 pub fn Parsed(comptime T: type) type {
     return struct {
         arena: *std.heap.ArenaAllocator,
@@ -162,7 +163,7 @@ const Builder = struct {
     /// gets a detail saying what was found instead.
     fn fail(b: *const Builder, node: *const Node, err: ParseError, message: []const u8) ParseError {
         const d = b.locate(node, message) orelse return err;
-        const expected = std.mem.startsWith(u8, message, "expected") and std.mem.indexOf(u8, message, "found") == null;
+        const expected = std.mem.startsWith(u8, message, "expected") and std.mem.find(u8, message, "found") == null;
         if (err == error.UnexpectedType and expected) d.setDetail("{s}, found {f}", .{ message, Found{ .node = node.target() } });
         return err;
     }

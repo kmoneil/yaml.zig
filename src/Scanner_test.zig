@@ -469,7 +469,7 @@ test "an implicit key is one line and at most 1024 characters" {
     @memcpy(long[1025..], ": v");
     const got = try dump(gpa, long);
     defer gpa.free(got);
-    try testing.expect(std.mem.indexOf(u8, got, "ERROR") != null);
+    try testing.expect(std.mem.find(u8, got, "ERROR") != null);
     // 1024 is allowed.
     const got_ok = try dump(gpa, long[1..]);
     defer gpa.free(got_ok);
@@ -739,7 +739,7 @@ test "block scalars: each chomping indicator" {
         const got = try dump(testing.allocator, case[0]);
         defer testing.allocator.free(got);
         errdefer std.debug.print("input: {s}\ngot:\n{s}\n", .{ case[0], got });
-        try testing.expect(std.mem.indexOf(u8, got, case[1] ++ "\n") != null);
+        try testing.expect(std.mem.find(u8, got, case[1] ++ "\n") != null);
     }
 }
 

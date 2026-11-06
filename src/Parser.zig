@@ -14,6 +14,8 @@
 //! A tag is resolved here against its document's %TAG directives (`!!`
 //! is `tag:yaml.org,2002:`, `!` is `!`), so an event carries the whole
 //! tag. Event text lives as long as the parser.
+//!
+//! Not threadsafe.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

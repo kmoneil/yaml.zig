@@ -18,6 +18,8 @@
 //! Like libyaml's, it looks a few events ahead before writing one (to
 //! see whether a collection is empty, or a key fits on a line), so the
 //! text in an event must live until a few more have been emitted.
+//!
+//! Not threadsafe.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -353,11 +355,13 @@ fn checkSimpleKey(e: *const Emitter) bool {
     const event = e.events.items[e.head];
     const length: usize = switch (event.data) {
         .alias => |name| name.len,
-        .scalar => |s| if (std.mem.indexOfAny(u8, s.value, "\r\n") != null) return false else propertiesLength(s.properties) + s.value.len,
+        .scalar => |s| if (std.mem.findAny(u8, s.value, "\r\n") != null) return false else propertiesLength(s.properties) + s.value.len,
         .sequence_start => |c| if (!e.nextEnds(.sequence_end)) return false else propertiesLength(c.properties),
         .mapping_start => |c| if (!e.nextEnds(.mapping_end)) return false else propertiesLength(c.properties),
         else => return false,
     };
+    // libyaml's bound, under YAML's 1,024 for an implicit key (7.4.2):
+    // past it a key reads better on a line of its own after `?`.
     return length <= 128;
 }
 
@@ -485,6 +489,7 @@ fn writeByte(e: *Emitter, c: u8) Error!void {
 fn writeText(e: *Emitter, text: []const u8) Error!void {
     if (!std.unicode.utf8ValidateSlice(text)) return error.InvalidUtf8;
     try e.writer.writeAll(text);
+    // Validated just above.
     e.column += std.unicode.utf8CountCodepoints(text) catch unreachable;
 }
 
@@ -829,6 +834,7 @@ fn writeDoubleQuoted(e: *Emitter, value: []const u8) Error!void {
     var i: usize = 0;
     while (i < value.len) {
         const len = std.unicode.utf8ByteSequenceLength(value[i]) catch 1;
+        // emitScalar validated the value as UTF-8.
         const point = std.unicode.utf8Decode(value[i..][0..len]) catch unreachable;
         if (escapeOf(point)) |escape| {
             try e.writeText(escape);
@@ -867,6 +873,8 @@ fn escapeOf(point: u21) ?[]const u8 {
     };
 }
 
+/// `\x`, `\u` or `\U` and the hex digits of `point`; the longest, `\U`
+/// and eight, fills `buf`.
 fn hexEscape(buf: *[10]u8, point: u21) []const u8 {
     if (point <= 0xFF) return std.fmt.bufPrint(buf, "\\x{X:0>2}", .{point}) catch unreachable;
     if (point <= 0xFFFF) return std.fmt.bufPrint(buf, "\\u{X:0>4}", .{point}) catch unreachable;
@@ -1002,7 +1010,7 @@ const UriKind = enum { tag_suffix, uri };
 /// Writes a tag's text, `%`-escaping each byte a tag cannot hold there.
 fn writeUri(e: *Emitter, text: []const u8, kind: UriKind) Error!void {
     for (text) |c| {
-        const plain_ok = std.ascii.isAlphanumeric(c) or std.mem.indexOfScalar(u8, "-#;/?:@&=+$_.~*'()", c) != null;
+        const plain_ok = std.ascii.isAlphanumeric(c) or std.mem.findScalar(u8, "-#;/?:@&=+$_.~*'()", c) != null;
         const suffix_only_bad = c == '!' or c == ',' or c == '[' or c == ']' or c == '{' or c == '}';
         const ok = plain_ok or (kind == .uri and suffix_only_bad);
         if (ok) try e.writeByte(c) else try e.writeEscapedByte(c);

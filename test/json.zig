@@ -15,13 +15,13 @@ const tag = yaml.schema.tag;
 /// nothing does. Composes on an allocator that checks for leaks.
 pub fn compare(arena: Allocator, input: []const u8, json: []const u8) !?[]const u8 {
     const want = try parseDocuments(arena, json) orelse return "in.json does not parse as JSON";
-    var debug: std.heap.DebugAllocator(.{}) = .init;
+    var safe: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
     const problem = problem: {
-        var composer: yaml.Composer = .init(debug.allocator(), input, .{});
+        var composer: yaml.Composer = .init(safe.allocator(), input, .{});
         defer composer.deinit();
         break :problem try compareDocuments(arena, &composer, want);
     };
-    if (debug.deinit() == .leak) return "leaked memory (the allocator printed where it was allocated)";
+    if (safe.deinit() > 0) return "leaked memory (the allocator printed where it was allocated)";
     return problem;
 }
 
@@ -30,14 +30,14 @@ fn compareDocuments(arena: Allocator, composer: *yaml.Composer, want: []const st
     for (want, 0..) |value, i| {
         const document = composer.next() catch |err| {
             const d = composer.diagnostic;
-            return try std.fmt.allocPrint(arena, "document {d}: {s} at {d}:{d}: {s}", .{ i + 1, @errorName(err), d.mark.line + 1, d.mark.column + 1, d.message });
-        } orelse return try std.fmt.allocPrint(arena, "{d} documents, where in.json has {d}", .{ i, want.len });
+            return try arena.print("document {d}: {s} at {d}:{d}: {s}", .{ i + 1, @errorName(err), d.mark.line + 1, d.mark.column + 1, d.message });
+        } orelse return try arena.print("{d} documents, where in.json has {d}", .{ i, want.len });
         path.clearRetainingCapacity();
         try path.print(arena, "document {d}: $", .{i + 1});
         if (try compareNode(arena, document.root, value, &path)) |problem| return problem;
     }
     const extra = composer.next() catch return "an error after the documents in.json has";
-    if (extra != null) return try std.fmt.allocPrint(arena, "more documents than the {d} in.json has", .{want.len});
+    if (extra != null) return try arena.print("more documents than the {d} in.json has", .{want.len});
     return null;
 }
 
@@ -68,7 +68,7 @@ fn comparePairs(arena: Allocator, pairs: []const Node.Pair, want: std.json.Value
     for (pairs) |pair| {
         const key = keyText(pair.key);
         try path.print(arena, ".{s}", .{key});
-        const value = want.object.get(key) orelse return try std.fmt.allocPrint(arena, "{s}: in.json has no such key", .{path.items});
+        const value = want.object.get(key) orelse return try arena.print("{s}: in.json has no such key", .{path.items});
         if (try compareNode(arena, pair.value, value, path)) |problem| return problem;
         path.shrinkRetainingCapacity(len);
     }
@@ -106,7 +106,7 @@ fn scalarMatches(scalar_tag: []const u8, value: []const u8, want: std.json.Value
 fn differ(arena: Allocator, path: *const std.ArrayList(u8), comptime got: []const u8, args: anytype, want: std.json.Value) Allocator.Error!?[]const u8 {
     const json = std.json.Stringify.valueAlloc(arena, want, .{}) catch "(unprintable)";
     const shown = if (json.len > 60) json[0..60] else json;
-    const message: []const u8 = try std.fmt.allocPrint(arena, "{s}: got " ++ got ++ ", want {s}", .{path.items} ++ args ++ .{shown});
+    const message: []const u8 = try arena.print("{s}: got " ++ got ++ ", want {s}", .{path.items} ++ args ++ .{shown});
     return message;
 }
 
@@ -130,7 +130,7 @@ fn nextDocument(text: []const u8, at: *usize) ?[]const u8 {
     at.* = switch (text[start]) {
         '{', '[' => endOfCollection(text, start),
         '"' => endOfString(text, start),
-        else => std.mem.indexOfAnyPos(u8, text, start, " \t\r\n") orelse text.len,
+        else => std.mem.findAnyPos(u8, text, start, " \t\r\n") orelse text.len,
     };
     return text[start..at.*];
 }

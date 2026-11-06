@@ -26,6 +26,7 @@ pub const Context = struct {
 };
 
 /// A map from strings to `T`s that keeps the order its keys came in.
+/// Not threadsafe.
 pub fn ArrayHashMap(comptime T: type) type {
     return struct {
         const Self = @This();

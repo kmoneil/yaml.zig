@@ -16,6 +16,8 @@
 //! document after it. A scalar's value is a slice of the input when it is written
 //! as it reads (one line, no escapes); otherwise it is built in the
 //! scanner's arena, so it lives until `deinit`.
+//!
+//! Not threadsafe.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -174,10 +176,9 @@ tokens: std.ArrayList(Token) = .empty,
 head: usize = 0,
 /// How many tokens `next` has handed out.
 tokens_parsed: usize = 0,
-stream_start_produced: bool = false,
-stream_end_produced: bool = false,
-/// The `stream_end` token is in the queue: nothing follows it.
-stream_end_fetched: bool = false,
+/// Where the scanner is in the stream: before its start, scanning, its
+/// `stream_end` token in the queue (nothing follows it), or handed out.
+stream: enum { before_start, scanning, end_fetched, end_given } = .before_start,
 /// The indentation column of the innermost block collection: -1 before
 /// the first one.
 indent: isize = -1,
@@ -229,7 +230,7 @@ pub fn deinit(s: *Scanner) void {
 /// `error.SyntaxError`, `diagnostic` says what and where; the scanner
 /// cannot go on after one.
 pub fn next(s: *Scanner) Error!Token {
-    if (s.stream_end_produced) return .{ .start = s.mark, .end = s.mark, .data = .stream_end };
+    if (s.stream == .end_given) return .{ .start = s.mark, .end = s.mark, .data = .stream_end };
     try s.fetchMoreTokens();
     const token = s.tokens.items[s.head];
     s.head += 1;
@@ -238,14 +239,14 @@ pub fn next(s: *Scanner) Error!Token {
         s.tokens.clearRetainingCapacity();
         s.head = 0;
     }
-    if (token.data == .stream_end) s.stream_end_produced = true;
+    if (token.data == .stream_end) s.stream = .end_given;
     return token;
 }
 
 /// Fetches until the token at the head of the queue is settled: there is
 /// one, and no possible simple key begins at it.
 fn fetchMoreTokens(s: *Scanner) Error!void {
-    while (!s.stream_end_fetched and (s.head == s.tokens.items.len or try s.keyMayBeginAtHead())) {
+    while (s.stream != .end_fetched and (s.head == s.tokens.items.len or try s.keyMayBeginAtHead())) {
         try s.fetchNextToken();
     }
 }
@@ -259,7 +260,7 @@ fn keyMayBeginAtHead(s: *Scanner) Error!bool {
 }
 
 fn fetchNextToken(s: *Scanner) Error!void {
-    if (!s.stream_start_produced) return s.fetchStreamStart();
+    if (s.stream == .before_start) return s.fetchStreamStart();
     try s.scanToNextToken();
     try s.staleSimpleKeys();
     try s.unrollIndent(@intCast(s.mark.column));
@@ -355,7 +356,7 @@ fn indicatorEnds(s: *const Scanner) bool {
 fn fetchStreamStart(s: *Scanner) Error!void {
     s.indent = -1;
     s.simple_key_allowed = true;
-    s.stream_start_produced = true;
+    s.stream = .scanning;
     try s.simple_keys.append(s.gpa, .{});
     if (encoding.detect(s.input) != .utf8) {
         return s.fail(s.mark, "this input is UTF-16 or UTF-32: decode it to UTF-8 first (encoding.toUtf8)");
@@ -379,7 +380,7 @@ fn fetchStreamEnd(s: *Scanner) Error!void {
     }
     s.simple_key_allowed = false;
     try s.append(.stream_end, s.mark, s.mark);
-    s.stream_end_fetched = true;
+    s.stream = .end_fetched;
 }
 
 /// Fetches a directive: `%YAML`, `%TAG`, or one YAML reserves, which is
@@ -676,7 +677,7 @@ fn decodeUri(s: *Scanner, text: []const u8) Error![]const u8 {
 /// ns-uri-char (YAML 1.2.2, 5.6), but for `%`, which `scanUri` reads.
 fn isUriCharacter(c: u8) bool {
     if (std.ascii.isAlphanumeric(c)) return true;
-    return std.mem.indexOfScalar(u8, "-#;/?:@&=+$,_.!~*'()[]", c) != null;
+    return std.mem.findScalar(u8, "-#;/?:@&=+$,_.!~*'()[]", c) != null;
 }
 
 fn fetchQuotedScalar(s: *Scanner, style: ScalarStyle) Error!void {
@@ -943,6 +944,7 @@ fn scanQuotedScalar(s: *Scanner, style: ScalarStyle) Error!Token {
     const value: []const u8 = if (s.quotedAsWritten(quote)) |len| as_written: {
         const text = s.input[s.mark.offset..][0..len];
         s.mark.offset += len;
+        // quotedAsWritten found the text valid UTF-8.
         s.mark.column += std.unicode.utf8CountCodepoints(text) catch unreachable;
         break :as_written text;
     } else try s.scanQuotedValue(quote, start);
@@ -955,10 +957,10 @@ fn scanQuotedScalar(s: *Scanner, style: ScalarStyle) Error!Token {
 /// control character. Null when the value must be built.
 fn quotedAsWritten(s: *const Scanner, quote: u8) ?usize {
     const rest = s.input[s.mark.offset..];
-    const len = std.mem.indexOfScalar(u8, rest, quote) orelse return null;
+    const len = std.mem.findScalar(u8, rest, quote) orelse return null;
     const text = rest[0..len];
     if (quote == '\'' and len + 1 < rest.len and rest[len + 1] == '\'') return null;
-    if (quote == '"' and std.mem.indexOfScalar(u8, text, '\\') != null) return null;
+    if (quote == '"' and std.mem.findScalar(u8, text, '\\') != null) return null;
     if (hasControl(text) or !std.unicode.utf8ValidateSlice(text)) return null;
     return len;
 }

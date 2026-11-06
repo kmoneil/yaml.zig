@@ -27,19 +27,19 @@ pub fn emit(arena: Allocator, input: []const u8) ![]const u8 {
 /// What differs between `input`'s documents and those of the text the
 /// emitter writes for them, or null when nothing does.
 pub fn compare(arena: Allocator, input: []const u8) !?[]const u8 {
-    const text = emit(arena, input) catch |err| return try std.fmt.allocPrint(arena, "emitting failed: {s}", .{@errorName(err)});
+    const text = emit(arena, input) catch |err| return try arena.print("emitting failed: {s}", .{@errorName(err)});
     var original: yaml.Composer = .init(arena, input, .{ .duplicate_keys = .keep });
     var again: yaml.Composer = .init(arena, text, .{ .duplicate_keys = .keep });
     var path: std.ArrayList(u8) = .empty;
     var document: usize = 1;
     while (true) : (document += 1) {
-        const a = original.next() catch |err| return try std.fmt.allocPrint(arena, "the input does not compose: {s}", .{@errorName(err)});
+        const a = original.next() catch |err| return try arena.print("the input does not compose: {s}", .{@errorName(err)});
         const b = again.next() catch |err| {
             const d = again.diagnostic;
-            return try std.fmt.allocPrint(arena, "the emitted text does not read back: {s} at {d}:{d}: {s}", .{ @errorName(err), d.mark.line + 1, d.mark.column + 1, d.message });
+            return try arena.print("the emitted text does not read back: {s} at {d}:{d}: {s}", .{ @errorName(err), d.mark.line + 1, d.mark.column + 1, d.message });
         };
         if (a == null and b == null) return null;
-        if (a == null or b == null) return try std.fmt.allocPrint(arena, "document {d}: one text has it and the other not", .{document});
+        if (a == null or b == null) return try arena.print("document {d}: one text has it and the other not", .{document});
         path.clearRetainingCapacity();
         try path.print(arena, "document {d}: $", .{document});
         if (try compareNodes(arena, a.?.root, b.?.root, &path)) |problem| return problem;
@@ -84,6 +84,6 @@ fn optionalEql(a: ?[]const u8, b: ?[]const u8) bool {
 }
 
 fn differ(arena: Allocator, path: *const std.ArrayList(u8), what: []const u8) Allocator.Error!?[]const u8 {
-    const message: []const u8 = try std.fmt.allocPrint(arena, "{s}: the {s} differ", .{ path.items, what });
+    const message: []const u8 = try arena.print("{s}: the {s} differ", .{ path.items, what });
     return message;
 }

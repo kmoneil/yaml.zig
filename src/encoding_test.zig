@@ -89,7 +89,7 @@ test "the scanner names an encoding it does not read" {
     var s: yaml.Scanner = .init(testing.allocator, "a\x00:\x00");
     defer s.deinit();
     try testing.expectError(error.SyntaxError, s.next());
-    try testing.expect(std.mem.indexOf(u8, s.diagnostic.message, "UTF-16") != null);
+    try testing.expect(std.mem.find(u8, s.diagnostic.message, "UTF-16") != null);
 }
 
 test "byte order marks: at the stream's start and each document's, nowhere else" {

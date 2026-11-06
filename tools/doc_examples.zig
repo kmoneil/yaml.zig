@@ -33,18 +33,18 @@ const Block = struct { path: []const u8, body_start: usize, body_end: usize };
 /// the first line after the opening one that starts with ```, so an
 /// example must not hold such a line itself.
 fn nextBlock(doc: []const u8, from: usize) error{Malformed}!?Block {
-    var at = std.mem.indexOfPos(u8, doc, from, marker) orelse return null;
+    var at = std.mem.findPos(u8, doc, from, marker) orelse return null;
     while (at > 0 and doc[at - 1] != '\n') {
-        at = std.mem.indexOfPos(u8, doc, at + 1, marker) orelse return null;
+        at = std.mem.findPos(u8, doc, at + 1, marker) orelse return null;
     }
     const path_start = at + marker.len;
-    const path_end = std.mem.indexOfScalarPos(u8, doc, path_start, ' ') orelse return error.Malformed;
+    const path_end = std.mem.findScalarPos(u8, doc, path_start, ' ') orelse return error.Malformed;
     if (!std.mem.startsWith(u8, doc[path_end..], marker_end)) return error.Malformed;
-    const fence_end = std.mem.indexOfScalarPos(u8, doc, path_end + marker_end.len, '\n') orelse return error.Malformed;
+    const fence_end = std.mem.findScalarPos(u8, doc, path_end + marker_end.len, '\n') orelse return error.Malformed;
     const body_start = fence_end + 1;
     var line = body_start;
     while (!std.mem.startsWith(u8, doc[line..], "```")) {
-        const nl = std.mem.indexOfScalarPos(u8, doc, line, '\n') orelse return error.Malformed;
+        const nl = std.mem.findScalarPos(u8, doc, line, '\n') orelse return error.Malformed;
         line = nl + 1;
     }
     return .{ .path = doc[path_start..path_end], .body_start = body_start, .body_end = line };
@@ -107,10 +107,10 @@ const Check = struct {
         while (try it.next(c.io)) |entry| {
             if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".zig")) continue;
             if (std.mem.eql(u8, entry.name, "all.zig")) continue;
-            const rel = try std.fmt.allocPrint(c.arena, "examples/{s}", .{entry.name});
+            const rel = try c.arena.print("examples/{s}", .{entry.name});
             if (!c.shown.contains(rel)) c.problem("{s} is not shown in README.md or docs/", .{rel});
-            const import = try std.fmt.allocPrint(c.arena, "@import(\"{s}\")", .{entry.name});
-            if (std.mem.indexOf(u8, all, import) == null) c.problem("{s} is not imported by examples/all.zig, so it never runs", .{rel});
+            const import = try c.arena.print("@import(\"{s}\")", .{entry.name});
+            if (std.mem.find(u8, all, import) == null) c.problem("{s} is not imported by examples/all.zig, so it never runs", .{rel});
         }
     }
 };
@@ -128,7 +128,7 @@ fn documents(arena: Allocator, io: Io, cwd: Io.Dir) ![]const []const u8 {
     const first_doc = list.items.len;
     while (try it.next(io)) |entry| {
         if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".md")) continue;
-        try list.append(arena, try std.fmt.allocPrint(arena, "docs/{s}", .{entry.name}));
+        try list.append(arena, try arena.print("docs/{s}", .{entry.name}));
     }
     std.mem.sort([]const u8, list.items[first_doc..], {}, lessThan);
     return list.items;

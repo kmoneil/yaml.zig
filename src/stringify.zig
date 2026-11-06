@@ -93,7 +93,7 @@ const Stringifier = struct {
     }
 
     fn format(s: *Stringifier, comptime fmt: []const u8, args: anytype) StringifyError!void {
-        try s.scalar(try std.fmt.allocPrint(s.arena, fmt, args), .plain);
+        try s.scalar(try s.arena.print(fmt, args), .plain);
     }
 
     fn write(s: *Stringifier, value: anytype) StringifyError!void {
@@ -119,9 +119,9 @@ const Stringifier = struct {
     fn writeFloat(s: *Stringifier, x: f64) StringifyError!void {
         if (std.math.isNan(x)) return s.scalar(".nan", .plain);
         if (std.math.isInf(x)) return s.scalar(if (x > 0) ".inf" else "-.inf", .plain);
-        const text = try std.fmt.allocPrint(s.arena, "{d}", .{x});
+        const text = try s.arena.print("{d}", .{x});
         // `1` would read back as an integer.
-        const whole = std.mem.indexOfAny(u8, text, ".e") == null;
+        const whole = std.mem.findAny(u8, text, ".e") == null;
         try s.scalar(if (whole) try std.mem.concat(s.arena, u8, &.{ text, ".0" }) else text, .plain);
     }
 

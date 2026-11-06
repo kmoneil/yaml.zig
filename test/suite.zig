@@ -84,7 +84,7 @@ fn collectVariants(arena: Allocator, io: Io, root: Io.Dir, id: []const u8, cases
     var it = dir.iterate();
     while (try it.next(io)) |entry| {
         if (entry.kind != .directory or !isVariant(entry.name)) continue;
-        const name = try std.fmt.allocPrint(arena, "{s}/{s}", .{ id, entry.name });
+        const name = try arena.print("{s}/{s}", .{ id, entry.name });
         try cases.append(arena, try readCase(arena, io, root, name));
     }
 }
