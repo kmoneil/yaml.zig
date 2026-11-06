@@ -166,6 +166,9 @@ line_start: usize = 0,
 line_has_token: bool = false,
 /// The error `next` failed with, which every later call gives again.
 failed: ?Error = null,
+/// An error found looking past tokens not yet given, given once those
+/// before it are (`beforeError`).
+pending: ?Error = null,
 diagnostic: Diagnostic = .{},
 
 /// A scanner over `input`, UTF-8 (`encoding.toUtf8` for others). It
@@ -235,10 +238,29 @@ fn settleHead(s: *Scanner) Error!*const Token {
     if (s.head == s.tokens.items.len) {
         s.tokens.clearRetainingCapacity();
         s.head = 0;
+        if (s.pending) |err| return err;
     }
-    try s.fetchMoreTokens();
+    if (s.pending) |err| {
+        if (!s.beforeError(&s.tokens.items[s.head])) return err;
+    } else s.fetchMoreTokens() catch |err| {
+        // Found looking past tokens to settle a possible key: those the
+        // text holds before the error come first, and then it, so an
+        // error is met in reading order (t56). A possible key at the head
+        // had no `:` before the error: it is no key.
+        if (err == error.OutOfMemory or s.head == s.tokens.items.len or !s.beforeError(&s.tokens.items[s.head])) return err;
+        s.pending = err;
+    };
     s.head_settled = true;
     return &s.tokens.items[s.head];
+}
+
+/// Whether `token` comes before the error looking ahead found, so is
+/// given first: it begins before the error's mark, or is a token of no
+/// width at it (a block's end or start, a key's place), which the text
+/// before the error makes.
+fn beforeError(s: *const Scanner, token: *const Token) bool {
+    const at = s.diagnostic.mark.offset;
+    return token.start.offset < at or (token.start.offset == at and token.end.offset == at);
 }
 
 /// Fetches until the token at the head of the queue is settled: there is

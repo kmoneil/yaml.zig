@@ -446,9 +446,14 @@ test "errors: a key with no :, a value where none may be, a comment glued on" {
         \\=b
         \\ERROR 1:5 a mapping value is not allowed here
     );
-    // `[a]` may still be a key when the error comes, so none of it is out.
+    // The error is found looking past `[a]` for a `:` that would make it
+    // a key; `[a]` comes before it in the text, so it is given first, as
+    // no key (t56).
     try expectTokens("[a]#c\n",
         \\+STR
+        \\[
+        \\=a
+        \\]
         \\ERROR 1:4 a comment must be separated from what comes before it by whitespace
     );
     try expectTokens("a: \x01\n",

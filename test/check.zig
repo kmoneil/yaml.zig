@@ -139,8 +139,10 @@ fn parseInto(parser: *yaml.Parser, len: usize, w: *Io.Writer, runaway: *bool) !?
 }
 
 fn rejection(parser: *const yaml.Parser) Rejection {
-    // The scanner cannot go on after an error, so one it found is the one.
-    const by_scanner = parser.scanner.diagnostic.message.len > 0;
+    // The scanner cannot go on after an error, so one it gave is the one.
+    // One it found looking ahead and has not given is not (t56): the
+    // parser failed first, on a token before it.
+    const by_scanner = parser.scanner.failed != null;
     return .{
         .stage = if (by_scanner) .scanner else .parser,
         .mark = parser.diagnostic.mark,
