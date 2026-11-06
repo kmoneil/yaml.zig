@@ -133,6 +133,33 @@ test "a float into an integer: up to the type's edge, and not past it" {
     try expectFailure(u0, "1.0", .{}, error.Overflow, 1, 1);
 }
 
+test "a scalar whose text is not what its tag says is refused, wherever it is built" {
+    for ([_][]const u8{ "!!int foo", "!!int 1.5", "!!float foo", "!!bool yes", "!!null foo" }) |text| {
+        try expectFailure(yaml.Value, text, .{}, error.UnexpectedType, 1, 1);
+        try expectFailure([]const u8, text, .{}, error.UnexpectedType, 1, 1);
+        try expectFailure(?u8, text, .{}, error.UnexpectedType, 1, 1);
+    }
+    try expectFailure(i32, "!!int foo", .{}, error.UnexpectedType, 1, 1);
+    try expectFailure(f64, "!!float foo", .{}, error.UnexpectedType, 1, 1);
+    try expectFailure(bool, "!!bool yes", .{}, error.UnexpectedType, 1, 1);
+    try expectFailure(Level, "!!int warn", .{}, error.UnexpectedType, 1, 1);
+    // As a key: a struct's, a union's, a map's.
+    try expectFailure(struct { a: u8 }, "!!int a: 1", .{}, error.UnexpectedType, 1, 1);
+    try expectFailure(union(enum) { a: u8 }, "{!!bool a: 1}", .{}, error.UnexpectedType, 1, 2);
+    try expectFailure(yaml.ArrayHashMap(u8), "!!float k: 1", .{}, error.UnexpectedType, 1, 1);
+
+    var diagnostic: yaml.Diagnostic = .{};
+    try testing.expectError(error.UnexpectedType, yaml.parseFromSlice(struct { n: i32 }, testing.allocator, "n: !!int foo", .{ .diagnostic = &diagnostic }));
+    try testing.expectEqualStrings("n", diagnostic.path());
+    try testing.expectEqualStrings("the scalar \"foo\" is tagged !!int but is not an integer", diagnostic.detail());
+
+    // Written as one, each tag reads.
+    try testing.expectEqual(31, try yaml.parseFromSliceLeaky(u8, testing.allocator, "!!int 0x1F", .{}));
+    try testing.expectEqual(1.0, try yaml.parseFromSliceLeaky(f64, testing.allocator, "!!float 1", .{}));
+    try testing.expectEqual(null, try yaml.parseFromSliceLeaky(?u8, testing.allocator, "!!null ~", .{}));
+    try testing.expect(try yaml.parseFromSliceLeaky(bool, testing.allocator, "!!bool True", .{}));
+}
+
 test "options: unknown fields skipped, duplicate keys keep the last" {
     const S = struct { a: u8 };
     try testing.expectEqual(1, (try yaml.parseFromSliceLeaky(S, testing.allocator, "a: 1\nz: [deep, {x: y}]\n", .{ .ignore_unknown_fields = true })).a);

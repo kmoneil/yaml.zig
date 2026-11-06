@@ -13,7 +13,9 @@
 //! a mapping for a struct (by field name) or a tagged union (one key, the
 //! field), a string for an enum (by name) and for a string type, which
 //! also takes the text of a number or a boolean. Anything else is
-//! `error.UnexpectedType`, and `ParseOptions.diagnostic` says where.
+//! `error.UnexpectedType`, and `ParseOptions.diagnostic` says where. So
+//! is a scalar whose text is not what its tag says, `!!int foo`, whatever
+//! it is read into.
 //!
 //! An alias builds its node again, so a document can say much more than
 //! it is long: nodes built through aliases are counted and held to
@@ -187,6 +189,7 @@ const Builder = struct {
     fn build(b: *Builder, comptime T: type, node: *const Node, depth: usize) ParseError!T {
         try b.checkLimits(node, depth);
         if (node.data == .alias) return b.buildAlias(T, node, depth);
+        if (node.data == .scalar) try b.checkScalar(node);
         if (T == Value) return b.buildValue(node, depth);
         return switch (@typeInfo(T)) {
             .void => b.buildVoid(node),
@@ -242,6 +245,26 @@ const Builder = struct {
     fn scalarOf(b: *const Builder, node: *const Node, comptime what: []const u8) ParseError![]const u8 {
         if (node.data != .scalar) return b.fail(node, error.UnexpectedType, "expected " ++ what);
         return node.data.scalar.value;
+    }
+
+    /// A key's text, to find a field by: a scalar, refused as `build`
+    /// refuses one if its text is not what its tag says.
+    fn nameOf(b: *const Builder, key: *const Node) ParseError![]const u8 {
+        const name = try b.scalarOf(key, "a field name");
+        try b.checkScalar(key);
+        return name;
+    }
+
+    /// Refuses a scalar whose text is not what its tag says, `!!int foo`:
+    /// the core tags for null, booleans, integers and floats each take
+    /// only their own forms (YAML 1.2.2, 10.3.2).
+    fn checkScalar(b: *const Builder, node: *const Node) ParseError!void {
+        const tag = node.tag orelse return;
+        const text = node.data.scalar.value;
+        if (schema.fitsTag(tag, text)) return;
+        return b.failDetail(node, error.UnexpectedType, "a scalar's text is not what its tag says", "the scalar \"{f}\" is tagged !!{s} but is not {s}", .{
+            std.zig.fmtString(cutUtf8(text, 40)), tag[schema.core_prefix.len..], tagSays(tag),
+        });
     }
 
     fn buildBool(b: *const Builder, node: *const Node) ParseError!bool {
@@ -388,7 +411,7 @@ const Builder = struct {
         var seen: [info.field_names.len]bool = @splat(false);
         for (pairs) |pair| {
             const key = pair.key.target();
-            const name = try b.scalarOf(key, "a field name");
+            const name = try b.nameOf(key);
             if (!try b.buildField(T, &out, &seen, name, pair.value, depth)) {
                 if (!b.options.ignore_unknown_fields) return b.unknownField(info.field_names, key, name, "no field of the struct has this name");
             }
@@ -420,6 +443,7 @@ const Builder = struct {
         for (pairs) |pair| {
             const key = pair.key.target();
             if (key.data != .scalar) return b.fail(key, error.UnexpectedType, "a map's keys are scalars, and this is a collection");
+            try b.checkScalar(key);
             const value = try b.buildNamed(T.yaml_map_value, pair.value, key.data.scalar.value, depth);
             const entry = out.map.getOrPutAssumeCapacityContext(key.data.scalar.value, out.context);
             if (!entry.found_existing) entry.key_ptr.* = try b.allocator.dupe(u8, key.data.scalar.value);
@@ -466,7 +490,7 @@ const Builder = struct {
         }
         const pairs = try b.pairsOf(node);
         if (pairs.len != 1) return b.fail(node, error.UnexpectedType, "a union is a mapping of one key, the field");
-        const name = try b.scalarOf(pairs[0].key.target(), "a field name");
+        const name = try b.nameOf(pairs[0].key.target());
         try b.enter(node);
         defer b.leave(node);
         inline for (info.field_names, info.field_types) |field, Field| {
@@ -634,6 +658,15 @@ fn editDistance(a: []const u8, b: []const u8) usize {
         }
     }
     return row[b.len];
+}
+
+/// What a scalar with one of the core scalar tags must be, as
+/// `checkScalar` says it.
+fn tagSays(tag: []const u8) []const u8 {
+    if (std.mem.eql(u8, tag, schema.tag.null)) return "null";
+    if (std.mem.eql(u8, tag, schema.tag.bool)) return "a boolean";
+    if (std.mem.eql(u8, tag, schema.tag.int)) return "an integer";
+    return "a float";
 }
 
 fn hasTag(node: *const Node, tag: []const u8) bool {

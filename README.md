@@ -66,7 +66,9 @@ A node fits a type by the tag the schema gives it: a boolean for
 `bool`, an integer for an integer type, a number for a float, null for
 an optional's null, a sequence for a slice, array or tuple, a mapping
 for a struct (by field name, defaults filled) or a tagged union (one
-key, the field), and a string for a string or an enum's name. A
+key, the field), and a string for a string or an enum's name. A scalar
+tagged `!!null`, `!!bool`, `!!int` or `!!float` must be written as one:
+`!!int foo` is refused, whatever it is read into. A
 mapping whose keys are not known at compile time (environment
 variables, say) goes in a `yaml.ArrayHashMap(T)`, which keeps their
 order. `parseFromSliceLeaky` builds into an allocator you free as a

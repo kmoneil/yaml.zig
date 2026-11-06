@@ -20,15 +20,19 @@ const std = @import("std");
 /// The schemas YAML 1.2.2 defines (chapter 10).
 pub const Schema = enum { failsafe, json, core };
 
+/// The prefix of every tag the schemas resolve to, which the `!!` handle
+/// stands for.
+pub const core_prefix = "tag:yaml.org,2002:";
+
 /// The tags the schemas resolve to, in full.
 pub const tag = struct {
-    pub const @"null" = "tag:yaml.org,2002:null";
-    pub const @"bool" = "tag:yaml.org,2002:bool";
-    pub const int = "tag:yaml.org,2002:int";
-    pub const float = "tag:yaml.org,2002:float";
-    pub const str = "tag:yaml.org,2002:str";
-    pub const seq = "tag:yaml.org,2002:seq";
-    pub const map = "tag:yaml.org,2002:map";
+    pub const @"null" = core_prefix ++ "null";
+    pub const @"bool" = core_prefix ++ "bool";
+    pub const int = core_prefix ++ "int";
+    pub const float = core_prefix ++ "float";
+    pub const str = core_prefix ++ "str";
+    pub const seq = core_prefix ++ "seq";
+    pub const map = core_prefix ++ "map";
 };
 
 /// The tag a plain scalar with no tag resolves to, or null when the
@@ -157,6 +161,17 @@ pub fn parseFloat(value: []const u8) ?f64 {
 /// The value of a scalar the core schema reads as a boolean.
 pub fn parseBool(value: []const u8) ?bool {
     return parseCoreBool(value);
+}
+
+/// Whether `value` is what the tag `scalar_tag` says it is: for null, a
+/// boolean, an integer or a float, one of the core schema's forms of it
+/// (which hold the JSON schema's); for any other tag, any text.
+pub fn fitsTag(scalar_tag: []const u8, value: []const u8) bool {
+    if (std.mem.eql(u8, scalar_tag, tag.null)) return isCoreNull(value);
+    if (std.mem.eql(u8, scalar_tag, tag.bool)) return parseCoreBool(value) != null;
+    if (std.mem.eql(u8, scalar_tag, tag.int)) return isCoreInt(value);
+    if (std.mem.eql(u8, scalar_tag, tag.float)) return isCoreFloat(value);
+    return true;
 }
 
 /// Whether two scalars with the same tag have the same value: by number
