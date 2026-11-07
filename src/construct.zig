@@ -62,7 +62,9 @@ pub const ParseOptions = struct {
     /// and a level takes about 1.9 KiB of stack in a Debug build and
     /// 0.75 KiB in a release one, more for a struct or array whose own
     /// size is large. The default's deepest documents need under 512 KiB
-    /// in Debug (a test holds them to it) and 200 KiB in release.
+    /// in Debug (a test holds them to it) and 200 KiB in release, built
+    /// with LLVM: Zig's own x86_64 backend, a Debug build's default on
+    /// Linux, takes more a level.
     max_depth: usize = 256,
     /// The most %TAG directives a document may have.
     max_tag_directives: usize = 64,

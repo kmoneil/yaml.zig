@@ -129,7 +129,8 @@ pub fn build(b: *std.Build) void {
     check_catalog.has_side_effects = true;
     test_step.dependOn(&check_catalog.step);
     const security_step = b.step("security", "Run the security suite and check its catalog (test/security)");
-    security_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = securityModule(b, target, optimize, mod) })).step);
+    // With LLVM, as addTests builds it: its stack test is LLVM's figure.
+    security_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = securityModule(b, target, optimize, mod), .use_llvm = true })).step);
     security_step.dependOn(&check_catalog.step);
 
     // zigvet (github.com/kmoneil/zigvet) reports code the compiler accepts
@@ -164,7 +165,13 @@ pub fn build(b: *std.Build) void {
 /// test/suite-skip.txt, failing on a regression or a listed check that
 /// now passes. Returns the harness, null when the data is not fetched.
 fn addTests(b: *std.Build, step: *std.Build.Step, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, yaml: *std.Build.Module) ?*std.Build.Step.Compile {
-    step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = yaml })).step);
+    // The unit tests and the security suite hold construction to what
+    // ParseOptions.max_depth and the guide say a level takes: the deepest
+    // document the defaults take, on a 512 KiB stack. Those figures are
+    // LLVM's, so these build with LLVM on every target: Zig's own x86_64
+    // backend, the default for a Debug build on Linux, takes more stack a
+    // level, and overflowed there.
+    step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = yaml, .use_llvm = true })).step);
     const examples_mod = b.createModule(.{
         .root_source_file = b.path("examples/all.zig"),
         .target = target,
@@ -172,7 +179,7 @@ fn addTests(b: *std.Build, step: *std.Build.Step, target: std.Build.ResolvedTarg
         .imports = &.{.{ .name = "yaml", .module = yaml }},
     });
     step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = examples_mod })).step);
-    step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = securityModule(b, target, optimize, yaml) })).step);
+    step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = securityModule(b, target, optimize, yaml), .use_llvm = true })).step);
     const suite_mod = b.createModule(.{
         .root_source_file = b.path("test/main.zig"),
         .target = target,
