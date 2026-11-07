@@ -248,8 +248,15 @@ reads.
 
 ## The yaml command
 
-Build it with `zig build -Doptimize=ReleaseSafe`; it lands in
-`zig-out/bin/yaml`. Homebrew packages start with the first release.
+Install it with Homebrew on macOS or Linux:
+
+```sh
+brew install kmoneil/tap/yaml
+```
+
+Each [release](https://github.com/kmoneil/yaml.zig/releases) also has
+the binary for Windows, and `zig build -Doptimize=ReleaseSafe` builds it
+from source into `zig-out/bin/yaml`.
 
 ```console
 $ yaml check config.yaml deploy.yaml
