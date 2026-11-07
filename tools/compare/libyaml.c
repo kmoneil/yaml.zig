@@ -1,5 +1,6 @@
 // libyaml MODE RUNS FILE: MODE events (parse to events) or load (a
-// document tree), or read. One warm-up, RUNS timed runs, the median in ms.
+// document tree), or read. One warm-up, RUNS timed runs, the median in ms;
+// RUNS 0, one run alone, its time.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -63,6 +64,12 @@ int main(int argc, char **argv) {
     fclose(f);
     if (!strcmp(argv[1], "read")) return 0;
     size_t (*fn)(const unsigned char *, size_t) = !strcmp(argv[1], "events") ? events : load;
+    if (runs == 0) {
+        double t = now_ms();
+        volatile size_t sink = fn(text, len);
+        printf("%.1f\n", now_ms() - t);
+        return 0;
+    }
     volatile size_t sink = fn(text, len);
     double times[64];
     for (int i = 0; i < runs; i++) {

@@ -101,6 +101,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = .fast,
         .imports = &.{.{ .name = "yaml", .module = bench_yaml }},
+        // Its `file` mode runs on malloc, as the libraries it is held to.
+        .link_libc = true,
     }) });
     const run_bench = b.addRunArtifact(bench);
     run_bench.addPassthruArgs();

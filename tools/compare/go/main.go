@@ -1,6 +1,6 @@
 // gobench MODE RUNS FILE: MODE node (a yaml.Node tree), any (generic
 // values), typed ([]Record), or read. One warm-up, RUNS timed runs, the
-// median in ms.
+// median in ms; RUNS 0, one run alone, its time.
 package main
 
 import (
@@ -57,6 +57,12 @@ func main() {
 		panic(err)
 	}
 	if os.Args[1] == "read" {
+		return
+	}
+	if runs == 0 {
+		t := time.Now()
+		run(os.Args[1], text)
+		fmt.Printf("%.1f\n", float64(time.Since(t).Microseconds())/1e3)
 		return
 	}
 	run(os.Args[1], text)

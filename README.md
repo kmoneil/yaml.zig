@@ -379,33 +379,37 @@ $ yaml from-json data.json > data.yaml
 ## Speed
 
 The bench's 4.9 MB of config records read by each library in its
-release build, on one machine (an M-series Mac, 2026-11-06, with other
+release build, on one machine (an M-series Mac, 2026-11-07, with other
 work running: times move by up to 10% run to run).
 `tools/compare/run.sh` builds every library at a pinned version and
 prints this table again:
 
-| Built | Library | ms | MB/s | Peak MB |
-| --- | --- | ---: | ---: | ---: |
-| events | **yaml.zig** | 21.3 | 228 | 3.9 |
-| events | libyaml 0.2.5 | 44.2 | 110 | 0.3 |
-| events | saphyr-parser 0.3.3 | 59.6 | 81 | 0.5 |
-| node tree | **yaml.zig** | 22.2 | 219 | 55.8 |
-| node tree | rapidyaml 0.16.0 | 15.9 | 305 | 146.7 |
-| node tree | libyaml 0.2.5 | 61.2 | 79 | 137.7 |
-| node tree | go-yaml v3.0.1 (yaml.Node) | 130.9 | 37 | 151.8 |
-| dynamic value | **yaml.zig** (Value) | 28.6 | 170 | 20.3 |
-| dynamic value | saphyr 0.3.3 | 77.2 | 63 | 78.9 |
-| dynamic value | js-yaml 5.5.0 | 76.9 | 63 | 304.2 |
-| dynamic value | go-yaml v3.0.1 (any) | 185.2 | 26 | 244.0 |
-| typed | **yaml.zig** | 29.1 | 167 | 18.6 |
-| typed | serde_yaml 0.9.34 | 75.1 | 65 | 82.9 |
-| typed | serde-saphyr 2.1.1 | 163.4 | 30 | 19.6 |
-| typed | go-yaml v3.0.1 | 167.7 | 29 | 224.0 |
+| Built | Library | ms | MB/s | 1st run ms | Peak MB |
+| --- | --- | ---: | ---: | ---: | ---: |
+| events | **yaml.zig** | 22.0 | 221 | 22.2 | 3.8 |
+| events | libyaml 0.2.5 | 47.0 | 103 | 47.5 | 0.3 |
+| events | saphyr-parser 0.3.3 | 62.3 | 78 | 61.9 | 0.4 |
+| node tree | **yaml.zig** | 18.7 | 260 | 21.6 | 55.7 |
+| node tree | rapidyaml 0.16.0 | 16.7 | 291 | 23.9 | 146.7 |
+| node tree | libyaml 0.2.5 | 63.5 | 76 | 64.9 | 137.7 |
+| node tree | go-yaml v3.0.1 (yaml.Node) | 140.7 | 34 | 141.9 | 148.0 |
+| dynamic value | **yaml.zig** (Value) | 27.4 | 177 | 29.0 | 20.9 |
+| dynamic value | saphyr 0.3.3 | 81.0 | 60 | 87.9 | 78.9 |
+| dynamic value | js-yaml 5.5.0 | 80.7 | 60 | 110.4 | 305.1 |
+| dynamic value | go-yaml v3.0.1 (any) | 188.1 | 26 | 194.3 | 245.4 |
+| typed | **yaml.zig** | 27.5 | 176 | 28.9 | 26.5 |
+| typed | serde_yaml 0.9.34 | 77.5 | 63 | 82.6 | 84.5 |
+| typed | serde-saphyr 2.1.1 | 173.6 | 28 | 174.6 | 19.7 |
+| typed | go-yaml v3.0.1 | 177.0 | 27 | 176.8 | 146.9 |
 
-Peak MB is the most a parse holds resident, less what reading the file
-does. yaml.zig runs on Zig's `smp_allocator`, the others on `malloc`;
-rapidyaml's tree leaves its scalars untyped and its keys unchecked for
-duplicates, where yaml.zig's resolves each tag and refuses an equal key.
+ms is the median of 11 runs after one to warm up. 1st run ms is a
+process that parses once, its memory and code cold, as a command that
+reads one file is: the median of 5 such processes. Peak MB is the most
+a parse holds resident, less what reading the file does. Every library
+takes its memory from malloc (or its runtime's collector), yaml.zig
+too, so a run is given again what the one before it freed. rapidyaml's
+tree leaves its scalars untyped and its keys unchecked for duplicates,
+where yaml.zig's resolves each tag and refuses an equal key.
 
 ## Limits for untrusted input
 

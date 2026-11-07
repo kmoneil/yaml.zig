@@ -4,8 +4,10 @@
 //! resident, in a process of its own.
 //! `zig build bench -- write PATH [records]`: the document, to a file.
 //! `zig build bench -- file STAGE RUNS PATH`: one stage over a file, one
-//! run to warm up and then RUNS, the median in ms on a line; `read` only
-//! reads the file. The interface of tools/compare's harnesses for other
+//! run to warm up and then RUNS, the median in ms on a line; with RUNS 0,
+//! one run alone, its time, as a process that parses once sees it; `read`
+//! only reads the file. Its memory comes from malloc, as the other
+//! libraries' does. The interface of tools/compare's harnesses for other
 //! libraries (t54).
 //!
 //! Each stage runs `runs` times (7 by default) over one document it
@@ -193,25 +195,33 @@ fn write(io: Io, args: []const []const u8) !void {
 }
 
 /// `file STAGE RUNS PATH`: `stage` over the file's text, a run to warm up
-/// and then RUNS, the median in ms; `read` stops once the file is read.
+/// and then RUNS, the median in ms; with RUNS 0, one run and no warm-up;
+/// `read` stops once the file is read.
+///
+/// On malloc, as every other library's harness is (or a garbage
+/// collector): what a run frees, the next is given again. On
+/// smp_allocator, which gives large blocks back to the system, each run
+/// had fresh pages to fault in, about 3,500 for compose (2026-11-07,
+/// t56), a cost the others pay on their first run only.
 fn timeFile(io: Io, args: []const []const u8) !void {
-    const gpa = std.heap.smp_allocator;
+    const gpa = std.heap.c_allocator;
     const runs = try std.fmt.parseInt(usize, args[3], 10);
     const text = try Io.Dir.cwd().readFileAlloc(io, args[4], gpa, .unlimited);
     if (std.mem.eql(u8, args[2], "read")) return;
     const stage = std.meta.stringToEnum(Stage, args[2]) orelse return error.UnknownStage;
-    if (stage == .stringify or runs == 0 or runs > 64) return error.Usage;
-    std.mem.doNotOptimizeAway(try run(stage, gpa, text, &.{}));
+    if (stage == .stringify or runs > 64) return error.Usage;
+    if (runs > 0) std.mem.doNotOptimizeAway(try run(stage, gpa, text, &.{}));
     var times: [64]u64 = undefined;
-    for (times[0..runs]) |*t| {
+    for (times[0..@max(runs, 1)]) |*t| {
         const start = Io.Clock.awake.now(io);
         std.mem.doNotOptimizeAway(try run(stage, gpa, text, &.{}));
         t.* = @intCast(start.durationTo(Io.Clock.awake.now(io)).nanoseconds);
     }
-    std.mem.sort(u64, times[0..runs], {}, std.sort.asc(u64));
+    const timed = times[0..@max(runs, 1)];
+    std.mem.sort(u64, timed, {}, std.sort.asc(u64));
     var buf: [64]u8 = undefined;
     var stdout = Io.File.stdout().writerStreaming(io, &buf);
-    try stdout.interface.print("{d:.1}\n", .{@as(f64, @floatFromInt(times[runs / 2])) / 1e6});
+    try stdout.interface.print("{d:.1}\n", .{@as(f64, @floatFromInt(timed[timed.len / 2])) / 1e6});
     try stdout.interface.flush();
 }
 

@@ -1,6 +1,7 @@
 // rustbench MODE RUNS FILE: MODE events (saphyr-parser), value (saphyr
 // Yaml), typed (serde_yaml), typed-saphyr (serde-saphyr), or read. One
-// warm-up, RUNS timed runs, the median in ms.
+// warm-up, RUNS timed runs, the median in ms; RUNS 0, one run alone, its
+// time.
 use saphyr::LoadableYamlNode;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -43,6 +44,12 @@ fn main() {
     let runs: usize = args[2].parse().unwrap();
     let text = std::fs::read_to_string(&args[3]).unwrap();
     if args[1] == "read" {
+        return;
+    }
+    if runs == 0 {
+        let t = Instant::now();
+        std::hint::black_box(run(&args[1], &text));
+        println!("{:.1}", t.elapsed().as_secs_f64() * 1e3);
         return;
     }
     let mut sink = run(&args[1], &text);

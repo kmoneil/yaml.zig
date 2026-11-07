@@ -1,5 +1,6 @@
 // ryml MODE RUNS FILE: MODE tree (parse_in_arena, a fresh tree a run)
-// or read. One warm-up, RUNS timed runs, the median in ms.
+// or read. One warm-up, RUNS timed runs, the median in ms; RUNS 0, one
+// run alone, its time.
 #define RYML_SINGLE_HDR_DEFINE_NOW
 #include "ryml.hpp"
 #include <algorithm>
@@ -22,6 +23,12 @@ int main(int argc, char **argv) {
     std::ifstream in(argv[3], std::ios::binary);
     std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     if (!std::strcmp(argv[1], "read")) return 0;
+    if (runs == 0) {
+        auto t = std::chrono::steady_clock::now();
+        volatile size_t sink = tree(text);
+        std::printf("%.1f\n", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count());
+        return 0;
+    }
     volatile size_t sink = tree(text);
     std::vector<double> times;
     for (int i = 0; i < runs; i++) {

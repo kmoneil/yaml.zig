@@ -9,9 +9,13 @@
 # toolchain is missing (cc, c++, go, cargo, node) is left out, and said.
 #
 # Each harness reads the file once, runs its stage once to warm up and
-# then RUNS times (11 by default), and prints the median in ms. Memory is
-# the peak resident size of one run less that of a run that only reads
-# the file. Times move by up to 10% from run to run on a busy machine.
+# then RUNS times (11 by default), and prints the median in ms. The 1st
+# run column is a process that parses once: the median of 5 processes
+# each timing its only run, memory and code all cold. Memory is the peak
+# resident size of one run less that of a run that only reads the file.
+# Every library takes its memory from malloc (or its runtime's
+# collector), yaml.zig too. Times move by up to 10% from run to run on a
+# busy machine.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
@@ -32,7 +36,7 @@ fetch() {
 
 # The document, and yaml.zig built ReleaseFast as a consumer ships it.
 (cd "$root" && zig build bench -- write "$doc")
-(cd "$work" && zig build-exe -O ReleaseFast --dep yaml -Mroot="$root/tools/bench.zig" -Myaml="$root/src/root.zig" -femit-bin="$work/bin/yaml-zig")
+(cd "$work" && zig build-exe -O ReleaseFast -lc --dep yaml -Mroot="$root/tools/bench.zig" -Myaml="$root/src/root.zig" -femit-bin="$work/bin/yaml-zig")
 
 if have cc; then
   fetch https://github.com/yaml/libyaml/releases/download/0.2.5/yaml-0.2.5.tar.gz "$work/dl/libyaml.tar.gz" c642ae9b75fee120b2d96c712538bd2cf283228d2337df2cf2988e3c02678ef4
@@ -76,23 +80,25 @@ peak() {
 
 size=$(wc -c < "$doc" | tr -d ' ')
 # row STAGE LIBRARY MODE COMMAND...: the harness run as `COMMAND MODE
-# RUNS FILE`, a table row of its median, throughput and memory.
+# RUNS FILE`, a table row of its median, throughput, a first run's time
+# (`COMMAND MODE 0 FILE` in 5 processes, the median) and memory.
 row() {
   stage=$1 library=$2 mode=$3
   shift 3
   ms=$("$@" "$mode" "$runs" "$doc")
+  first=$(for i in 1 2 3 4 5; do "$@" "$mode" 0 "$doc"; done | sort -n | sed -n 3p)
   base=$(peak "$@" read 1 "$doc")
   top=$(peak "$@" "$mode" 1 "$doc")
-  awk -v s="$stage" -v l="$library" -v ms="$ms" -v n="$size" -v p="$top" -v b="$base" \
-    'BEGIN { printf "| %s | %s | %.1f | %.0f | %.1f |\n", s, l, ms, n / ms / 1e3, (p - b) / 1048576 }'
+  awk -v s="$stage" -v l="$library" -v ms="$ms" -v f="$first" -v n="$size" -v p="$top" -v b="$base" \
+    'BEGIN { printf "| %s | %s | %.1f | %.0f | %.1f | %.1f |\n", s, l, ms, n / ms / 1e3, f, (p - b) / 1048576 }'
 }
 
 b=$work/bin
 z="$b/yaml-zig file"
 echo "$size bytes, the median of $runs runs; $(uname -sm), $(date -u +%Y-%m-%d)"
 echo
-echo "| Built | Library | ms | MB/s | Peak MB |"
-echo "| --- | --- | ---: | ---: | ---: |"
+echo "| Built | Library | ms | MB/s | 1st run ms | Peak MB |"
+echo "| --- | --- | ---: | ---: | ---: | ---: |"
 row events "**yaml.zig**" parse $z
 [ ! -x "$b/libyaml" ] || row events "libyaml 0.2.5" events "$b/libyaml"
 [ ! -x "$b/rust" ] || row events "saphyr-parser 0.3.3" events "$b/rust"
