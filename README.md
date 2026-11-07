@@ -1,10 +1,27 @@
 # yaml.zig
 
-A YAML 1.2.2 library for Zig: read YAML into Zig types or a dynamic
-`Value`, write Zig values as YAML, and work at any stage between, the
-tokens, the events, or the node graph. It passes the whole
-[yaml-test-suite](https://github.com/yaml/yaml-test-suite), held there
-by `zig build test`:
+[![ci](https://github.com/kmoneil/yaml.zig/actions/workflows/ci.yml/badge.svg)](https://github.com/kmoneil/yaml.zig/actions/workflows/ci.yml)
+
+YAML for Zig. Read it into your structs, write your values back out,
+and check files from the command line.
+
+- **Complete.** All of YAML 1.2.2. It passes the whole
+  [yaml-test-suite](https://github.com/yaml/yaml-test-suite): every
+  valid file read correctly, every invalid file refused.
+- **Fast.** A little faster than rapidyaml (C++) at building a document
+  tree, and three to four times faster than serde_yaml, saphyr and
+  js-yaml at reading into values. [Numbers below.](#speed)
+- **Safe on files you did not write.** Alias bombs, deep nesting, hash
+  flooding and merge fan-out are all capped, and no tag can run code.
+  Every known attack on YAML libraries is in the
+  [security catalog](test/security/CATALOG.md), with the test that
+  covers it or why it does not apply.
+- **Clear errors.** Line, column, the path to the value, and a hint:
+  `4:3: server: unknown field "tag"; expected one of: hosts, tags, tls,
+  root (did you mean "tags"?)`.
+- **A command-line tool.** `yaml check`, `yaml get`, `yaml json`.
+- **Python, coming soon.** [pyyaml-zig](#python-coming-soon) puts this
+  parser behind PyYAML's API.
 
 <!-- suite -->
 | check | cases | passing |
@@ -19,15 +36,15 @@ by `zig build test`:
 (yaml-test-suite data-2022-01-17; written by `zig build suite -- readme`.)
 <!-- /suite -->
 
-## Use
+## Install
 
-Zig 0.17.1. `zig fetch` adds the package to your `build.zig.zon` (put
-`#<tag>` after the URL for a release):
+Zig 0.17.1. Add the package to your `build.zig.zon`:
 
 ```sh
 zig fetch --save=yaml git+https://github.com/kmoneil/yaml.zig
 ```
 
+Put `#v0.1.0` (or another release tag) after the URL to pin a release.
 Then in `build.zig`:
 
 ```zig
@@ -35,7 +52,7 @@ const yaml = b.dependency("yaml", .{ .target = target, .optimize = optimize });
 exe.root_module.addImport("yaml", yaml.module("yaml"));
 ```
 
-### Read a document into a struct
+## Read YAML into a struct
 
 <!-- example: examples/quick_start.zig -->
 ```zig
@@ -67,19 +84,15 @@ test "quick start: read a document into a struct" {
 }
 ```
 
-A node fits a type by the tag the schema gives it: a boolean for
-`bool`, an integer for an integer type, a number for a float, null for
-an optional's null, a sequence for a slice, array or tuple, a mapping
-for a struct (by field name, defaults filled) or a tagged union (one
-key, the field), and a string for a string or an enum's name. A scalar
-tagged `!!null`, `!!bool`, `!!int` or `!!float` must be written as one:
-`!!int foo` is refused, whatever it is read into. A
-mapping whose keys are not known at compile time (environment
-variables, say) goes in a `yaml.ArrayHashMap(T)`, which keeps their
-order. `parseFromSliceLeaky` builds into an allocator you free as a
-whole.
+Fields you leave out of the file take their defaults. Booleans,
+integers, floats, strings, enums, optionals, slices, arrays, nested
+structs and tagged unions all work. For keys you don't know ahead of
+time, such as environment variables, use `yaml.ArrayHashMap(T)`: it
+keeps them in order.
 
-### A document of any shape
+## Read YAML of any shape
+
+When you don't have a type for it, read a `yaml.Value`:
 
 <!-- example: examples/value.zig -->
 ```zig
@@ -107,7 +120,7 @@ test "a document of any shape: Value" {
 }
 ```
 
-### Write a value as YAML
+## Write YAML
 
 <!-- example: examples/stringify.zig -->
 ```zig
@@ -143,81 +156,14 @@ test "write a value as YAML, and read it back" {
 }
 ```
 
-`stringify` writes to any `*std.Io.Writer`; options choose block or
-flow style, indentation, line width, and whether a struct's null
-optional fields are written.
+Strings that would read back as something else get quoted: `1.10`
+would become a number, and `yes` a boolean to older YAML readers.
+`stringify` writes to any `*std.Io.Writer`, in block or flow style,
+with the indentation and line width you choose.
 
-### A field of more than one shape
+## Errors
 
-A type can read itself, as std.json's `jsonParse` lets one: its `pub fn
-yamlParse(c: yaml.Construction) yaml.ParseError!@This()` gets the node
-it is built from, and builds the node's parts as other types with the
-path, limits and errors kept (`c.build`, `c.buildNamed`,
-`c.buildIndexed`, `c.fail`, `c.failExpected`). Here a command is a line
-for the shell or a program and its arguments:
-
-<!-- example: examples/hook.zig -->
-```zig
-const std = @import("std");
-const yaml = @import("yaml");
-
-const Exec = struct { argv: []const []const u8, cwd: ?[]const u8 = null };
-
-/// A command: a line for the shell, or a program and its arguments.
-const Run = union(enum) {
-    shell: []const u8,
-    exec: Exec,
-
-    /// Either shape, by the kind of node it is written as.
-    pub fn yamlParse(c: yaml.Construction) yaml.ParseError!Run {
-        return switch (c.node.data) {
-            .scalar => .{ .shell = try c.build([]const u8, c.node) },
-            .mapping => .{ .exec = try c.build(Exec, c.node) },
-            else => c.failExpected(c.node, "a command, a string or a mapping"),
-        };
-    }
-
-    /// Written as the shape it is read from.
-    pub fn yamlStringify(r: Run, s: *yaml.Stringification) yaml.StringifyError!void {
-        switch (r) {
-            .shell => |line| try s.write(line),
-            .exec => |exec| try s.write(exec),
-        }
-    }
-};
-
-test "a type that reads itself: yamlParse" {
-    const Job = struct { steps: []const Run };
-    const text =
-        \\steps:
-        \\- make test
-        \\- {argv: [python, train.py], cwd: src}
-        \\
-    ;
-    const parsed = try yaml.parseFromSlice(Job, std.testing.allocator, text, .{});
-    defer parsed.deinit();
-    try std.testing.expectEqualStrings("make test", parsed.value.steps[0].shell);
-    try std.testing.expectEqualStrings("train.py", parsed.value.steps[1].exec.argv[1]);
-
-    // And written so it reads back the same.
-    const written = try yaml.stringifyAlloc(std.testing.allocator, parsed.value, .{});
-    defer std.testing.allocator.free(written);
-    const again = try yaml.parseFromSlice(Job, std.testing.allocator, written, .{});
-    defer again.deinit();
-    try std.testing.expectEqualDeep(parsed.value, again.value);
-}
-```
-
-Its `pub fn yamlStringify(self: @This(), s: *yaml.Stringification)
-yaml.StringifyError!void` writes it back: one value in its place, any
-that `stringify` writes (`s.write`).
-
-### Errors say where, and why
-
-An error names the path to the value and what it found: `server:
-unknown field "tag"; expected one of: hosts, tags, tls, root (did you
-mean "tags"?)`, `server.hosts[2]: expected a string, found a mapping`,
-`server: missing field "hosts"`.
+Pass a `yaml.Diagnostic` to find out where and why parsing failed:
 
 <!-- example: examples/errors.zig -->
 ```zig
@@ -250,83 +196,60 @@ test "an error says where and why" {
 }
 ```
 
-### The stages: tokens, events, nodes
+Put the file name in front and it reads like a compiler error. Unknown
+fields list the fields there are and suggest the nearest; a missing
+field names the mapping that lacks it.
 
-`yaml.Scanner` gives tokens, `yaml.Parser` events, and `yaml.Composer`
-a graph of nodes a document at a time, each tag resolved and each
-alias pointing at its anchor's node:
+## Merge keys
 
-<!-- example: examples/documents.zig -->
+Docker Compose files, GitLab CI files and many others share settings
+with `<<: *defaults`. YAML 1.2 dropped this, so it is off by default;
+turn it on with `merge_keys`:
+
+<!-- example: examples/merge_keys.zig -->
 ```zig
 const std = @import("std");
 const yaml = @import("yaml");
 
-test "a stream of documents, with anchors and aliases" {
+test "merge keys: shared settings, as compose files write them" {
     const text =
-        \\--- &base
-        \\image: alpine
-        \\retries: 3
-        \\--- [a, b]
+        \\defaults: &defaults
+        \\  image: alpine
+        \\  restart: always
+        \\services:
+        \\  web:
+        \\    <<: *defaults
+        \\    port: 8080
+        \\  worker:
+        \\    <<: *defaults
+        \\    restart: on-failure
         \\
     ;
-    var composer: yaml.Composer = .init(std.testing.allocator, text, .{});
-    defer composer.deinit();
+    const Service = struct { image: []const u8, restart: []const u8, port: ?u16 = null };
+    const Compose = struct { defaults: Service, services: yaml.ArrayHashMap(Service) };
 
-    // Each document is a graph of nodes, tags resolved by the schema.
-    const first = (try composer.next()).?;
-    try std.testing.expectEqualStrings("base", first.root.anchor.?);
-    try std.testing.expectEqualStrings("tag:yaml.org,2002:int", first.root.data.mapping.pairs[1].value.tag.?);
+    // YAML 1.2 dropped `<<`, but most tools still apply it: turn it on.
+    const parsed = try yaml.parseFromSlice(Compose, std.testing.allocator, text, .{ .merge_keys = true });
+    defer parsed.deinit();
 
-    const second = (try composer.next()).?;
-    try std.testing.expectEqual(2, second.root.data.sequence.items.len);
-    try std.testing.expectEqual(null, try composer.next());
+    const worker = parsed.value.services.get("worker").?;
+    try std.testing.expectEqualStrings("alpine", worker.image); // merged in
+    try std.testing.expectEqualStrings("on-failure", worker.restart); // its own key wins
+    try std.testing.expectEqual(8080, parsed.value.services.get("web").?.port);
 }
 ```
 
-`yaml.Emitter` writes events back as YAML, keeping each scalar's style
-where its text allows and quoting where not:
+## More
 
-<!-- example: examples/events.zig -->
-```zig
-const std = @import("std");
-const yaml = @import("yaml");
+The [guide](docs/guide.md) covers types that parse themselves, the
+scanner, parser, composer and emitter under `parseFromSlice`, encodings
+and schemas, and how YAML 1.2 differs from the YAML 1.1 that PyYAML
+reads.
 
-test "events in, YAML out: reformat a stream" {
-    const gpa = std.testing.allocator;
-    const text = "{name: web,   ports: [80,443]}\n";
+## The yaml command
 
-    var parser: yaml.Parser = .init(gpa, text);
-    defer parser.deinit();
-    var out: std.Io.Writer.Allocating = .init(gpa);
-    defer out.deinit();
-    var emitter: yaml.Emitter = .init(gpa, &out.writer, .{});
-    defer emitter.deinit();
-
-    // Pass each event on, a flow collection made block on the way.
-    while (true) {
-        var event = try parser.next();
-        switch (event.data) {
-            .mapping_start, .sequence_start => |*c| c.flow = false,
-            else => {},
-        }
-        try emitter.emit(event);
-        if (event.data == .stream_end) break;
-    }
-    try std.testing.expectEqualStrings(
-        \\name: web
-        \\ports:
-        \\- 80
-        \\- 443
-        \\
-    , out.written());
-}
-```
-
-## The `yaml` command
-
-`zig build` installs `yaml` in `zig-out/bin`: the library as a tool, to
-check YAML files, read a value out of one, and convert between YAML and
-JSON.
+Build it with `zig build -Doptimize=ReleaseSafe`; it lands in
+`zig-out/bin/yaml`. Homebrew packages start with the first release.
 
 ```console
 $ yaml check config.yaml deploy.yaml
@@ -337,60 +260,49 @@ $ yaml get '.servers[0].name' config.yaml
 web
 $ yaml get --json .flags config.yaml
 {"debug":true,"ratio":0.5}
-$ yaml json stream.yaml
-{"a":1}
-["x","y"]
-$ yaml from-json data.json > data.yaml
+$ yaml json --merge-keys compose.yaml | jq .services
 ```
 
-- `yaml check FILE...` reads every document of each file, and reports
-  each file that is not YAML as `file:line:column: message`, the line,
-  and a caret under the column (a duplicate key is one). `--format json`
-  writes the findings as a JSON array instead.
-- `yaml get PATH FILE` prints the value at a path, `.` for the whole
-  document, `.key`, `.["a key"]`, `[n]` in any order, as YAML or with
-  `--json` as JSON. `--document N` picks one of a stream's documents.
-- `yaml json FILE` prints each document as JSON, one a line, or indented
-  with `--indent N`; `yaml from-json FILE` prints JSON as YAML.
-- `yaml events FILE` prints the events a file reads to, in the
-  yaml-test-suite's notation.
-- `--schema`, `--duplicate-keys keep` and `--max-depth` set the library's
-  options, and `--merge-keys` applies YAML 1.1's merge key for `get` and
-  `json`; a file named `-` is standard input. The exit status is 0 on
-  success, 1 when a file is not YAML (or a path has no value), 2 on a
-  usage error or a file that could not be read. `yaml --help` says all.
-- `yaml skill` prints a skill for AI coding agents: each command with an
-  example, the errors seen most and their fixes. `yaml skill --install
-  ~/.claude/skills` (or another agent's skills directory) installs a
-  stub that has the agent run `yaml skill`, so it never goes out of
-  date. A test runs every example in it.
+- `yaml check FILE...` reports each file that is not valid YAML, with
+  the line, the column and a caret. `--format json` is for tools and CI.
+- `yaml get PATH FILE` prints one value, as YAML or with `--json` as
+  JSON. A path looks like `.servers[0].name` or `.["a key"]`.
+- `yaml json FILE` converts YAML to JSON, and `yaml from-json FILE`
+  converts back.
+- `yaml events FILE` shows how a file parses.
+- `--merge-keys`, `--schema`, `--duplicate-keys keep` and `--max-depth`
+  set the library's options. A file named `-` is standard input.
+- `yaml skill` prints a guide for AI coding agents, every example in it
+  tested; `yaml skill --install DIR` installs it.
 
-## What it reads
+The exit status is 0 on success, 1 when a file is not YAML or a path
+has no value, and 2 for a usage error. `yaml --help` lists everything.
 
-- YAML 1.2.2, all of it: block and flow collections, the five scalar
-  styles, anchors and aliases, tags with `%TAG` shorthands, `%YAML`,
-  streams of documents, YAML 1.2's JSON-like flow rules.
-- UTF-8, UTF-16 and UTF-32, either byte order, with or without a byte
-  order mark (`parseFromSlice` decodes them; `yaml.encoding.toUtf8` for
-  the lower stages).
-- Schemas: core (the default: `null`, `~`, `true`, `0x1F`, `.inf` and
-  so on), JSON (strict: anything else plain is an error), and failsafe
-  (all strings). `ParseOptions.schema` chooses.
-- Keys are equal by value under the schema (`1` and `0x1` are one key),
-  and a mapping with two equal keys is refused unless
-  `duplicate_keys = .keep` (a struct field then takes the last).
-- YAML 1.1's merge key, `<<: *base`, which YAML 1.2 dropped and most
-  readers still apply, when asked for: `ParseOptions.merge_keys`. The
-  mapping's own keys win, then the merged mappings' in order, and a
-  merged node counts toward `max_alias_nodes` as an alias's does.
+## Python (coming soon)
+
+pyyaml-zig will put this parser behind PyYAML's safe API, so switching
+is a one-line change:
+
+```python
+import pyyaml_zig as yaml  # planned: not on PyPI yet
+
+with open("config.yaml") as f:
+    config = yaml.safe_load(f)
+```
+
+Like the Zig library, it will read YAML 1.2 by default, refuse
+duplicate keys, and cap alias bombs.
+
+Why it should be fast: on the 4.9 MB file used for the speed table
+below, PyYAML takes 1.24 seconds with its C loader (libyaml) and 5.6
+seconds without it. Python's own `json.loads` builds the same objects
+from JSON in 18 ms. PyYAML spends most of its time building values one
+Python call at a time; pyyaml-zig will build them in native code.
 
 ## Speed
 
-The bench's 4.9 MB of config records read by each library in its
-release build, on one machine (an M-series Mac, 2026-11-07, with other
-work running: times move by up to 10% run to run).
-`tools/compare/run.sh` builds every library at a pinned version and
-prints this table again:
+Reading a 4.9 MB file of config records, each library in its release
+build, on an M-series Mac:
 
 | Built | Library | ms | MB/s | 1st run ms | Peak MB |
 | --- | --- | ---: | ---: | ---: | ---: |
@@ -410,68 +322,51 @@ prints this table again:
 | typed | serde-saphyr 2.1.1 | 180.6 | 27 | 172.0 | 19.7 |
 | typed | go-yaml v3.0.1 | 174.6 | 28 | 174.8 | 146.9 |
 
-ms is the median of 11 runs after one to warm up. 1st run ms is a
-process that parses once, its memory and code cold, as a command that
-reads one file is: the median of 5 such processes. Peak MB is the most
-a parse holds resident, less what reading the file does. Every library
-takes its memory from malloc (or its runtime's collector), yaml.zig
-too, so a run is given again what the one before it freed. rapidyaml's
-tree leaves its scalars untyped and its keys unchecked for duplicates,
-where yaml.zig's resolves each tag and refuses an equal key.
+- **ms** is the median of 11 runs after a warm-up. **1st run ms** is a
+  fresh process that parses once, as a command-line tool does. **Peak
+  MB** is the most memory a parse holds.
+- Every library allocates through malloc (or its runtime's garbage
+  collector), yaml.zig included.
+- rapidyaml's tree leaves scalars untyped and doesn't check for
+  duplicate keys; yaml.zig's does both.
+- Times vary by up to 10% between runs. `tools/compare/run.sh` builds
+  every library at a pinned version and prints this table again.
 
-## Limits for untrusted input
+## Safety
 
-| Limit | Default | Where |
+| Limit | Default | Option |
 | --- | ---: | --- |
-| Nodes built through aliases or merge keys (a "billion laughs" document) | 1,000,000 | `ParseOptions.max_alias_nodes` |
-| Depth construction goes into a document | 256 | `ParseOptions.max_depth` |
+| Nodes built through aliases or merge keys | 1,000,000 | `ParseOptions.max_alias_nodes` |
+| Nesting depth | 256 | `ParseOptions.max_depth` |
 | Collections open at once in the scanner | 10,000 | `Scanner.max_depth`, `Composer.Options.max_depth` |
-| %TAG directives in a document | 64 | `ParseOptions.max_tag_directives`, `Composer.Options.max_tag_directives`, `Parser.max_tag_directives` |
-| A cyclic document built into a value | refused | `error.Cycle` |
+| `%TAG` directives in a document | 64 | `ParseOptions.max_tag_directives` |
+| A document whose aliases form a cycle, read into a value | refused | `error.Cycle` |
 
-Mapping keys and anchor names, which come from the input, are kept in
-hash maps seeded from a hash of the input, so keys built to collide
-cost what any keys do. A tag is resolved by looking through its
-document's %TAG directives, so their number is held too.
+Keys and anchor names go into hash maps seeded from a hash of the
+input, so keys crafted to collide cost no more than any others. The
+[security catalog](test/security/CATALOG.md) lists every known attack on
+YAML libraries (alias expansion, deep nesting, hash flooding, hangs,
+code execution through tags, type confusion, encodings, injection) and
+the test that shows yaml.zig holds up. `zig build security` runs them.
 
-Every known attack on a YAML library, and where this one stands on it
-(a test that proves the defence, a card, or why it does not apply), is
-a row of [test/security/CATALOG.md](test/security/CATALOG.md): alias
-expansion, depth, hash flooding, hangs, code execution through tags,
-type confusion, numbers, encodings, injection into what is written, and
-input in diagnostics. `zig build security` runs its tests and checks it.
+## Development
 
-Nothing recurses on the input's depth but construction, which is held
-to `max_depth`. Each level, a collection or a pointer followed, takes
-about 1.9 KiB of stack in a Debug build and 0.75 KiB in a release one,
-so the default needs under 512 KiB in Debug (a thread's default stack
-on macOS) and 200 KiB in release. On a smaller stack, lower
-`max_depth`.
-
-## Build
-
-- `zig build test`: unit tests, the examples above, the yaml-test-suite
-  checks with their ratchet (`test/suite-skip.txt`), seeded runs of the
-  fuzz targets, zigvet and gnarl. zigvet and gnarl come from the PATH
-  (github.com/kmoneil/zigvet, github.com/kmoneil/gnarl; gnarl at the
-  release `complexity.zon` names).
-- `zig build test-release`: the unit tests, the examples and the suite
-  with the library built ReleaseSafe and ReleaseFast, where a panic in
-  Debug is one or undefined behaviour; `zig build test test-release`
-  runs all three modes.
-- `zig build security`: the security suite (test/security) and its
-  catalog, every row's test there and every test in a row; `zig build
-  test` runs both too.
-- `zig build suite`: the suite's counts; `-- show <case>`,
-  `-- show-emit <case>`, `-- errors`, `-- list [--all]`, `-- readme`.
-- `zig build fuzz`: the fuzz targets' seeded runs, `--fuzz` to fuzz.
-- `zig build docs`: the API reference into `zig-out/docs`.
-- `tools/compare/run.sh`: the Speed table, each library built at a
-  pinned version and run on the same document. It needs the network and
-  a C and C++ compiler, Go, Rust and Node; one missing is left out.
-- `zig build doc-examples`: check this README's examples against
-  `examples/` (`-- --fix` to rewrite them).
-- `zig build fmt`: format.
+- `zig build test`: the unit tests, the examples in this README and the
+  guide, the yaml-test-suite, the `yaml` command end to end, the fuzz
+  targets' seeds, and the [zigvet](https://github.com/kmoneil/zigvet)
+  and [gnarl](https://github.com/kmoneil/gnarl) checks (install both
+  from their releases; gnarl at the version `complexity.zon` names).
+- `zig build test-release`: the tests again, in ReleaseSafe and
+  ReleaseFast.
+- `zig build security`: the security tests and their catalog.
+- `zig build suite`: the yaml-test-suite's counts; `-- show <case>` for
+  one case.
+- `zig build fuzz --fuzz`: fuzz.
+- `zig build docs`: the API reference, in `zig-out/docs`.
+- `zig build doc-examples -- --fix`: copy `examples/` into this README
+  and the guide.
+- `tools/compare/run.sh`: rerun the speed table (needs a C and C++
+  compiler, Go, Rust and Node).
 
 ## License
 

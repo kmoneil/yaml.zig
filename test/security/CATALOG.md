@@ -61,14 +61,14 @@ and a NUL byte in a block scalar looped forever.
 | CPX-02 | Many %TAG directives, each tag resolved by a scan of them | CWE-407 | ParseOptions.max_tag_directives, 64 a document (t29) | test/security/resources_test.zig: security: CWE-407 %TAG directives past max_tag_directives are refused ; src/Parser_test.zig: a document may have max_tag_directives %TAG directives, and no more | covered |
 | CPX-03 | A large mapping's check for duplicate keys | CWE-407 | Past 8 keys, a seeded hash set | src/Composer_test.zig: duplicate keys in a mapping big enough to use the key set, and keeping them | covered |
 | CPX-04 | Implicit keys held open across a long line | CWE-400, CWE-407 | An implicit key is one line and at most 1024 characters (YAML 1.2.2, 7.4.2) | src/Scanner_test.zig: an implicit key is one line and at most 1024 characters | covered |
-| CPX-05 | Crafted input that burns CPU (found by fuzzing in others) | CWE-407; CVE-2019-11254 (Kubernetes, fixed by go-yaml v2.2.8) | Fuzz targets seeded in zig build test; longer runs with `zig build fuzz --fuzz` | src/fuzz_test.zig: fuzz: parse: any input, events that nest, no leak | later t26 |
+| CPX-05 | Crafted input that burns CPU (found by fuzzing in others) | CWE-407; CVE-2019-11254 (Kubernetes, fixed by go-yaml v2.2.8) | Fuzz targets seeded in zig build test; longer runs with `zig build fuzz --fuzz` | src/fuzz_test.zig: fuzz: parse: any input, events that nest, no leak | covered |
 
 ## Hangs
 
 | ID | Attack | Source | Defense | Test | Status |
 |---|---|---|---|---|---|
 | HANG-01 | Input that makes the scanner loop forever | CWE-835 | Each loop moves or refuses; found so far: a NUL byte in a block scalar (t43, by fuzzing), a flow mapping open at the input's end (t20) | test/security/resources_test.zig: security: CWE-835 inputs that once looped forever end ; src/Scanner_test.zig: a flow mapping left open ends at the input's end (found by fuzzing) ; src/Scanner_test.zig: block scalar errors (suite 2G84, 5LLU, S98Z, W9L4, Y79Y/000) | covered |
-| HANG-02 | Hangs, crashes and leaks not found yet | CWE-835, CWE-400, CWE-401 | Four fuzz targets, seeded in zig build test in all three modes; longer runs with `zig build fuzz --fuzz` | src/fuzz_test.zig: fuzz: parse: any input, events that nest, no leak ; src/fuzz_test.zig: fuzz: construct: a Value built is stringified and read back the same ; src/fuzz_test.zig: fuzz: typed: a struct of every kind of field built, stringified and read back the same ; src/fuzz_test.zig: fuzz: emit: what parses, emitted, reads back the same | later t26 |
+| HANG-02 | Hangs, crashes and leaks not found yet | CWE-835, CWE-400, CWE-401 | Four fuzz targets, seeded in zig build test in all three modes; longer runs with `zig build fuzz --fuzz` | src/fuzz_test.zig: fuzz: parse: any input, events that nest, no leak ; src/fuzz_test.zig: fuzz: construct: a Value built is stringified and read back the same ; src/fuzz_test.zig: fuzz: typed: a struct of every kind of field built, stringified and read back the same ; src/fuzz_test.zig: fuzz: emit: what parses, emitted, reads back the same | covered |
 
 ## Deserialization and types
 

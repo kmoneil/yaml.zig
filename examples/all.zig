@@ -7,6 +7,7 @@ test {
     _ = @import("value.zig");
     _ = @import("stringify.zig");
     _ = @import("errors.zig");
+    _ = @import("merge_keys.zig");
     _ = @import("hook.zig");
     _ = @import("documents.zig");
     _ = @import("events.zig");
