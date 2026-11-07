@@ -217,7 +217,6 @@ noinline fn growEvents(r: *Reader) Error!void {
     try r.events.ensureUnusedCapacity(r.s.gpa, batch);
 }
 
-
 /// A scalar token's event, with the properties before it, if any.
 fn emitScalarWith(r: *Reader, token: Scanner.Token, props: ?Props) Error!void {
     const e = scalarEvent(token, props);

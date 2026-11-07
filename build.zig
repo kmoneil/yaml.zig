@@ -96,14 +96,17 @@ pub fn build(b: *std.Build) void {
     // -Doptimize says, as a consumer ships it. Not in `test`: its numbers
     // are read, not checked.
     const bench_yaml = b.createModule(.{ .root_source_file = b.path("src/root.zig"), .target = target, .optimize = .fast });
-    const bench = b.addExecutable(.{ .name = "bench", .root_module = b.createModule(.{
-        .root_source_file = b.path("tools/bench.zig"),
-        .target = target,
-        .optimize = .fast,
-        .imports = &.{.{ .name = "yaml", .module = bench_yaml }},
-        // Its `file` mode runs on malloc, as the libraries it is held to.
-        .link_libc = true,
-    }) });
+    const bench = b.addExecutable(.{
+        .name = "bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/bench.zig"),
+            .target = target,
+            .optimize = .fast,
+            .imports = &.{.{ .name = "yaml", .module = bench_yaml }},
+            // Its `file` mode runs on malloc, as the libraries it is held to.
+            .link_libc = true,
+        }),
+    });
     const run_bench = b.addRunArtifact(bench);
     run_bench.addPassthruArgs();
     run_bench.has_side_effects = true;
