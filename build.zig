@@ -82,6 +82,10 @@ pub fn build(b: *std.Build) void {
     if (b.option([]const u8, "python-include", "Python's include directory, for pyyaml-zig (zig build python)")) |include| {
         const python_c = b.addTranslateC(.{ .root_source_file = b.path("python/src/python.h"), .target = target, .optimize = optimize, .link_libc = true });
         python_c.addIncludePath(.{ .cwd_relative = include });
+        // Translating needs libc's headers; the extension calls nothing in
+        // libc, so the translated module links none.
+        const python_mod = python_c.createModule();
+        python_mod.link_libc = false;
         const ext_mod = b.createModule(.{
             .root_source_file = b.path("python/src/ext.zig"),
             .target = target,
@@ -91,7 +95,7 @@ pub fn build(b: *std.Build) void {
             .strip = optimize != .debug,
             .imports = &.{
                 .{ .name = "yaml", .module = mod },
-                .{ .name = "python", .module = python_c.createModule() },
+                .{ .name = "python", .module = python_mod },
             },
         });
         ext_mod.addOptions("build_options", build_options);

@@ -70,18 +70,25 @@ jobs:
           TAG: ${{ matrix.tag }}
         run: python -I tools/python_wheel.py "$TAG"
       - name: pip installs it, and the tests pass against it
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
-          python -m venv "$RUNNER_TEMP/venv"
+          # The x86_64 macOS Python on the arm64 runner is a universal
+          # build, which runs as arm64 unless asked: pip would look for an
+          # arm64 wheel.
+          run=()
+          case "$TARGET" in x86_64-macos*) run=(arch -x86_64) ;; esac
+          "${run[@]}" python -m venv "$RUNNER_TEMP/venv"
           py="$RUNNER_TEMP/venv/bin/python"
           [ -x "$py" ] || py="$RUNNER_TEMP/venv/Scripts/python"
-          "$py" -m pip install --no-index --find-links zig-out/wheels pyyaml-zig
+          "${run[@]}" "$py" -m pip install --no-index --find-links zig-out/wheels pyyaml-zig
           # PyYAML, for the tests that hold results to it; they are skipped
           # where it does not install.
-          "$py" -m pip install pyyaml || echo "no PyYAML here: its comparisons are skipped"
+          "${run[@]}" "$py" -m pip install pyyaml || echo "no PyYAML here: its comparisons are skipped"
           tests="$PWD/python/tests"
           cd "$RUNNER_TEMP"
-          "$py" -c "import pyyaml_zig; print(pyyaml_zig.__version__, pyyaml_zig.__file__)"
-          "$py" -m unittest discover -s "$tests" -v
+          "${run[@]}" "$py" -c "import platform, pyyaml_zig; print(platform.machine(), pyyaml_zig.__version__, pyyaml_zig.__file__)"
+          "${run[@]}" "$py" -m unittest discover -s "$tests" -v
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wheel-${{ matrix.target }}
