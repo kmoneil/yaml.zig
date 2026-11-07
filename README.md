@@ -20,8 +20,8 @@ and check files from the command line.
   `4:3: server: unknown field "tag"; expected one of: hosts, tags, tls,
   root (did you mean "tags"?)`.
 - **A command-line tool.** `yaml check`, `yaml get`, `yaml json`.
-- **Python, coming soon.** [pyyaml-zig](#python-coming-soon) puts this
-  parser behind PyYAML's API.
+- **Python too.** [pyyaml-zig](#python) puts this parser behind PyYAML's
+  API, and loads YAML 37 times faster than PyYAML.
 
 <!-- suite -->
 | check | cases | passing |
@@ -285,26 +285,31 @@ $ yaml json --merge-keys compose.yaml | jq .services
 The exit status is 0 on success, 1 when a file is not YAML or a path
 has no value, and 2 for a usage error. `yaml --help` lists everything.
 
-## Python (coming soon)
+## Python
 
-pyyaml-zig will put this parser behind PyYAML's safe API, so switching
-is a one-line change:
+pyyaml-zig puts yaml.zig behind PyYAML's safe API, so switching is
+usually a one-line change:
 
 ```python
-import pyyaml_zig as yaml  # planned: not on PyPI yet
+import pyyaml_zig as yaml
 
 with open("config.yaml") as f:
     config = yaml.safe_load(f)
 ```
 
-Like the Zig library, it will read YAML 1.2 by default, refuse
-duplicate keys, and cap alias bombs.
+On the 4.9 MB file from the speed table below, with identical results:
 
-Why it should be fast: on the 4.9 MB file used for the speed table
-below, PyYAML takes 1.24 seconds with its C loader (libyaml) and 5.6
-seconds without it. Python's own `json.loads` builds the same objects
-from JSON in 18 ms. PyYAML spends most of its time building values one
-Python call at a time; pyyaml-zig will build them in native code.
+| Loader | Time |
+| --- | ---: |
+| **pyyaml-zig** | **35 ms** |
+| PyYAML with libyaml (`CSafeLoader`) | 1,266 ms |
+| PyYAML, pure Python (`SafeLoader`) | 5,994 ms |
+| `json.loads`, the same data as JSON | 16 ms |
+
+Like the Zig library, it reads YAML 1.2, refuses duplicate keys and caps
+alias bombs; it applies merge keys, as PyYAML does, and parses outside
+Python's global interpreter lock. It is built and tested here, in
+[python/](python/README.md); its first release on PyPI is next.
 
 ## Speed
 
