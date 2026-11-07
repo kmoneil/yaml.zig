@@ -1,8 +1,13 @@
+---
+title: The guide
+nav_order: 3
+---
+
 # yaml.zig guide
 
-The [README](../README.md) covers everyday use. This page covers the
-rest: types that parse themselves, the stages under `parseFromSlice`,
-and exactly what yaml.zig reads.
+The [README](https://github.com/kmoneil/yaml.zig#readme) covers everyday
+use. This page covers the rest: types that parse themselves, the stages
+under `parseFromSlice`, and exactly what yaml.zig reads.
 
 ## A type that reads itself
 

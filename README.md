@@ -1,6 +1,12 @@
 # yaml.zig
 
 [![ci](https://github.com/kmoneil/yaml.zig/actions/workflows/ci.yml/badge.svg)](https://github.com/kmoneil/yaml.zig/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/kmoneil/yaml.zig)](https://github.com/kmoneil/yaml.zig/releases/latest)
+[![zig](https://img.shields.io/badge/zig-0.17.1-f7a41d)](https://ziglang.org/download/)
+[![PyPI](https://img.shields.io/pypi/v/pyyaml-zig)](https://pypi.org/p/pyyaml-zig)
+[![docs](https://img.shields.io/badge/docs-kmoneil.github.io%2Fyaml.zig-blue)](https://kmoneil.github.io/yaml.zig/)
+[![license](https://img.shields.io/github/license/kmoneil/yaml.zig)](LICENSE)
+[![Sponsor](https://img.shields.io/badge/sponsor-%E2%99%A5-f5a623?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/kmoneil)
 
 YAML for Zig. Read it into your structs, write your values back out,
 and check files from the command line.
@@ -255,7 +261,8 @@ half a million scalars.
 
 ## More
 
-The [guide](docs/guide.md) covers types that parse themselves, the
+The [site](https://kmoneil.github.io/yaml.zig/) has all of this, and the
+[guide](docs/guide.md) covers types that parse themselves, the
 scanner, parser, composer and emitter under `parseFromSlice`, encodings
 and schemas, and how YAML 1.2 differs from the YAML 1.1 that PyYAML
 reads.
