@@ -6,6 +6,7 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const yaml = @import("yaml");
+const build_options = @import("build_options");
 const tree = @import("tree.zig");
 const json = @import("json.zig");
 
@@ -17,6 +18,7 @@ const usage =
     \\       yaml events <file>
     \\       yaml skill [--install <dir>]
     \\       yaml --help
+    \\       yaml --version
     \\
     \\check reads every document of each file, and reports each file that
     \\is not YAML: file:line:column: what is wrong, then the line and a
@@ -96,10 +98,12 @@ const Args = struct {
     operands: []const []const u8,
 };
 
-/// What `parseArgs` gives: a command to run, the help, or what is wrong.
+/// What `parseArgs` gives: a command to run, the help, the version, or
+/// what is wrong.
 const Parsed = union(enum) {
     run: Args,
     help,
+    version,
     usage_error: []const u8,
 };
 
@@ -116,6 +120,10 @@ pub fn main(init: std.process.Init) !u8 {
             try out.writeAll(usage);
             break :help 0;
         },
+        .version => version: {
+            try out.print("yaml {s}\n", .{build_options.version});
+            break :version 0;
+        },
         .usage_error => |why| bad: {
             std.debug.print("yaml: {s}\nRun `yaml --help` for the usage.\n", .{why});
             break :bad 2;
@@ -129,6 +137,7 @@ pub fn main(init: std.process.Init) !u8 {
 fn parseArgs(arena: Allocator, argv: []const []const u8) Allocator.Error!Parsed {
     if (argv.len == 0) return .{ .usage_error = "a command is needed: " ++ commands };
     if (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h")) return .help;
+    if (std.mem.eql(u8, argv[0], "--version")) return .version;
     const command = std.meta.stringToEnum(Command, argv[0]) orelse
         return .{ .usage_error = try std.fmt.allocPrint(arena, "no command `{s}`: " ++ commands, .{argv[0]}) };
     var options: Options = .{};

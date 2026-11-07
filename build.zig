@@ -1,4 +1,16 @@
 const std = @import("std");
+const zon = @import("build.zig.zon");
+
+/// What a GitHub release carries: the `yaml` command for each platform,
+/// named yaml-<os>-<arch> as the Homebrew formula names them.
+const release_targets = [_]struct { query: std.Target.Query, name: []const u8 }{
+    .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .linux }, .name = "yaml-linux-amd64" },
+    .{ .query = .{ .cpu_arch = .aarch64, .os_tag = .linux }, .name = "yaml-linux-arm64" },
+    .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .macos }, .name = "yaml-darwin-amd64" },
+    .{ .query = .{ .cpu_arch = .aarch64, .os_tag = .macos }, .name = "yaml-darwin-arm64" },
+    .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .windows }, .name = "yaml-windows-amd64.exe" },
+    .{ .query = .{ .cpu_arch = .aarch64, .os_tag = .windows }, .name = "yaml-windows-arm64.exe" },
+};
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -47,13 +59,16 @@ pub fn build(b: *std.Build) void {
 
     // The `yaml` command (src/cli): `zig build` installs it in zig-out/bin.
     // Its tests: its parts', and the command run end to end (test/cli.zig).
-    const cli = b.addExecutable(.{ .name = "yaml", .root_module = b.createModule(.{
-        .root_source_file = b.path("src/cli/main.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{.{ .name = "yaml", .module = mod }},
-    }) });
+    // `yaml --version` prints build.zig.zon's version; the release workflow
+    // refuses a tag that does not match it.
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "version", zon.version);
+    const cli = b.addExecutable(.{ .name = "yaml", .root_module = cliModule(b, target, optimize, mod, build_options) });
     b.installArtifact(cli);
+    // `zig build release`: the command for every platform a release
+    // carries, into zig-out/release/.
+    const release = b.step("release", "Build the yaml command for every release platform into zig-out/release/");
+    for (release_targets) |release_target| release.dependOn(releaseBinary(b, release_target.query, release_target.name, build_options));
     // `zig build run -- check config.yaml`: the command, built and run,
     // with the arguments after `--`.
     const run_cli = b.addRunArtifact(cli);
@@ -62,6 +77,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = cli.root_module })).step);
     const cli_options = b.addOptions();
     cli_options.addOptionPath("yaml_exe", cli.getEmittedBin());
+    cli_options.addOption([]const u8, "version", zon.version);
     const cli_test = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("test/cli.zig"),
         .target = target,
@@ -193,6 +209,34 @@ fn addTests(b: *std.Build, step: *std.Build.Step, target: std.Build.ResolvedTarg
     quiet.addArgs(&.{ "check", "--quiet" });
     step.dependOn(&quiet.step);
     return harness;
+}
+
+/// The `yaml` command's module, over `yaml`, built for `target`.
+fn cliModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, yaml: *std.Build.Module, options: *std.Build.Step.Options) *std.Build.Module {
+    const m = b.createModule(.{
+        .root_source_file = b.path("src/cli/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "yaml", .module = yaml }},
+    });
+    m.addOptions("build_options", options);
+    return m;
+}
+
+/// One release binary: ReleaseSafe, so a bug stops `yaml` with a message
+/// rather than letting it print a wrong answer, and stripped, since the
+/// debug info holds the paths of the machine that built it.
+fn releaseBinary(b: *std.Build, query: std.Target.Query, name: []const u8, options: *std.Build.Step.Options) *std.Build.Step {
+    const target = b.resolveTargetQuery(query);
+    const yaml = b.createModule(.{ .root_source_file = b.path("src/root.zig"), .target = target, .optimize = .ReleaseSafe });
+    const exe = b.addExecutable(.{ .name = "yaml", .root_module = cliModule(b, target, .ReleaseSafe, yaml, options) });
+    exe.root_module.strip = true;
+    const install = b.addInstallArtifact(exe, .{
+        .dest_dir = .{ .override = .{ .custom = "release" } },
+        .dest_sub_path = name,
+        .pdb_dir = .disabled,
+    });
+    return &install.step;
 }
 
 /// The security suite (test/security, karte t44), a test per known

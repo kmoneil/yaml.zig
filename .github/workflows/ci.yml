@@ -30,6 +30,10 @@ jobs:
         run: zig fmt --check build.zig build.zig.zon src test tools examples
       - name: API documentation
         run: zig build docs
+      # The `yaml` command for every platform a release carries, so a tag
+      # never finds one that does not build.
+      - name: the release binaries build
+        run: zig build release
 
   # The unit tests, the yaml-test-suite and its ratchet, the README's
   # examples, the yaml command end to end and the fuzz targets' seeded

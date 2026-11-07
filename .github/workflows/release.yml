@@ -1,0 +1,210 @@
+# A tag is the release. For Zig the package is its source, which `zig
+# fetch` takes from the tag; for everyone else the release carries the
+# `yaml` command for six platforms, with SHA256SUMS and provenance, and
+# kmoneil/homebrew-tap is told so its formula moves to it.
+#
+# What is published is whatever the tag points at, so this runs the whole
+# gate again on the tagged commit rather than trusting that it was green on
+# main, and refuses a tag that disagrees with build.zig.zon's version,
+# which is what `yaml --version` prints and a dependent's build.zig.zon
+# records.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  # A dry run: the gate, the binaries and their checksums, kept as this
+  # run's artifact. Nothing is attested or published on a dispatch:
+  # `attest`, `publish` and `bump-the-tap` are guarded on the event being a
+  # tag push rather than on the ref, because a dispatch can name a tag as
+  # its ref.
+  workflow_dispatch:
+
+# Read at the workflow level, write only on the jobs that need it.
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: the full gate, on the tagged commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # No cache: a release builds from nothing it did not make.
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          use-cache: false
+      - name: the tag is build.zig.zon's version
+        if: github.event_name == 'push'
+        run: |
+          zig build
+          want="yaml ${GITHUB_REF_NAME#v}"
+          got="$(./zig-out/bin/yaml --version)"
+          if [ "$got" != "$want" ]; then
+            echo "The tag is ${GITHUB_REF_NAME} but the command says '${got}'." >&2
+            echo "Set .version in build.zig.zon to ${GITHUB_REF_NAME#v} on main and tag that commit." >&2
+            exit 1
+          fi
+      - uses: ./.github/actions/vet-tools
+      # macOS passed ci.yml on main before the commit could be tagged.
+      - name: zig build test, security and test-release
+        run: |
+          zig build test --summary line
+          zig build security --summary line
+          zig build test-release --summary line
+
+  build:
+    name: build the binaries
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          use-cache: false
+      # The six targets and their names are build.zig's release_targets.
+      - name: zig build release
+        run: zig build release
+      # kmoneil/homebrew-tap moves its formula to a release only once the
+      # formula's own test passes against the released binary, and that
+      # runs after the tag, which cannot move. So the same checks run here
+      # first, on a dry run too. They are a copy of the `test do` block in
+      # the tap's yaml.rb, and change when it does. Like brew, it runs in an
+      # empty directory.
+      - name: the tap formula's test passes
+        run: |
+          bin="$PWD/zig-out/release/yaml-linux-amd64"
+          version="$(sed -n 's/^ *\.version = "\(.*\)",$/\1/p' build.zig.zon)"
+          fail() { printf 'The tap formula'\''s test would fail: %s\n%s\n' "$1" "$2" >&2; exit 1; }
+          dir="$RUNNER_TEMP/formula-test"
+          mkdir -p "$dir" && cd "$dir"
+
+          got="$("$bin" --version)"
+          [ "$got" = "yaml $version" ] || fail "--version is not 'yaml $version'" "$got"
+
+          printf 'name: web\nports: [80, 443]\n' > good.yaml
+          got="$("$bin" get .name "$dir/good.yaml")"
+          [ "$got" = web ] || fail "get .name is not web" "$got"
+          got="$("$bin" json "$dir/good.yaml")"
+          [ "$got" = '{"name":"web","ports":[80,443]}' ] || fail "json is not the document" "$got"
+
+          printf 'a: 1\na: 2\n' > dup.yaml
+          status=0
+          got="$("$bin" check "$dir/dup.yaml" 2>&1)" || status=$?
+          [ "$status" = 1 ] || fail "check on dup.yaml exited $status, not 1" "$got"
+          case "$got" in
+            *"a mapping cannot have two equal keys"*) ;;
+            *) fail "check on dup.yaml does not name the duplicate key" "$got" ;;
+          esac
+      - name: checksums
+        run: cd zig-out/release && sha256sum yaml-* > SHA256SUMS && cat SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: binaries
+          path: zig-out/release/
+          retention-days: 7
+          if-no-files-found: error
+
+  attest:
+    name: attest the assets
+    needs: build
+    # An attestation is a signed statement in this repository's public
+    # store, so writing one is publishing: on a dispatch the job never
+    # starts and the token that would sign is never minted.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: binaries
+          path: dist
+      # Every file publish uploads: a signed statement that each was built
+      # by this workflow, from this tag, on a runner GitHub hosts. Checked
+      # with
+      #   gh attestation verify yaml-linux-amd64 --repo kmoneil/yaml.zig
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+
+  publish:
+    name: publish
+    # Nothing is published that was not attested first.
+    needs: [build, attest]
+    # Guarded on the job, not a step, so on a dispatch the write token is
+    # never minted.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: binaries
+          path: dist
+      # A draft first, so releases/latest never names a release whose
+      # assets are still uploading, then made public in the same job. A
+      # hyphen is what separates a semver prerelease from a release, so
+      # v0.2.0-rc.1 is marked a prerelease and not made the latest.
+      - name: create the GitHub release, a draft until its assets are up
+        id: release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          draft: true
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            dist/yaml-*
+            dist/SHA256SUMS
+      - name: publish it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ steps.release.outputs.id }}
+        run: |
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
+            -F draft=false > /dev/null
+          echo "release ${RELEASE_ID} is published"
+
+  # The Homebrew formula in kmoneil/homebrew-tap names the four macOS and
+  # Linux binaries, each with its digest, and moving them to a new release
+  # is the tap's job: its bump-yaml workflow rewrites the formula, checks
+  # every file's provenance against this workflow, installs and tests it on
+  # macOS, and only then lands it. This tells it there is a release to move
+  # to.
+  #
+  # Its own job, so a red here says what it means: by the time it runs the
+  # release is out, so it is never "the release is bad", only "the release
+  # is out and brew still installs the previous one". Not for a prerelease,
+  # which the tap refuses.
+  bump-the-tap:
+    name: tell the tap
+    needs: publish
+    if: ${{ github.event_name == 'push' && !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    # Nothing here uses this repository's token. The one credential is the
+    # tap's, below.
+    permissions: {}
+    steps:
+      - name: dispatch to kmoneil/homebrew-tap
+        env:
+          # Not github.token: that is scoped to this repository and cannot
+          # dispatch to another. A fine-grained token limited to the tap,
+          # with Contents: read and write.
+          GH_TOKEN: ${{ secrets.TAP_YAML_ZIG }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "TAP_YAML_ZIG is not set, so the formula was not bumped." >&2
+            echo "To fix it for ${TAG} now:" >&2
+            echo "  gh workflow run bump-yaml.yml --repo kmoneil/homebrew-tap -f tag=${TAG}" >&2
+            exit 1
+          fi
+          gh api repos/kmoneil/homebrew-tap/dispatches \
+            -f event_type=yaml-released \
+            -f "client_payload[tag]=${TAG}"
+          echo "asked the tap to bump to ${TAG}"

@@ -173,6 +173,17 @@ test "the skill's examples print what it shows" {
     try std.testing.expect(examples >= 10);
 }
 
+test "yaml --version prints build.zig.zon's version" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    const exe = try Io.Dir.cwd().realPathFileAlloc(io, test_options.yaml_exe, gpa);
+    defer gpa.free(exe);
+    const result = try std.process.run(gpa, io, .{ .argv = &.{ exe, "--version" } });
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+    try std.testing.expectEqualStrings("yaml " ++ test_options.version ++ "\n", result.stdout);
+}
+
 test "yaml --help prints the usage" {
     const io = std.testing.io;
     const gpa = std.testing.allocator;
