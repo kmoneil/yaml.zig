@@ -2,31 +2,3 @@
 # to a line's end a comment. `zig build test` fails when a check not
 # listed here fails, and when one listed here passes: take it off. What
 # each check is: test/check.zig.
-
-# The reader's work (t56): valid inputs it hands to the parser yet, what
-# it does not read. Each comes off the list as the reader learns it.
-whole 4FJ6     # Nested implicit complex keys
-whole 652Z     # Question mark at start of flow key
-whole 6BFJ     # Mapping, key and flow sequence item anchors
-whole 87E4     # Spec Example 7.8. Single Quoted Implicit Keys
-whole 8UDB     # Spec Example 7.14. Flow Sequence Entries
-whole 9KAX     # Various combinations of tags and anchors
-whole 9MMW     # Single Pair Implicit Entries
-whole BU8L     # Node Anchor and Tag on Seperate Lines
-whole CFD4     # Empty implicit key in single pair flow sequences
-whole CN3R     # Various location of anchors in flow sequence
-whole CT4Q     # Spec Example 7.20. Single Pair Explicit Entry
-whole DFF7     # Spec Example 7.16. Flow Mapping Entries
-whole EHF6     # Tags for Flow Objects
-whole FH7J     # Tags on Empty Scalars
-whole FRK4     # Spec Example 7.3. Completely Empty Flow Nodes
-whole L9U5     # Spec Example 7.11. Plain Implicit Keys
-whole LQZ7     # Spec Example 7.4. Double Quoted Implicit Keys
-whole LX3P     # Implicit Flow Mapping Key on one line
-whole M2N8/01  # Question mark edge cases
-whole PW8X     # Anchors on Empty Scalars
-whole Q9WF     # Spec Example 6.12. Separation Spaces
-whole QF4Y     # Spec Example 7.19. Single Pair Flow Mappings
-whole SBG9     # Flow Sequence in Flow Mapping
-whole WZ62     # Spec Example 7.2. Empty Content
-whole X38W     # Aliases in Flow Objects

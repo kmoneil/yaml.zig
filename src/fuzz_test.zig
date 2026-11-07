@@ -80,6 +80,9 @@ const corpus = [_][]const u8{
     "[a, b]: c\n{d: e}: f\n",
     "- !!str\n- !!int 3\n- ! x\n- !<tag:yaml.org,2002:bool> true\n",
     "a: &a\n  - 1\nb: *a\n",
+    "[a: b, ? c : d, : e, [f]: g, &h i: j, *h : l, \"m\":n]\n",
+    "{? a, [b]: c, &d e: f, !!str : g, *d : i, {j: k}: l}\n",
+    "&a\n!!str\nx\n---\nk: &b\n !!map\n  c: d\n",
 };
 
 /// Pieces lines are built from, and edits insert.

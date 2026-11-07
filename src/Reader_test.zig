@@ -129,6 +129,27 @@ test "directives, and tags resolved against them" {
     try expectWhole("# c\n%YAML 1.2 # c\n\n---\n");
 }
 
+test "flow collections as keys, pairs in flow sequences, keys in flow mappings" {
+    try expectWhole("[a]: b\n{c: d}: e\n");
+    try expectWhole("&m\n&k [x, y]: z\n[p]: q\n");
+    try expectWhole("- {a: b}: c\n  [d] : e\n- ? []: x\n");
+    try expectWhole("a:\n[b]: c\n");
+    try expectWhole("[a: b, &k c: d, *x : e, \"j\":f, [g]: h, {i: j}: k, : l, ? m : n, ?, ? o, p]\n");
+    try expectWhole("[\n? foo\n bar : baz\n]\n");
+    try expectWhole("{&a k: v, ? x: y, ?, : z, !!str : w, [s]: t, {u: v}: w, *a : x, q}\n");
+    try expectWhole("{a\n: b, &p\n c: d}\n");
+    try expectWhole("[a, [b, [[c]: d]]: e]\n");
+    try expectWhole("[&a\n b, !t\n [c]]\n");
+}
+
+test "properties over several lines" {
+    try expectWhole("&a : b\n");
+    try expectWhole("&a\n!t x\n");
+    try expectWhole("&a1\n!!str\nscalar\n");
+    try expectWhole("key: &anchor\n !!map\n  a: b\n");
+    try expectWhole("- !!str\n-\n  !!null : a\n  b: !!str\n- !!str : !!null\n");
+}
+
 test "the bench's records" {
     try expectWhole(
         \\- name: service-0
@@ -158,13 +179,11 @@ test "what it hands over: forms it does not read yet, and errors" {
     try expectHandedOver("%TAG !e! a:\na\n");
     try expectHandedOver("a\n---\nb: c\n%YAML 1.2\n---\nc\n");
     try expectHandedOver("a: &x &y 1\n");
-    try expectHandedOver("{&a k: v}\n");
-    // Properties before a `:` with no key, and properties on two lines
-    // of a node that is no mapping.
-    try expectHandedOver("&a : b\n");
-    try expectHandedOver("&a\n!t x\n");
+    try expectHandedOver("&a\n&b x\n");
     try expectHandedOver("a b\nc: d\n");
-    try expectHandedOver("[a]: b\n");
+    // A key of more than one line, in a block and in a flow sequence.
+    try expectHandedOver("[a,\n b]: c\n");
+    try expectHandedOver("[a\n b: c]\n");
     // A line of a flow collection in a block must be indented past it.
     try expectHandedOver("k: [\n  a\n]\n");
 
@@ -187,4 +206,28 @@ test "what it hands over: forms it does not read yet, and errors" {
     // `---` and a NUL byte is a marker to the scanner, which reads a NUL
     // as it does the end.
     try expectHandedOver("\n---\x00 |\n  b\n...\n'# c\n\n");
+    // Found by the reader fuzz target: a flow collection that looks a key
+    // but holds an error is no key to the parser, whose scanner never
+    // reads its `:`. Nothing read on the strength of the look is given:
+    // the key's mapping, nor an empty value before it.
+    try expectHandedOver("[a, b]: c\n{...d: e\xBB}: f\n");
+    try expectHandedOver("k: [a\xBB]: v\n");
+    try expectHandedOver("- [a\xBB]: v\n");
+    try expectHandedOver("a:\n[b\xBB]: c\n");
+    try expectHandedOver("[[a\xBB]: b]\n");
+    // Found by the reader fuzz target: after a flow collection, which it
+    // reads to its end and no further, the parser reads the next token
+    // before it gives an empty value or a pair's end, and a character no
+    // token begins with is its error first.
+    try expectHandedOver(" {{{}}%\n");
+    try expectHandedOver("[? [a] %]\n");
+    try expectHandedOver("[a: [b] %]\n");
+    // Found by the reader fuzz target: the scanner's key at a flow
+    // collection stays possible past a tag after it, and the `:` after
+    // that makes the collection a pair's key.
+    try expectHandedOver("[[f]!e!x : g]\n");
+    try expectHandedOver("[[f] x : g]\n");
+    // Found by the reader fuzz target: a verbatim tag's URI may hold a
+    // bracket, which opens nothing.
+    try expectHandedOver("[!<v[> a, b]: c\n");
 }
