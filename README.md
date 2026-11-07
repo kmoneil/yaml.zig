@@ -386,21 +386,21 @@ prints this table again:
 
 | Built | Library | ms | MB/s | 1st run ms | Peak MB |
 | --- | --- | ---: | ---: | ---: | ---: |
-| events | **yaml.zig** | 22.0 | 221 | 22.2 | 3.8 |
-| events | libyaml 0.2.5 | 47.0 | 103 | 47.5 | 0.3 |
-| events | saphyr-parser 0.3.3 | 62.3 | 78 | 61.9 | 0.4 |
-| node tree | **yaml.zig** | 18.7 | 260 | 21.6 | 55.7 |
-| node tree | rapidyaml 0.16.0 | 16.7 | 291 | 23.9 | 146.7 |
-| node tree | libyaml 0.2.5 | 63.5 | 76 | 64.9 | 137.7 |
-| node tree | go-yaml v3.0.1 (yaml.Node) | 140.7 | 34 | 141.9 | 148.0 |
-| dynamic value | **yaml.zig** (Value) | 27.4 | 177 | 29.0 | 20.9 |
-| dynamic value | saphyr 0.3.3 | 81.0 | 60 | 87.9 | 78.9 |
-| dynamic value | js-yaml 5.5.0 | 80.7 | 60 | 110.4 | 305.1 |
-| dynamic value | go-yaml v3.0.1 (any) | 188.1 | 26 | 194.3 | 245.4 |
-| typed | **yaml.zig** | 27.5 | 176 | 28.9 | 26.5 |
-| typed | serde_yaml 0.9.34 | 77.5 | 63 | 82.6 | 84.5 |
-| typed | serde-saphyr 2.1.1 | 173.6 | 28 | 174.6 | 19.7 |
-| typed | go-yaml v3.0.1 | 177.0 | 27 | 176.8 | 146.9 |
+| events | **yaml.zig** | 21.8 | 223 | 22.0 | 3.8 |
+| events | libyaml 0.2.5 | 46.1 | 105 | 46.9 | 0.3 |
+| events | saphyr-parser 0.3.3 | 60.6 | 80 | 62.0 | 0.5 |
+| node tree | **yaml.zig** | 15.9 | 305 | 18.4 | 55.6 |
+| node tree | rapidyaml 0.16.0 | 16.9 | 287 | 23.4 | 146.7 |
+| node tree | libyaml 0.2.5 | 63.4 | 77 | 66.4 | 137.7 |
+| node tree | go-yaml v3.0.1 (yaml.Node) | 136.6 | 36 | 141.0 | 148.1 |
+| dynamic value | **yaml.zig** (Value) | 24.9 | 195 | 26.8 | 20.9 |
+| dynamic value | saphyr 0.3.3 | 87.7 | 55 | 98.4 | 80.2 |
+| dynamic value | js-yaml 5.5.0 | 98.6 | 49 | 130.1 | 296.5 |
+| dynamic value | go-yaml v3.0.1 (any) | 207.4 | 23 | 204.9 | 237.1 |
+| typed | **yaml.zig** | 25.1 | 193 | 27.1 | 23.7 |
+| typed | serde_yaml 0.9.34 | 81.7 | 59 | 84.0 | 82.9 |
+| typed | serde-saphyr 2.1.1 | 180.6 | 27 | 172.0 | 19.7 |
+| typed | go-yaml v3.0.1 | 174.6 | 28 | 174.8 | 146.9 |
 
 ms is the median of 11 runs after one to warm up. 1st run ms is a
 process that parses once, its memory and code cold, as a command that
