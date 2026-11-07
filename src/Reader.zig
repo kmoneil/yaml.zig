@@ -34,13 +34,13 @@ pub const Mark = Scanner.Mark;
 
 pub const Error = error{
     /// What comes next is outside what the reader reads, or is not YAML:
-    /// the parser must read the stream. For now that is a directive or a
-    /// document marker, a second document, an anchor, an alias or a tag,
-    /// an explicit key (`?`), a plain scalar of more than one line, a
-    /// flow collection of more than one line or as a key, a pair in a
-    /// flow sequence, a tab in indentation or between tokens, a byte
-    /// order mark, an input not UTF-8 or past `Scanner.max_input`,
-    /// collections deeper than `max_depth`, and every error.
+    /// the parser must read the stream. For now that is a directive, a
+    /// tag whose handle needs one, a key of more than one line or a flow
+    /// collection as a key, an explicit key or a key with properties in
+    /// a flow collection, a pair in a flow sequence, properties on two
+    /// lines of a node that is no mapping, a byte order mark, an input
+    /// not UTF-8 or past `Scanner.max_input`, collections deeper than
+    /// `max_depth`, and every error.
     Unsupported,
     OutOfMemory,
 };
@@ -57,8 +57,12 @@ const State = enum {
     /// it ends at the first token that is not a `-`.
     indentless_sequence_entry,
     block_mapping_key,
-    /// The cursor at the `:` after a key.
+    /// The cursor at the `:` after an implicit key.
     block_mapping_value,
+    /// After an explicit key (`?`), or at a `:` with no key before it: a
+    /// `:` at the block's column, or else the value is empty. After such
+    /// a `:` a block collection may begin on its line.
+    block_mapping_explicit_value,
     flow_sequence_first_entry,
     flow_sequence_entry,
     flow_mapping_first_key,
@@ -76,11 +80,12 @@ const State = enum {
 const Place = enum {
     /// A document's root, or a sequence's entry: any node.
     entry,
-    /// A mapping's value on the lines after its key: any node, and a
-    /// sequence at the key's column too.
+    /// A mapping's value on the lines after its key, or an explicit key
+    /// or its value (after `?` or a `:` with no implicit key): any node,
+    /// and a sequence at the mapping's column too.
     value_below,
-    /// A mapping's value on its key's line: no block collection begins
-    /// there.
+    /// An implicit key's value on its key's line: no block collection
+    /// begins there.
     value_inline,
 };
 
@@ -102,6 +107,13 @@ after_end_marker: bool = true,
 /// A tab was in the blanks just before the next token, on its line: no
 /// block collection may open there (the scanner's `tab_before`).
 tab_before: bool = false,
+/// The current document's %TAG directives, against which its tags are
+/// resolved, as the parser's.
+tag_directives: std.ArrayList(Scanner.Token.TagDirective) = .empty,
+/// The most %TAG directives a document may have
+/// (`Parser.max_tag_directives`): past it the reader stops, and the
+/// parser gives the error.
+max_tag_directives: usize = 64,
 
 /// A reader over `input`, UTF-8. It allocates nothing until `next`.
 pub fn init(gpa: Allocator, input: []const u8) Reader {
@@ -114,6 +126,7 @@ pub fn deinit(r: *Reader) void {
     r.events.deinit(gpa);
     r.states.deinit(gpa);
     r.blocks.deinit(gpa);
+    r.tag_directives.deinit(gpa);
     r.s.deinit();
     r.* = undefined;
 }
@@ -146,7 +159,8 @@ fn step(r: *Reader) Error!void {
         .block_sequence_entry => try r.blockSequenceEntry(),
         .indentless_sequence_entry => try r.indentlessSequenceEntry(),
         .block_mapping_key => try r.blockMappingKey(),
-        .block_mapping_value => try r.blockMappingValue(),
+        .block_mapping_value => try r.blockMappingValue(false),
+        .block_mapping_explicit_value => try r.blockMappingExplicitValue(),
         .flow_sequence_first_entry => try r.flowSequenceEntry(true),
         .flow_sequence_entry => try r.flowSequenceEntry(false),
         .flow_mapping_first_key => try r.flowMappingKey(true),
@@ -180,8 +194,14 @@ fn emitScalar(r: *Reader, token: Scanner.Token) Error!void {
 
 /// A scalar token's event, with the properties before it, if any.
 fn emitScalarWith(r: *Reader, token: Scanner.Token, props: ?Props) Error!void {
+    const e = scalarEvent(token, props);
+    try r.emit(e.start, e.end, e.data);
+}
+
+/// The event of a scalar token and the properties before it, if any.
+fn scalarEvent(token: Scanner.Token, props: ?Props) Event {
     const scalar = token.data.scalar;
-    try r.emit(startOf(props, token.start), token.end, .{ .scalar = .{ .properties = propertiesOf(props), .value = scalar.value, .style = scalar.style } });
+    return .{ .start = startOf(props, token.start), .end = token.end, .data = .{ .scalar = .{ .properties = propertiesOf(props), .value = scalar.value, .style = scalar.style } } };
 }
 
 /// An empty scalar with properties and nothing after them: its marks are
@@ -231,20 +251,64 @@ fn documentStart(r: *Reader) Error!void {
         r.state = .end;
         return;
     }
-    if (r.atDirective()) return error.Unsupported;
-    if (r.atMarker("---")) {
-        const start = r.s.mark;
-        r.advanceAscii(start.offset + 3);
-        try r.emit(start, r.s.mark, .{ .document_start = .{ .explicit = true } });
-        try r.push(.document_end);
-        r.state = .document_content;
-        return;
-    }
+    if (r.atDirective() or r.atMarker("---")) return r.explicitDocumentStart();
     // A document after another must begin with `---`, but after `...`.
     if (!r.after_end_marker) return error.Unsupported;
+    r.tag_directives.clearRetainingCapacity();
     try r.emit(r.s.mark, r.s.mark, .{ .document_start = .{ .explicit = false } });
     try r.push(.document_end);
     try r.blockNode(.entry);
+}
+
+/// A document begun with `---`, and its directives before it, if any:
+/// its start is the first directive's, but for one YAML reserves, which
+/// the scanner skips as it does a comment.
+fn explicitDocumentStart(r: *Reader) Error!void {
+    r.tag_directives.clearRetainingCapacity();
+    var start: ?Mark = null;
+    var version: ?Scanner.Token.Version = null;
+    while (r.atDirective()) {
+        if (r.s.scanDirective() catch |err| return unsupported(err)) |token| {
+            // A directive after a document must follow a `...` that ends
+            // it; the parser says so.
+            if (!r.after_end_marker) return error.Unsupported;
+            if (start == null) start = token.start;
+            try r.directive(token, &version);
+        }
+        try r.skipToToken();
+    }
+    if (!r.atMarker("---")) return error.Unsupported;
+    const marker = r.s.mark;
+    r.advanceAscii(marker.offset + 3);
+    const tags = if (r.tag_directives.items.len == 0) &.{} else try r.s.arena.allocator().dupe(Scanner.Token.TagDirective, r.tag_directives.items);
+    try r.emit(start orelse marker, r.s.mark, .{ .document_start = .{ .explicit = true, .version = version, .tag_directives = tags } });
+    try r.push(.document_end);
+    r.state = .document_content;
+}
+
+/// Takes a `%YAML` or `%TAG` directive into the document's. One the
+/// parser refuses (a second %YAML, one not of YAML 1, a second %TAG for
+/// a handle, one past `max_tag_directives`) is the parser's to read.
+fn directive(r: *Reader, token: Scanner.Token, version: *?Scanner.Token.Version) Error!void {
+    switch (token.data) {
+        .version_directive => |v| {
+            if (version.* != null or v.major != 1) return error.Unsupported;
+            version.* = v;
+        },
+        .tag_directive => |d| {
+            if (r.tag_directives.items.len >= r.max_tag_directives or r.tagPrefix(d.handle) != null) return error.Unsupported;
+            try r.tag_directives.append(r.s.gpa, d);
+        },
+        else => unreachable,
+    }
+}
+
+/// The prefix the current document's %TAG directive gives `handle`.
+fn tagPrefix(r: *const Reader, handle: []const u8) ?[]const u8 {
+    for (r.tag_directives.items) |d| {
+        if (std.mem.eql(u8, d.handle, handle)) return d.prefix;
+    }
+    return null;
 }
 
 /// The root of a document begun with `---`: on that line no block
@@ -358,13 +422,14 @@ fn blockEndMark(r: *const Reader) Mark {
 /// A block node at the cursor, `place` saying what may begin there. The
 /// state to return to when it ends is pushed.
 fn blockNode(r: *Reader, place: Place) Error!void {
-    if (r.s.ch(0) == '*') return r.blockAlias();
+    if (r.s.ch(0) == '*') return r.blockAlias(place, null);
     const props = try r.scanProps() orelse return r.blockContent(place, null);
     if (r.atBlockNodeEnd()) return r.propsBelow(place, props);
-    // On their line only a scalar, a flow collection or a block scalar
-    // follow them here: a key after them, or an alias, is the parser's.
-    if (r.s.ch(0) == '*' or r.atIndicator('-')) return error.Unsupported;
-    return r.blockContent(.value_inline, props);
+    // On their line no block collection follows them, but a mapping
+    // whose first key they are the key's (`firstKeyOf`); an alias after
+    // them is the parser's.
+    if (r.s.ch(0) == '*' or r.atIndicator('-') or r.atIndicator('?') or r.atIndicator(':')) return error.Unsupported;
+    return r.blockContent(place, props);
 }
 
 /// After properties that end their line: what they belong to is on the
@@ -380,60 +445,81 @@ fn propsBelow(r: *Reader, place: Place, props: Props) Error!void {
             return;
         }
         // The block's next entry, key or `:`: the node is empty.
-        if (!r.atIndicator('-') and !r.atIndicator(':') and !try r.keyAhead()) return error.Unsupported;
+        if (!r.atIndicator('-') and !try r.atKey()) return error.Unsupported;
         return r.emitEmptyWith(props);
     }
     switch (r.s.ch(0)) {
-        '&', '!', '*' => return error.Unsupported,
+        '*' => return r.blockAlias(.entry, props),
+        // More on the node's line: a mapping's first key's.
+        '&', '!' => return r.firstKey(.entry, try r.scanKey() orelse return error.Unsupported, props),
         else => return r.blockContent(.entry, props),
     }
 }
 
 /// A block node's content at the cursor, `props` before it.
 fn blockContent(r: *Reader, place: Place, props: ?Props) Error!void {
+    if (r.atIndicator('-')) return r.blockSequenceStart(place, props);
+    if (r.atIndicator('?') or r.atIndicator(':')) return r.blockMappingStart(place, props);
     const start = r.s.mark;
-    const col = r.column();
-    const ind = r.indent();
-    if (r.atIndicator('-')) {
-        if (place == .value_inline) return error.Unsupported;
-        if (place == .value_below and col == ind) {
-            try r.emit(start, start, .{ .sequence_start = .{ .flow = false } });
-            r.state = .indentless_sequence_entry;
-            return;
-        }
-        if (col <= ind or r.tab_before) return error.Unsupported;
-        try r.openBlock(col);
-        try r.emit(startOf(props, start), start, .{ .sequence_start = .{ .properties = propertiesOf(props), .flow = false } });
-        r.state = .block_sequence_entry;
-        return;
-    }
     switch (r.s.ch(0)) {
         '|', '>' => return r.blockScalar(props),
         '[', '{' => return r.flowStart(props),
-        '"', '\'' => return r.blockQuoted(place, start, col, props),
-        else => return r.blockPlain(place, start, col, props),
+        '"', '\'' => return r.blockQuoted(place, start, props),
+        else => return r.blockPlain(place, start, props),
     }
 }
 
-/// An alias in a block, not a key.
-fn blockAlias(r: *Reader) Error!void {
+/// A block sequence begun at the cursor's `-`.
+fn blockSequenceStart(r: *Reader, place: Place, props: ?Props) Error!void {
+    const start = r.s.mark;
+    const col = r.column();
+    if (place == .value_inline) return error.Unsupported;
+    if (place == .value_below and col == r.indent()) {
+        try r.emit(start, start, .{ .sequence_start = .{ .flow = false } });
+        r.state = .indentless_sequence_entry;
+        return;
+    }
+    if (col <= r.indent() or r.tab_before) return error.Unsupported;
+    try r.openBlock(col);
+    try r.emit(startOf(props, start), start, .{ .sequence_start = .{ .properties = propertiesOf(props), .flow = false } });
+    r.state = .block_sequence_entry;
+}
+
+/// A block mapping begun at the cursor by an explicit key's `?`, or by a
+/// `:` with no key before it.
+fn blockMappingStart(r: *Reader, place: Place, props: ?Props) Error!void {
+    const start = r.s.mark;
+    const col = r.column();
+    if (place == .value_inline or col <= r.indent() or r.tab_before) return error.Unsupported;
+    try r.openBlock(col);
+    try r.emit(startOf(props, start), start, .{ .mapping_start = .{ .properties = propertiesOf(props), .flow = false } });
+    if (r.s.ch(0) == '?') return r.explicitKey();
+    try r.emitEmpty(start);
+    r.state = .block_mapping_explicit_value;
+}
+
+/// An alias in a block, or the first key of a block mapping; `props`, on
+/// the lines before it, can be only the mapping's.
+fn blockAlias(r: *Reader, place: Place, props: ?Props) Error!void {
     const start = r.s.mark;
     const name = try r.scanName();
     const end = r.s.mark;
     r.skipBlanks();
-    if (!r.atBlockNodeEnd()) return error.Unsupported;
-    try r.emit(start, end, .{ .alias = name });
+    const alias: Event = .{ .start = start, .end = end, .data = .{ .alias = name } };
+    if (r.atValue()) return r.firstKey(place, alias, props);
+    if (props != null or !r.atBlockNodeEnd()) return error.Unsupported;
+    try r.emit(start, end, alias.data);
     r.pop();
 }
 
 /// A plain scalar in a block, or the first key of a block mapping.
-fn blockPlain(r: *Reader, place: Place, start: Mark, col: isize, props: ?Props) Error!void {
+fn blockPlain(r: *Reader, place: Place, start: Mark, props: ?Props) Error!void {
     if (!r.atPlainStart()) return error.Unsupported;
     var end: Mark = undefined;
     r.s.scanPlainLine(&end) catch return error.Unsupported;
     const value = r.s.input[start.offset..end.offset];
     const token: Scanner.Token = .{ .start = start, .end = end, .data = .{ .scalar = .{ .value = value, .style = .plain } } };
-    if (r.atValue()) return r.firstKey(place, start, col, token, props);
+    if (r.atValue()) return r.firstKeyOf(place, token, props);
     if (r.s.ch(0) != '#' and r.plainContinues()) return r.blockPlainLines(start, props);
     try r.emitScalarWith(token, props);
     r.pop();
@@ -451,25 +537,38 @@ fn blockPlainLines(r: *Reader, start: Mark, props: ?Props) Error!void {
 }
 
 /// A quoted scalar in a block, or the first key of a block mapping.
-fn blockQuoted(r: *Reader, place: Place, start: Mark, col: isize, props: ?Props) Error!void {
+fn blockQuoted(r: *Reader, place: Place, start: Mark, props: ?Props) Error!void {
     const token = r.s.scanQuotedScalar(if (r.s.ch(0) == '\'') .single_quoted else .double_quoted) catch |err| return unsupported(err);
     r.skipBlanks();
     if (r.atValue()) {
         if (token.end.line != start.line) return error.Unsupported;
-        return r.firstKey(place, start, col, token, props);
+        return r.firstKeyOf(place, token, props);
     }
     if (!r.atBlockNodeEnd()) return error.Unsupported;
     try r.emitScalarWith(token, props);
     r.pop();
 }
 
-/// Opens a block mapping at `col` with `key` its first key, the cursor
-/// at the key's `:`; `props`, on the lines before, are the mapping's.
-fn firstKey(r: *Reader, place: Place, start: Mark, col: isize, key: Scanner.Token, props: ?Props) Error!void {
-    if (place == .value_inline or col <= r.indent() or !r.keyFits(start) or r.tab_before) return error.Unsupported;
+/// Opens a block mapping with the scalar `token` its first key, the
+/// cursor at its `:`. Properties on the key's line are the key's, and
+/// the mapping begins where they do (the scanner's simple key is saved
+/// at the first of them); on the lines before, they are the mapping's.
+fn firstKeyOf(r: *Reader, place: Place, token: Scanner.Token, props: ?Props) Error!void {
+    if (props) |p| {
+        if (p.start.line == token.start.line) return r.firstKey(place, scalarEvent(token, p), null);
+    }
+    return r.firstKey(place, scalarEvent(token, null), props);
+}
+
+/// Opens a block mapping at the column of `key`, its first key, the
+/// cursor at the key's `:`; `props`, on the lines before, are the
+/// mapping's.
+fn firstKey(r: *Reader, place: Place, key: Event, props: ?Props) Error!void {
+    const col: isize = @intCast(key.start.column);
+    if (place == .value_inline or col <= r.indent() or !r.keyFits(key.start) or r.tab_before) return error.Unsupported;
     try r.openBlock(col);
-    try r.emit(startOf(props, start), start, .{ .mapping_start = .{ .properties = propertiesOf(props), .flow = false } });
-    try r.emitScalar(key);
+    try r.emit(startOf(props, key.start), key.start, .{ .mapping_start = .{ .properties = propertiesOf(props), .flow = false } });
+    try r.emit(key.start, key.end, key.data);
     r.state = .block_mapping_value;
 }
 
@@ -531,20 +630,23 @@ fn scanName(r: *Reader) Error![]const u8 {
     return name;
 }
 
-/// A tag, resolved as the parser does against the default handles: one
-/// with a handle a %TAG directive must give is the parser's.
+/// A tag, resolved as the parser does: against the document's %TAG
+/// directives, then the default handles. One whose handle neither gives
+/// is the parser's to refuse.
 fn scanTag(r: *Reader) Error![]const u8 {
     const tag = (if (r.s.ch(1) == '<') r.s.scanVerbatimTag() else r.s.scanShorthandTag()) catch |err| return unsupported(err);
     r.s.expectPropertyEnd() catch |err| return unsupported(err);
     if (tag.handle.len == 0) return tag.suffix;
     if (tag.suffix.len == 0) return "!";
-    const prefix: []const u8 = if (std.mem.eql(u8, tag.handle, "!"))
-        "!"
-    else if (std.mem.eql(u8, tag.handle, "!!"))
-        schema.core_prefix
-    else
-        return error.Unsupported;
+    const prefix = r.tagPrefix(tag.handle) orelse defaultPrefix(tag.handle) orelse return error.Unsupported;
     return std.mem.concat(r.s.arena.allocator(), u8, &.{ prefix, tag.suffix });
+}
+
+/// The prefix of `!` or `!!` with no %TAG directive for it.
+fn defaultPrefix(handle: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, handle, "!")) return "!";
+    if (std.mem.eql(u8, handle, "!!")) return schema.core_prefix;
+    return null;
 }
 
 fn blockSequenceEntry(r: *Reader) Error!void {
@@ -570,7 +672,7 @@ fn indentlessSequenceEntry(r: *Reader) Error!void {
     if (!r.atIndicator('-')) {
         // The sequence ends at its mapping's next key, or a `:`: the
         // parser ends it on a token it could read, so nothing else.
-        if (!r.atIndicator(':') and !try r.keyAhead()) return error.Unsupported;
+        if (!try r.atKey()) return error.Unsupported;
         return r.endIndentless();
     }
     const line = r.s.mark.line;
@@ -578,7 +680,7 @@ fn indentlessSequenceEntry(r: *Reader) Error!void {
     const dash_end = r.s.mark;
     try r.skipToToken();
     if (r.atBlockEnd() or r.s.mark.line != line and r.column() <= r.indent()) {
-        if (!r.atBlockEnd() and !r.atIndicator('-') and !r.atIndicator(':') and !try r.keyAhead()) return error.Unsupported;
+        if (!r.atBlockEnd() and !r.atIndicator('-') and !try r.atKey()) return error.Unsupported;
         return r.emitEmpty(dash_end);
     }
     try r.push(.indentless_sequence_entry);
@@ -595,18 +697,54 @@ fn blockMappingKey(r: *Reader) Error!void {
     try r.skipToToken();
     if (r.atBlockEnd()) return r.closeBlock(.mapping_end, r.blockEndMark());
     if (r.column() > r.indent()) return error.Unsupported;
+    if (r.atIndicator('?')) return r.explicitKey();
     if (r.atIndicator(':')) {
         // A value with no key: the key is empty.
         try r.emitEmpty(r.s.mark);
-        r.state = .block_mapping_value;
+        r.state = .block_mapping_explicit_value;
         return;
     }
     const key = try r.scanKey() orelse return error.Unsupported;
-    try r.emitScalar(key);
+    try r.emit(key.start, key.end, key.data);
     r.state = .block_mapping_value;
 }
 
-fn blockMappingValue(r: *Reader) Error!void {
+/// An explicit key at the cursor's `?`, and its node, which may be a
+/// block collection begun on its line; with none, the key is empty.
+fn explicitKey(r: *Reader) Error!void {
+    const line = r.s.mark.line;
+    r.s.skip();
+    const end = r.s.mark;
+    try r.skipToToken();
+    r.state = .block_mapping_explicit_value;
+    if (r.atBlockEnd()) return r.emitEmpty(end);
+    if (r.s.mark.line != line and r.column() <= r.indent() and !r.atIndicator('-')) {
+        // The next key, or the `:` of this one's value.
+        if (!try r.atKey()) return error.Unsupported;
+        return r.emitEmpty(end);
+    }
+    try r.push(.block_mapping_explicit_value);
+    try r.blockNode(.value_below);
+}
+
+/// After an explicit key: its `:`, at the block's column, or else an
+/// empty value and the next key, or the block's end.
+fn blockMappingExplicitValue(r: *Reader) Error!void {
+    try r.skipToToken();
+    if (r.atBlockEnd()) {
+        r.state = .block_mapping_key;
+        return r.emitEmpty(r.blockEndMark());
+    }
+    if (r.column() != r.indent()) return error.Unsupported;
+    if (r.atIndicator(':')) return r.blockMappingValue(true);
+    if (!try r.atKey()) return error.Unsupported;
+    r.state = .block_mapping_key;
+    return r.emitEmpty(r.s.mark);
+}
+
+/// The value after the `:` at the cursor. `explicit`: the `:` follows no
+/// implicit key, so a block collection may begin on its line.
+fn blockMappingValue(r: *Reader, explicit: bool) Error!void {
     const line = r.s.mark.line;
     r.s.skip();
     const colon_end = r.s.mark;
@@ -615,22 +753,32 @@ fn blockMappingValue(r: *Reader) Error!void {
     if (r.atEnd()) return r.emitEmpty(colon_end);
     if (r.s.mark.line == line) {
         try r.push(.block_mapping_key);
-        return r.blockNode(.value_inline);
+        return r.blockNode(if (explicit) .value_below else .value_inline);
     }
     if (r.atBlockEnd()) return r.emitEmpty(colon_end);
     if (r.column() == r.indent() and !r.atIndicator('-')) {
         // The next key, or the `:` of an empty one.
-        if (!r.atIndicator(':') and !try r.keyAhead()) return error.Unsupported;
+        if (!try r.atKey()) return error.Unsupported;
         return r.emitEmpty(colon_end);
     }
     try r.push(.block_mapping_key);
     try r.blockNode(.value_below);
 }
 
-/// The key at the cursor, plain or quoted, the cursor left at its `:`;
-/// null when what is there is not a key on this line.
-fn scanKey(r: *Reader) Error!?Scanner.Token {
+/// The implicit key at the cursor, its event: an alias, or a plain or
+/// quoted scalar and the properties before it, the cursor left at its
+/// `:`; null when what is there is not a key on this line.
+fn scanKey(r: *Reader) Error!?Event {
     const start = r.s.mark;
+    if (r.s.ch(0) == '*') {
+        const name = try r.scanName();
+        const end = r.s.mark;
+        r.skipBlanks();
+        if (!r.atValue() or !r.keyFits(start)) return null;
+        return .{ .start = start, .end = end, .data = .{ .alias = name } };
+    }
+    const props = try r.scanProps();
+    const scalar_start = r.s.mark;
     const c = r.s.ch(0);
     const token: Scanner.Token = if (c == '"' or c == '\'') quoted: {
         const t = r.s.scanQuotedScalar(if (c == '\'') .single_quoted else .double_quoted) catch |err| return unsupported(err);
@@ -640,14 +788,21 @@ fn scanKey(r: *Reader) Error!?Scanner.Token {
         if (!r.atPlainStart()) return null;
         var end: Mark = undefined;
         r.s.scanPlainLine(&end) catch return error.Unsupported;
-        break :plain .{ .start = start, .end = end, .data = .{ .scalar = .{ .value = r.s.input[start.offset..end.offset], .style = .plain } } };
+        break :plain .{ .start = scalar_start, .end = end, .data = .{ .scalar = .{ .value = r.s.input[scalar_start.offset..end.offset], .style = .plain } } };
     };
     if (!r.atValue() or token.end.line != start.line or !r.keyFits(start)) return null;
-    return token;
+    return scalarEvent(token, props);
 }
 
-/// Whether a key is at the cursor, which is left where it is. Only the
-/// cursor is put back: a value the look built stays in the arena.
+/// Whether a block mapping's next key is at the cursor: a `?`, a `:` with
+/// no key before it, or an implicit key. The cursor stays where it is.
+fn atKey(r: *Reader) Error!bool {
+    return r.atIndicator('?') or r.atIndicator(':') or try r.keyAhead();
+}
+
+/// Whether an implicit key is at the cursor, which is left where it is.
+/// Only the cursor is put back: a value the look built stays in the
+/// arena.
 fn keyAhead(r: *Reader) Error!bool {
     const mark = r.s.mark;
     const line_start = r.s.line_start;

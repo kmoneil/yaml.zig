@@ -174,6 +174,7 @@ pub fn init(gpa: Allocator, input: []const u8, options: Options) Composer {
     parser.max_tag_directives = options.max_tag_directives;
     var reader: Reader = .init(gpa, input);
     reader.setMaxDepth(options.max_depth);
+    reader.max_tag_directives = options.max_tag_directives;
     return .{
         .parser = parser,
         .reader = reader,

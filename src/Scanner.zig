@@ -21,8 +21,8 @@
 //! scanners (`ch`, `skip`, `skipBreak`, `skipComment`, `scanPlainLine`,
 //! `scanQuotedScalar`, `scanBlockScalar`, `indicatorEnds`,
 //! `atDocumentMarkerLine`, `atAnchorCharacter`, `expectPropertyEnd`,
-//! `scanVerbatimTag`, `scanShorthandTag`, `scanPlainScalar`): they are
-//! pub for it, and are not the token API.
+//! `scanVerbatimTag`, `scanShorthandTag`, `scanPlainScalar`,
+//! `scanDirective`): they are pub for it, and are not the token API.
 //!
 //! Not threadsafe.
 
@@ -423,6 +423,13 @@ fn fetchDirective(s: *Scanner) Error!void {
     try s.unrollIndent(-1);
     try s.removeSimpleKey();
     s.simple_key_allowed = false;
+    const token = try s.scanDirective() orelse return;
+    try s.pushToken(token);
+}
+
+/// Scans the directive at the `%`: its token, or null for one YAML
+/// reserves, which is skipped to its line's end.
+pub fn scanDirective(s: *Scanner) Error!?Token {
     const start = s.mark;
     s.skip();
     const name_start = s.mark.offset;
@@ -435,11 +442,11 @@ fn fetchDirective(s: *Scanner) Error!void {
         .{ .tag_directive = try s.scanTagDirective() }
     else {
         while (!isBreakOrEnd(s.ch(0))) try s.skipPrintable();
-        return;
+        return null;
     };
     const end = s.mark;
     try s.skipDirectiveEnd();
-    try s.append(data, start, end);
+    return .{ .start = start, .end = end, .data = data };
 }
 
 /// After a directive's last parameter, only blanks and a comment.

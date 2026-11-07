@@ -100,6 +100,35 @@ test "flow collections on one line" {
     try expectWhole("tags: [alpha, beta, \"gamma 0\"]\nenv: {A: \"x\", B: 'y'}\nn: [[1, 2], {}, []]\nk: {a, b: , : c}\n");
 }
 
+test "explicit keys, and values with no key" {
+    try expectWhole("? a\n: b\n");
+    try expectWhole("? explicit # empty value\n? |\n  block key\n: - one\n  - two\n");
+    try expectWhole("a: 1\n? b\n: 2\nc: 3\n");
+    try expectWhole("?\n- a\n- b\n:\n- c\n");
+    try expectWhole("- ? : x\n- ? k\n  : v\n");
+    try expectWhole("? a: b\n  c: d\n: e\n? x\n");
+    try expectWhole(": a\n: - b\n  - c\n");
+    try expectWhole("&m\n? &k k\n: &v\n");
+    try expectWhole("?\n");
+}
+
+test "keys with properties, and aliases as keys" {
+    try expectWhole("&a key: v\n");
+    try expectWhole("*a : v\n");
+    try expectWhole("- &a !!str k: v\n  *a : w\n  !t 'q': x\n");
+    try expectWhole("&m\n&k key: v\n!!str k2: *k\n");
+    try expectWhole("&m\n*a : v\n");
+    try expectWhole("top:\n  &x a: 1\n  b: &y 2\n");
+}
+
+test "directives, and tags resolved against them" {
+    try expectWhole("%YAML 1.2\n---\na\n");
+    try expectWhole("%TAG !e! tag:e.com,2000:\n%TAG ! !local-\n--- !e!x\n- !y 1\n- !!str 2\n");
+    try expectWhole("%TAG !! tag:other:\n--- !!str a\n...\n--- !!str b\n");
+    try expectWhole("%FUTURE reserved # skipped\n%YAML 1.1\n---\n...\n%TAG !e! %5Bt%20%C3%A9:\n--- !e!x [!e!y a]\n");
+    try expectWhole("# c\n%YAML 1.2 # c\n\n---\n");
+}
+
 test "the bench's records" {
     try expectWhole(
         \\- name: service-0
@@ -120,13 +149,20 @@ test "the bench's records" {
 }
 
 test "what it hands over: forms it does not read yet, and errors" {
-    try expectHandedOver("%YAML 1.2\n---\na\n");
-    try expectHandedOver("&a key: v\n");
-    try expectHandedOver("*a : v\n");
     try expectHandedOver("a: !e!x 1\n");
+    // Directives the parser refuses, and one after a document with no
+    // `...` before it.
+    try expectHandedOver("%YAML 1.2\n%YAML 1.2\n---\na\n");
+    try expectHandedOver("%YAML 2.0\n---\na\n");
+    try expectHandedOver("%TAG !e! a:\n%TAG !e! b:\n---\na\n");
+    try expectHandedOver("%TAG !e! a:\na\n");
+    try expectHandedOver("a\n---\nb: c\n%YAML 1.2\n---\nc\n");
     try expectHandedOver("a: &x &y 1\n");
     try expectHandedOver("{&a k: v}\n");
-    try expectHandedOver("? a\n: b\n");
+    // Properties before a `:` with no key, and properties on two lines
+    // of a node that is no mapping.
+    try expectHandedOver("&a : b\n");
+    try expectHandedOver("&a\n!t x\n");
     try expectHandedOver("a b\nc: d\n");
     try expectHandedOver("[a]: b\n");
     // A line of a flow collection in a block must be indented past it.
