@@ -159,9 +159,10 @@ test "events in, YAML out: reformat a stream" {
 - UTF-8, UTF-16 and UTF-32, either byte order, with or without a byte
   order mark. `parseFromSlice` decodes them; `yaml.encoding.toUtf8`
   does it for the lower stages.
-- Three schemas, chosen with `ParseOptions.schema`: core (the default:
+- Four schemas, chosen with `ParseOptions.schema`: core (the default:
   `null`, `~`, `true`, `0x1F`, `.inf` and so on), JSON (anything else
-  unquoted is an error), and failsafe (everything is a string).
+  unquoted is an error), failsafe (everything is a string), and yaml11
+  (YAML 1.1's types, as PyYAML reads them; see below).
 - Keys compare by value: `1` and `0x1` are the same key. A mapping with
   two equal keys is an error unless you set `duplicate_keys = .keep`,
   and then a struct field takes the last one.
@@ -174,6 +175,27 @@ Many tools still read YAML 1.1 (PyYAML and other older libraries).
 There, `yes`, `no`, `on` and `off` are booleans, `0777` is octal, `1:20`
 is the number 80, and `2001-12-14` is a date. yaml.zig reads YAML 1.2,
 where all of those are strings.
+
+To read a file written for those tools as they read it, choose the
+yaml11 schema: `.schema = .yaml11`, or `--schema yaml11` on the
+command line. It types plain scalars as PyYAML's resolver does, form for
+form:
+
+- `yes`, `no`, `on`, `off`, `true` and `false`, in lower, title or upper
+  case, are booleans. `y` and `n` are strings, as in PyYAML, though
+  yaml.org's type page lists them.
+- Integers may be binary (`0b101`), octal with a leading `0` (`0755`),
+  hex (`0x1F`), have `_` among their digits (`1_000`), or be
+  sexagesimal (`1:20` is 80), each with a sign. `0o17` is a string.
+- A float needs a point, and an exponent a sign: `1.5`, `1.`, `.5`,
+  `6.8e+5`, `1_000.5`, `1:20.5`. `1e3` is a string.
+- `2001-12-14`, and a date with a time (`2001-12-14t21:59:43.10-05:00`,
+  `2001-12-14 21:59:43.10 -5`), are timestamps. A string field or a
+  `Value` gets the text; `yaml.schema.parseTimestamp` gives its parts.
+
+Keys compare by these values, so `0755` and `493` are one key.
+`Schema.int`, `Schema.float` and `Schema.boolean` read a scalar's value
+under any schema.
 
 When it writes, yaml.zig quotes any string a YAML 1.1 reader would take
 for something else, so the files it writes read the same everywhere.

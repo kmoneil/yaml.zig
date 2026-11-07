@@ -145,16 +145,18 @@ pub const ValueError = error{
 pub const max_values = 1_000_000;
 
 /// What `node` holds as a Value, aliases followed: a scalar typed by its
-/// tag as parseFromSlice types one (a tag the schema has no type for
-/// gives the text), a collection's entries in order, with `merges` a
-/// mapping's merge keys applied. On MergeFailed, `failure` says why.
-pub fn valueOf(arena: Allocator, node: *const Node, merges: ?Merges, failure: *MergeFailure) ValueError!Value {
-    var b: Builder = .{ .arena = arena, .merges = merges, .failure = failure };
+/// tag as parseFromSlice types one under `schema` (a tag the schema has
+/// no type for gives the text), a collection's entries in order, with
+/// `merges` a mapping's merge keys applied. On MergeFailed, `failure`
+/// says why.
+pub fn valueOf(arena: Allocator, node: *const Node, s: schema.Schema, merges: ?Merges, failure: *MergeFailure) ValueError!Value {
+    var b: Builder = .{ .arena = arena, .schema = s, .merges = merges, .failure = failure };
     return b.build(node);
 }
 
 const Builder = struct {
     arena: Allocator,
+    schema: schema.Schema,
     merges: ?Merges,
     failure: *MergeFailure,
     /// The collections being built: an alias to one is a cycle.
@@ -165,7 +167,7 @@ const Builder = struct {
         const node = from.target();
         b.built += 1;
         if (b.built > max_values) return error.TooLarge;
-        if (node.data == .scalar) return scalarValue(node);
+        if (node.data == .scalar) return scalarValue(b.schema, node);
         const entry = try b.open.getOrPut(b.arena, node);
         if (entry.found_existing) return error.Cycle;
         defer _ = b.open.remove(node);
@@ -207,16 +209,16 @@ const Builder = struct {
     }
 };
 
-fn scalarValue(node: *const Node) Value {
+fn scalarValue(s: schema.Schema, node: *const Node) Value {
     const text = node.data.scalar.value;
     switch (schema.core(node.tag orelse "") orelse .str) {
         .null => return .null,
-        .bool => if (schema.parseBool(text)) |v| return .{ .bool = v },
-        .int => if (schema.parseInt(text)) |n| {
+        .bool => if (s.boolean(text)) |v| return .{ .bool = v },
+        .int => if (s.int(i128, text)) |n| {
             if (std.math.cast(i64, n)) |i| return .{ .integer = i };
             return .{ .number_string = text };
         },
-        .float => if (schema.parseFloat(text)) |x| return .{ .float = x },
+        .float => if (s.float(text)) |x| return .{ .float = x },
         .str, .seq, .map => {},
     }
     return .{ .string = text };

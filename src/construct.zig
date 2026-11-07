@@ -495,7 +495,7 @@ const Builder = struct {
     fn checkScalar(b: *const Builder, node: *const Node) ParseError!void {
         const tag = node.tag orelse return;
         const text = node.data.scalar.value;
-        if (schema.fitsTag(tag, text)) return;
+        if (b.options.schema.fits(tag, text)) return;
         return b.failDetail(node, error.UnexpectedType, "a scalar's text is not what its tag says", "the scalar \"{f}\" is tagged !!{s} but is not {s}", .{
             Shown{ .text = cutUtf8(text, 40) }, tag[schema.core_prefix.len..], tagSays(tag),
         });
@@ -504,15 +504,15 @@ const Builder = struct {
     fn buildBool(b: *const Builder, node: *const Node) ParseError!bool {
         const text = try b.scalarOf(node, "a boolean");
         if (!hasTag(node, .bool)) return b.failExpected(node, "a boolean");
-        return schema.parseBool(text) orelse b.failExpected(node, "a boolean");
+        return b.options.schema.boolean(text) orelse b.failExpected(node, "a boolean");
     }
 
     fn buildInt(b: *const Builder, comptime T: type, node: *const Node) ParseError!T {
         const text = try b.scalarOf(node, "an integer");
         // `build` saw that the text is an integer: null here is too big.
-        if (hasTag(node, .int)) return schema.parseIntAs(T, text) orelse b.tooBig(T, node, text);
+        if (hasTag(node, .int)) return b.options.schema.int(T, text) orelse b.tooBig(T, node, text);
         if (hasTag(node, .float)) {
-            const x = schema.parseFloat(text) orelse return b.failExpected(node, "an integer");
+            const x = b.options.schema.float(text) orelse return b.failExpected(node, "an integer");
             if (@trunc(x) != x or !std.math.isFinite(x)) return b.fail(node, error.UnexpectedType, "expected an integer, found a fraction");
             if (!wholeFits(T, x)) return b.tooBig(T, node, text);
             return wholeToInt(T, x);
@@ -556,11 +556,11 @@ const Builder = struct {
     fn buildFloat(b: *const Builder, comptime T: type, node: *const Node) ParseError!T {
         const text = try b.scalarOf(node, "a number");
         if (hasTag(node, .float)) {
-            const x = schema.parseFloat(text) orelse return b.failExpected(node, "a number");
+            const x = b.options.schema.float(text) orelse return b.failExpected(node, "a number");
             return @floatCast(x);
         }
         if (hasTag(node, .int)) {
-            const n = schema.parseInt(text) orelse return b.fail(node, error.Overflow, "the integer does not fit");
+            const n = b.options.schema.int(i128, text) orelse return b.fail(node, error.Overflow, "the integer does not fit");
             return @floatFromInt(n);
         }
         return b.failExpected(node, "a number");
@@ -570,7 +570,7 @@ const Builder = struct {
         const text = try b.scalarOf(node, "a name");
         if (std.meta.stringToEnum(T, text)) |e| return e;
         if (hasTag(node, .int)) {
-            const n = schema.parseInt(text) orelse return b.fail(node, error.Overflow, "the integer does not fit");
+            const n = b.options.schema.int(i128, text) orelse return b.fail(node, error.Overflow, "the integer does not fit");
             const Tag = @typeInfo(T).@"enum".tag_type;
             const raw = std.math.cast(Tag, n) orelse return b.fail(node, error.UnexpectedType, "no value of the enum has this number");
             return std.enums.fromInt(T, raw) orelse b.fail(node, error.UnexpectedType, "no value of the enum has this number");
@@ -826,14 +826,12 @@ const Builder = struct {
     fn scalarValue(b: *const Builder, node: *const Node, text: []const u8) ParseError!Value {
         switch (schema.core(node.tag orelse "") orelse .str) {
             .null => return .null,
-            .bool => if (schema.parseBool(text)) |v| return .{ .bool = v },
+            .bool => if (b.options.schema.boolean(text)) |v| return .{ .bool = v },
             .int => {
-                if (schema.parseInt(text)) |n| {
-                    if (std.math.cast(i64, n)) |i| return .{ .integer = i };
-                }
+                if (b.options.schema.int(i64, text)) |i| return .{ .integer = i };
                 return .{ .number_string = try b.allocator.dupe(u8, text) };
             },
-            .float => if (schema.parseFloat(text)) |x| return .{ .float = x },
+            .float => if (b.options.schema.float(text)) |x| return .{ .float = x },
             .str, .seq, .map => {},
         }
         return .{ .string = try b.allocator.dupe(u8, text) };

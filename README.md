@@ -240,6 +240,18 @@ test "merge keys: shared settings, as compose files write them" {
 }
 ```
 
+## YAML 1.1 files
+
+A file written for PyYAML or another YAML 1.1 tool can mean something
+else under YAML 1.2. There `country: no` is false and `mode: 0755` is
+493; here they are the string `"no"` and 755. To read such a file the
+way those tools do, set `.schema = .yaml11`, or pass `--schema yaml11`
+to the `yaml` command. Then `yes`, `no`, `on` and `off` are booleans,
+`0755` is octal, `1:20` is 80, and `2001-12-14` is a timestamp, which a
+string field takes as its text and `yaml.schema.parseTimestamp` takes
+apart. It follows PyYAML form for form, checked against PyYAML itself on
+half a million scalars.
+
 ## More
 
 The [guide](docs/guide.md) covers types that parse themselves, the
@@ -313,8 +325,10 @@ back, with identical results:
 
 Like the Zig library, it reads YAML 1.2, refuses duplicate keys and caps
 alias bombs; it applies merge keys, as PyYAML does, and parses outside
-Python's global interpreter lock. It is built and tested here, in
-[python/](python/README.md); its first release on PyPI is next.
+Python's global interpreter lock. For files written for PyYAML,
+`schema="yaml11"` reads YAML 1.1 as PyYAML does, dates as `datetime`.
+It is built and tested here, in [python/](python/README.md); its first
+release on PyPI is next.
 
 ## Speed
 

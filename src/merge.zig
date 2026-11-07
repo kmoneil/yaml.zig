@@ -83,11 +83,12 @@ pub const Pairs = struct {
 
     const KeyContext = struct {
         seed: u64,
+        schema: schema.Schema,
         pub fn hash(ctx: KeyContext, key: *const Node) u64 {
-            return Composer.hashNode(key, ctx.seed);
+            return Composer.hashNode(ctx.schema, key, ctx.seed);
         }
-        pub fn eql(_: KeyContext, a: *const Node, b: *const Node) bool {
-            return Composer.equal(a, b);
+        pub fn eql(ctx: KeyContext, a: *const Node, b: *const Node) bool {
+            return Composer.equal(ctx.schema, a, b);
         }
     };
 
@@ -198,7 +199,7 @@ pub const Pairs = struct {
             try p.given.append(p.gpa, key);
             return true;
         }
-        const ctx: KeyContext = .{ .seed = p.composer.hashSeed() };
+        const ctx = p.keyContext();
         if (p.set.count() == 0) {
             for (p.given.items) |k| try p.set.putContext(p.gpa, k, {}, ctx);
         }
@@ -206,10 +207,14 @@ pub const Pairs = struct {
         return true;
     }
 
+    fn keyContext(p: *Pairs) KeyContext {
+        return .{ .seed = p.composer.hashSeed(), .schema = p.composer.options.schema };
+    }
+
     fn isGiven(p: *Pairs, key: *const Node) bool {
-        if (p.set.count() > 0) return p.set.containsContext(key, .{ .seed = p.composer.hashSeed() });
+        if (p.set.count() > 0) return p.set.containsContext(key, p.keyContext());
         for (p.given.items) |k| {
-            if (Composer.equal(k, key)) return true;
+            if (Composer.equal(p.composer.options.schema, k, key)) return true;
         }
         return false;
     }

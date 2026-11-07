@@ -626,12 +626,12 @@ fn checkKeyAmong(c: *Composer, items: []const *Node, stride: usize, set: *KeySet
         if (isString(key)) return c.checkStringKey(items, stride, key);
         var i: usize = 0;
         while (i < items.len) : (i += stride) {
-            if (equal(items[i], key)) return c.duplicate(key);
+            if (equal(c.options.schema, items[i], key)) return c.duplicate(key);
         }
         return;
     }
     if (set.count() == 0) try c.fillKeySet(items, stride, set);
-    const entry = try set.getOrPutContext(c.parser.scanner.gpa, key, .{ .seed = c.hashSeed() });
+    const entry = try set.getOrPutContext(c.parser.scanner.gpa, key, c.keyContext());
     if (entry.found_existing) return c.duplicate(key);
 }
 
@@ -650,7 +650,7 @@ fn checkStringKey(c: *Composer, items: []const *Node, stride: usize, key: *Node)
         const same = if (isString(other)) same: {
             const value = other.data.scalar.value;
             break :same value.len == text.len and (text.len == 0 or value[0] == text[0]) and std.mem.eql(u8, value, text);
-        } else other.data == .alias and equal(other, key);
+        } else other.data == .alias and equal(c.options.schema, other, key);
         if (same) return c.duplicate(key);
     }
 }
@@ -670,7 +670,7 @@ fn fillKeySet(c: *Composer, items: []const *Node, stride: usize, set: *KeySet) E
         }
     }
     var i: usize = 0;
-    const ctx: KeyContext = .{ .seed = c.hashSeed() };
+    const ctx = c.keyContext();
     while (i < items.len) : (i += stride) try set.putContext(gpa, items[i], {}, ctx);
 }
 
@@ -718,32 +718,78 @@ fn duplicate(c: *Composer, key: *const Node) Error {
 // Equality and hashing
 
 /// Whether two nodes are equal as keys: the same kind and tag, and the
-/// same content, a scalar's by value (`schema.equalValues`: `1` and `0x1`
-/// are equal integers), through aliases. Gives up, as not equal, past
-/// `node_budget` nodes.
-pub fn equal(a: *const Node, b: *const Node) bool {
+/// same content, a scalar's by value under the schema `s`
+/// (`Schema.equal`: `1` and `0x1` are equal integers), through aliases.
+/// Gives up, as not equal, past `node_budget` nodes.
+pub fn equal(s: schema.Schema, a: *const Node, b: *const Node) bool {
     // Keys a person writes are plain strings far more often than not: two
-    // of them are compared by their text at once (t48), as equalValues
+    // of them are compared by their text at once (t48), as Schema.equal
     // would after the walk below.
     if (isString(a) and isString(b)) return std.mem.eql(u8, a.data.scalar.value, b.data.scalar.value);
-    var budget: usize = node_budget;
-    return equalWithin(a, b, &budget);
+    var walk: Walk = .{ .schema = s };
+    return walk.equal(a, b);
 }
 
-fn equalWithin(a_node: *const Node, b_node: *const Node, budget: *usize) bool {
-    const a = a_node.target();
-    const b = b_node.target();
-    if (a == b) return true;
-    if (budget.* == 0) return false;
-    budget.* -= 1;
-    if (!std.mem.eql(u8, a.tag.?, b.tag.?)) return false;
-    return switch (a.data) {
-        .scalar => |s| b.data == .scalar and schema.equalValues(a.tag.?, s.value, b.data.scalar.value),
-        .sequence => |s| b.data == .sequence and equalItems(s.items, b.data.sequence.items, budget),
-        .mapping => |m| b.data == .mapping and equalPairs(m.pairs, b.data.mapping.pairs, budget),
-        .alias => unreachable,
-    };
-}
+/// A walk over two nodes, or one, for `equal` or `hashNode`, which gives
+/// up past `node_budget` nodes.
+const Walk = struct {
+    schema: schema.Schema,
+    budget: usize = node_budget,
+
+    fn equal(w: *Walk, a_node: *const Node, b_node: *const Node) bool {
+        const a = a_node.target();
+        const b = b_node.target();
+        if (a == b) return true;
+        if (w.budget == 0) return false;
+        w.budget -= 1;
+        if (!std.mem.eql(u8, a.tag.?, b.tag.?)) return false;
+        return switch (a.data) {
+            .scalar => |s| b.data == .scalar and w.schema.equal(a.tag.?, s.value, b.data.scalar.value),
+            .sequence => |s| b.data == .sequence and w.equalItems(s.items, b.data.sequence.items),
+            .mapping => |m| b.data == .mapping and w.equalPairs(m.pairs, b.data.mapping.pairs),
+            .alias => unreachable,
+        };
+    }
+
+    fn equalItems(w: *Walk, a: []const *Node, b: []const *Node) bool {
+        if (a.len != b.len) return false;
+        for (a, b) |x, y| {
+            if (!w.equal(x, y)) return false;
+        }
+        return true;
+    }
+
+    /// Mappings are equal when each key of one is in the other with an
+    /// equal value; keys being unique, the same count makes that both ways.
+    fn equalPairs(w: *Walk, a: []const Node.Pair, b: []const Node.Pair) bool {
+        if (a.len != b.len) return false;
+        outer: for (a) |pa| {
+            for (b) |pb| {
+                if (w.equal(pa.key, pb.key)) {
+                    if (!w.equal(pa.value, pb.value)) return false;
+                    continue :outer;
+                }
+            }
+            return false;
+        }
+        return true;
+    }
+
+    fn hash(w: *Walk, hasher: *std.hash.Wyhash, node: *const Node) void {
+        const n = node.target();
+        if (w.budget == 0) return;
+        w.budget -= 1;
+        hasher.update(n.tag.?);
+        hasher.update(&.{@backingInt(std.meta.activeTag(n.data))});
+        switch (n.data) {
+            .scalar => |s| w.schema.hash(hasher, n.tag.?, s.value),
+            .sequence => |s| for (s.items) |item| w.hash(hasher, item),
+            // Pairs may be in any order: their count only.
+            .mapping => |m| hasher.update(std.mem.asBytes(&m.pairs.len)),
+            .alias => unreachable,
+        }
+    }
+};
 
 /// Whether `node` is a scalar the composer tagged a string, by the tag's
 /// pointer (`schema.core`).
@@ -752,63 +798,29 @@ fn isString(node: *const Node) bool {
     return node.data == .scalar and tag.ptr == schema.tag.str.ptr and tag.len == schema.tag.str.len;
 }
 
-fn equalItems(a: []const *Node, b: []const *Node, budget: *usize) bool {
-    if (a.len != b.len) return false;
-    for (a, b) |x, y| {
-        if (!equalWithin(x, y, budget)) return false;
-    }
-    return true;
-}
-
-/// Mappings are equal when each key of one is in the other with an equal
-/// value; keys being unique, the same count makes that both ways.
-fn equalPairs(a: []const Node.Pair, b: []const Node.Pair, budget: *usize) bool {
-    if (a.len != b.len) return false;
-    outer: for (a) |pa| {
-        for (b) |pb| {
-            if (equalWithin(pa.key, pb.key, budget)) {
-                if (!equalWithin(pa.value, pb.value, budget)) return false;
-                continue :outer;
-            }
-        }
-        return false;
-    }
-    return true;
-}
-
-/// A hash agreeing with `equal`: equal nodes hash the same, under the
-/// seed (`hashSeed`).
-pub fn hashNode(node: *const Node, seed: u64) u64 {
+/// A hash agreeing with `equal` under the schema `s`: equal nodes hash
+/// the same, under the seed (`hashSeed`).
+pub fn hashNode(s: schema.Schema, node: *const Node, seed: u64) u64 {
     var hasher: std.hash.Wyhash = .init(seed);
-    var budget: usize = node_budget;
-    hashWithin(&hasher, node, &budget);
+    var walk: Walk = .{ .schema = s };
+    walk.hash(&hasher, node);
     return hasher.final();
-}
-
-fn hashWithin(hasher: *std.hash.Wyhash, node: *const Node, budget: *usize) void {
-    const n = node.target();
-    if (budget.* == 0) return;
-    budget.* -= 1;
-    hasher.update(n.tag.?);
-    hasher.update(&.{@backingInt(std.meta.activeTag(n.data))});
-    switch (n.data) {
-        .scalar => |s| schema.hashValue(hasher, n.tag.?, s.value),
-        .sequence => |s| for (s.items) |item| hashWithin(hasher, item, budget),
-        // Pairs may be in any order: their count only.
-        .mapping => |m| hasher.update(std.mem.asBytes(&m.pairs.len)),
-        .alias => unreachable,
-    }
 }
 
 const KeyContext = struct {
     seed: u64,
+    schema: schema.Schema,
     pub fn hash(ctx: KeyContext, key: *Node) u64 {
-        return hashNode(key, ctx.seed);
+        return hashNode(ctx.schema, key, ctx.seed);
     }
-    pub fn eql(_: KeyContext, a: *Node, b: *Node) bool {
-        return equal(a, b);
+    pub fn eql(ctx: KeyContext, a: *Node, b: *Node) bool {
+        return equal(ctx.schema, a, b);
     }
 };
+
+fn keyContext(c: *Composer) KeyContext {
+    return .{ .seed = c.hashSeed(), .schema = c.options.schema };
+}
 
 const KeySet = std.HashMapUnmanaged(*Node, void, KeyContext, std.hash_map.default_max_load_percentage);
 
@@ -840,7 +852,7 @@ fn collidingNames(gpa: Allocator, count: usize, comptime as_keys: bool) ![][]con
         var buf: [16]u8 = undefined;
         const name = try std.fmt.bufPrint(&buf, "k{d}", .{i});
         const key: Node = .{ .start = .{}, .end = .{}, .tag = schema.tag.str, .data = .{ .scalar = .{ .value = name, .style = .plain } } };
-        const hash = if (as_keys) hashNode(&key, 0) else std.hash.Wyhash.hash(0, name);
+        const hash = if (as_keys) hashNode(.core, &key, 0) else std.hash.Wyhash.hash(0, name);
         if (hash & mask != 0) continue;
         names[found] = try gpa.dupe(u8, name);
         found += 1;
@@ -870,8 +882,8 @@ test "keys and anchors built to collide under a fixed seed spread under the comp
     var key_hashes: [400]u64 = undefined;
     var anchor_hashes: [400]u64 = undefined;
     for (root.data.mapping.pairs, anchors, 0..) |pair, anchor, i| {
-        try testing.expectEqual(0, hashNode(pair.key, 0) & mask);
-        key_hashes[i] = hashNode(pair.key, c.hashSeed());
+        try testing.expectEqual(0, hashNode(.core, pair.key, 0) & mask);
+        key_hashes[i] = hashNode(.core, pair.key, c.hashSeed());
         anchor_hashes[i] = SeededStrings.hash(.{ .seed = c.hashSeed() }, anchor);
     }
     // 400 random hashes fill about 330 of 1,024 buckets; one is what the

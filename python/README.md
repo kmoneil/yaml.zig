@@ -97,17 +97,23 @@ and an alias inside its own anchor makes a cycle. Merge keys
 
 Options:
 
+- `schema="yaml11"` reads YAML 1.1 as PyYAML does: `yes` is True, `0755`
+  is 493, and `2001-12-14` is a `datetime.date`. Use it for files
+  written for PyYAML. `"json"` and `"failsafe"` (every scalar a str) are
+  there too; the default is `"core"`, YAML 1.2.
 - `merge_keys=False` reads `<<` as an ordinary key.
 - `max_depth=256` is how deep a document may nest, or data be written.
 
 ## How it differs from PyYAML
 
 - **YAML 1.2.** `yes`, `no`, `on` and `off` are strings. `0777` is the
-  number 777, not octal; write `0o777`. Dates stay strings.
+  number 777, not octal; write `0o777`. Dates stay strings. With
+  `schema="yaml11"` all of these read as in PyYAML.
 - **Duplicate keys are an error.** PyYAML keeps the last one.
-- **Core tags only.** `!!binary`, `!!timestamp`, `!!set` and custom tags
+- **Core tags and timestamps only.** `!!binary`, `!!set` and custom tags
   are refused for now. `safe_dump` writes dict, list, tuple, str, int,
-  float, bool and None, which is what `safe_load` gives back.
+  float, bool and None, which is what `safe_load` gives back under the
+  core schema; dates and times are not written yet.
 - **No anchors when writing.** An object that appears twice is written
   twice, and data that contains itself is an error.
 

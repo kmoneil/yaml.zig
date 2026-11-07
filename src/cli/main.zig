@@ -44,8 +44,10 @@ const usage =
     \\read too, by their byte order mark or their first bytes.
     \\
     \\Options:
-    \\  --schema core|json|failsafe   How a plain scalar with no tag is typed
-    \\                                (default core).
+    \\  --schema core|yaml11|json|failsafe
+    \\                                How a plain scalar with no tag is typed
+    \\                                (default core). yaml11 types it as
+    \\                                PyYAML does: yes is true, 0777 octal.
     \\  --duplicate-keys refuse|keep  A mapping's second equal key: an error
     \\                                (the default), or kept.
     \\  --max-depth <n>               The most collections open at once
@@ -184,7 +186,7 @@ fn setOption(arena: Allocator, options: *Options, name: []const u8, value: []con
     if (std.mem.eql(u8, name, "--format")) {
         options.format = std.meta.stringToEnum(@FieldType(Options, "format"), value) orelse return "--format is text or json";
     } else if (std.mem.eql(u8, name, "--schema")) {
-        options.composer.schema = std.meta.stringToEnum(yaml.schema.Schema, value) orelse return "--schema is core, json or failsafe";
+        options.composer.schema = std.meta.stringToEnum(yaml.schema.Schema, value) orelse return "--schema is core, yaml11, json or failsafe";
     } else if (std.mem.eql(u8, name, "--duplicate-keys")) {
         options.composer.duplicate_keys = std.meta.stringToEnum(@FieldType(yaml.Composer.Options, "duplicate_keys"), value) orelse return "--duplicate-keys is refuse or keep";
     } else if (std.mem.eql(u8, name, "--max-depth")) {
@@ -466,7 +468,7 @@ fn reportMerge(file: []const u8, f: tree.MergeFailure) u8 {
 /// Writes what `node` holds as YAML or JSON: 1, said, when it cannot be.
 fn writeValue(arena: Allocator, out: *Io.Writer, file: []const u8, node: *const yaml.Composer.Node, options: Options, merges: ?tree.Merges) !u8 {
     var failure: tree.MergeFailure = undefined;
-    const value = tree.valueOf(arena, node, merges, &failure) catch |err| switch (err) {
+    const value = tree.valueOf(arena, node, options.composer.schema, merges, &failure) catch |err| switch (err) {
         error.OutOfMemory => |e| return e,
         error.MergeFailed => return reportMerge(file, failure),
         error.Cycle => {

@@ -141,7 +141,7 @@ test "round trip: strings that read as other things when plain" {
 test "strings YAML 1.1 reads as other things are quoted, for its readers" {
     // YAML 1.2 reads each as a string plain; PyYAML and other 1.1 readers
     // read them as booleans, numbers, dates and the merge key.
-    const typed = [_][]const u8{ "yes", "No", "on", "OFF", "y", "N", "0b101", "1_000", "-1_000.5", "1:20", "190:20:30.15", "2001-12-14", "2001-1-2T10:00:00Z", "2001-12-14 21:59:43", "<<" };
+    const typed = [_][]const u8{ "yes", "No", "on", "OFF", "y", "N", "0b101", "1_000", "-1_000.5", "1:20", "190:20:30.15", "2001-12-14", "2001-1-2T10:00:00Z", "2001-12-14 21:59:43", "<<", "=", "-0x1F", "0x_1F" };
     for (typed) |text| {
         const written = try yaml.stringifyAlloc(testing.allocator, text, .{});
         defer testing.allocator.free(written);

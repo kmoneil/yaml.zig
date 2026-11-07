@@ -2,7 +2,8 @@
 //!
 //! It reads YAML with yaml.zig and builds Python objects straight from
 //! the composer's node graph: dict, list, str, int, float, bool and None,
-//! as PyYAML's safe_load builds them for YAML 1.2's core schema. An alias
+//! as PyYAML's safe_load builds them, for YAML 1.2's core schema or, with
+//! the yaml11 schema, YAML 1.1's, timestamps then datetime's. An alias
 //! is the same object as its anchor's, as in PyYAML, so an alias inside
 //! the collection it names makes a cycle of objects. The documents are
 //! composed with the GIL released; only building the objects holds it.
@@ -62,6 +63,7 @@ fn boolean(v: bool) Raised!*c.PyObject {
 const Builder = struct {
     gpa: std.mem.Allocator,
     composer: *yaml.Composer,
+    schema: yaml.schema.Schema,
     merge_keys: bool,
     max_depth: usize,
     /// Each anchored node's object, a borrowed reference: its container,
@@ -102,13 +104,17 @@ const Builder = struct {
     fn scalar(b: *Builder, node: *const Node, text: []const u8, style: yaml.Composer.ScalarStyle) Raised!*c.PyObject {
         _ = style;
         const tag = node.tag orelse "";
-        const core = yaml.schema.core(tag) orelse return raise("could not determine a constructor for the tag", node.start);
-        if (!yaml.schema.fitsTag(tag, text)) return raise("the scalar's text is not what its tag says", node.start);
+        const core = yaml.schema.core(tag) orelse {
+            if (std.mem.eql(u8, tag, yaml.schema.tag.timestamp)) return timestamp(text, node.start);
+            return raise("could not determine a constructor for the tag", node.start);
+        };
+        const s = b.schema;
+        if (!s.fits(tag, text)) return raise("the scalar's text is not what its tag says", node.start);
         return switch (core) {
             .null => none(),
-            .bool => boolean(yaml.schema.parseBool(text).?),
-            .int => integer(b.gpa, text),
-            .float => c.PyFloat_FromDouble(yaml.schema.parseFloat(text).?) orelse error.Raised,
+            .bool => boolean(s.boolean(text).?),
+            .int => integer(b.gpa, s, text, node.start),
+            .float => c.PyFloat_FromDouble(s.float(text) orelse return raise("the float is too long to read", node.start)) orelse error.Raised,
             .str => c.PyUnicode_FromStringAndSize(text.ptr, @intCast(text.len)) orelse error.Raised,
             .seq, .map => raise("a scalar cannot be tagged as a collection", node.start),
         };
@@ -166,30 +172,87 @@ fn mergeFailed(err: yaml.merge.Error, at: ?*const Node) Raised {
     };
 }
 
-/// A core-schema integer: an int, of any size, from its text (decimal,
-/// 0o octal or 0x hexadecimal, with a sign).
-fn integer(gpa: std.mem.Allocator, text: []const u8) Raised!*c.PyObject {
-    if (yaml.schema.parseInt(text)) |n| {
-        if (std.math.cast(c_longlong, n)) |small| return c.PyLong_FromLongLong(small) orelse error.Raised;
-    }
-    // Past 64 bits: Python reads the digits, in the base the prefix says.
-    var digits = text;
-    var negative = false;
-    if (digits.len > 0 and (digits[0] == '-' or digits[0] == '+')) {
-        negative = digits[0] == '-';
-        digits = digits[1..];
-    }
-    var base: c_int = 10;
-    if (std.mem.startsWith(u8, digits, "0x")) {
-        base = 16;
-        digits = digits[2..];
-    } else if (std.mem.startsWith(u8, digits, "0o")) {
-        base = 8;
-        digits = digits[2..];
-    }
-    const z = std.fmt.allocPrintSentinel(gpa, "{s}{s}", .{ if (negative) "-" else "", digits }, 0) catch return noMemory();
+/// An int, of any size, from an integer's text as the schema `s` reads
+/// it: decimal, `0o` octal or `0x` hexadecimal, with a sign, and under
+/// yaml11 binary, `0` octal, `_` among the digits and sexagesimal.
+fn integer(gpa: std.mem.Allocator, s: yaml.schema.Schema, text: []const u8, mark: Mark) Raised!*c.PyObject {
+    if (s.int(c_longlong, text)) |n| return c.PyLong_FromLongLong(n) orelse error.Raised;
+    if (std.mem.findScalar(u8, text, ':') == null) return bigInteger(gpa, s, text);
+    // Sexagesimal, which Python does not read: through an i128.
+    const n = s.int(i128, text) orelse return raise("the integer is too large", mark);
+    const z = std.fmt.allocPrintSentinel(gpa, "{d}", .{n}, 0) catch return noMemory();
     defer gpa.free(z);
+    return c.PyLong_FromString(z.ptr, null, 10) orelse error.Raised;
+}
+
+/// An integer past 64 bits: Python reads its digits, in the base its
+/// form says, with no `_`.
+fn bigInteger(gpa: std.mem.Allocator, s: yaml.schema.Schema, text: []const u8) Raised!*c.PyObject {
+    const negative = text.len > 0 and text[0] == '-';
+    var digits = if (text.len > 0 and (text[0] == '-' or text[0] == '+')) text[1..] else text;
+    const base = baseOf(s, &digits);
+    const z = gpa.allocSentinel(u8, digits.len + 1, 0) catch return noMemory();
+    defer gpa.free(z);
+    var n: usize = 0;
+    if (negative) {
+        z[0] = '-';
+        n = 1;
+    }
+    for (digits) |ch| {
+        if (ch == '_') continue;
+        z[n] = ch;
+        n += 1;
+    }
+    z[n] = 0;
     return c.PyLong_FromString(z.ptr, null, base) orelse error.Raised;
+}
+
+/// The base an unsigned integer's prefix gives it, the prefix taken off
+/// `digits`: `0x`, `0o` and `0b`, and under yaml11 a leading `0`.
+fn baseOf(s: yaml.schema.Schema, digits: *[]const u8) c_int {
+    for ([_]struct { []const u8, c_int }{ .{ "0x", 16 }, .{ "0o", 8 }, .{ "0b", 2 } }) |prefix| {
+        if (std.mem.startsWith(u8, digits.*, prefix[0])) {
+            digits.* = digits.*[2..];
+            return prefix[1];
+        }
+    }
+    return if (s == .yaml11 and digits.len > 1 and digits.*[0] == '0') 8 else 10;
+}
+
+/// A date, or a datetime, as PyYAML builds one: with no zone a naive
+/// one, with `Z` or an offset of 0 in UTC.
+fn timestamp(text: []const u8, mark: Mark) Raised!*c.PyObject {
+    const t = yaml.schema.parseTimestamp(text) orelse return raise("the timestamp is not a real date and time", mark);
+    const year: c_int = t.year;
+    const month: c_int = t.month;
+    const day: c_int = t.day;
+    const time = t.time orelse return c.PyObject_CallFunction(types.date, "(iii)", year, month, day) orelse outOfRange(mark);
+    const zone = try timezone(time.offset);
+    defer c.Py_DecRef(zone);
+    const hour: c_int = time.hour;
+    const minute: c_int = time.minute;
+    const second: c_int = time.second;
+    const microsecond: c_int = @intCast(time.nanosecond / 1000);
+    return c.PyObject_CallFunction(types.datetime, "(iiiiiiiO)", year, month, day, hour, minute, second, microsecond, zone) orelse outOfRange(mark);
+}
+
+/// Python refused a date, as it refuses the year 0.
+fn outOfRange(mark: Mark) Raised {
+    c.PyErr_Clear();
+    return raise("the timestamp is out of Python's range", mark);
+}
+
+/// A tzinfo for an offset of `offset` minutes; None for none.
+fn timezone(offset: ?i16) Raised!*c.PyObject {
+    const minutes = offset orelse return none();
+    if (minutes == 0) {
+        c.Py_IncRef(types.utc);
+        return types.utc;
+    }
+    const seconds: c_int = @as(c_int, minutes) * 60;
+    const delta = c.PyObject_CallFunction(types.timedelta, "(ii)", @as(c_int, 0), seconds) orelse return error.Raised;
+    defer c.Py_DecRef(delta);
+    return c.PyObject_CallFunction(types.timezone, "(O)", delta) orelse error.Raised;
 }
 
 /// What composing gave, read with the GIL released: the documents' roots,
@@ -224,20 +287,23 @@ fn compose(gpa: std.mem.Allocator, composer: *yaml.Composer, all: bool) Composed
     }
 }
 
-/// `_load(text, all, merge_keys, max_depth)`: the document of `text` (str
-/// or UTF-8, UTF-16 or UTF-32 bytes), None for an empty stream; with
-/// `all`, a list of every document.
+/// `_load(text, all, merge_keys, max_depth, schema)`: the document of
+/// `text` (str or UTF-8, UTF-16 or UTF-32 bytes), None for an empty
+/// stream; with `all`, a list of every document. `schema` is a
+/// yaml.schema.Schema's name.
 fn load(_: ?*c.PyObject, args: ?*c.PyObject) callconv(.c) ?*c.PyObject {
     var ptr: [*c]const u8 = undefined;
     var len: c.Py_ssize_t = 0;
     var all: c_int = 0;
     var merge_keys: c_int = 0;
     var max_depth: c.Py_ssize_t = 0;
-    if (c.PyArg_ParseTuple(args, "s#ppn", &ptr, &len, &all, &merge_keys, &max_depth) == 0) return null;
-    return loadText(ptr[0..@intCast(len)], all != 0, merge_keys != 0, @intCast(@max(max_depth, 0))) catch null;
+    var schema_name: [*c]const u8 = undefined;
+    if (c.PyArg_ParseTuple(args, "s#ppns", &ptr, &len, &all, &merge_keys, &max_depth, &schema_name) == 0) return null;
+    return loadText(ptr[0..@intCast(len)], all != 0, merge_keys != 0, @intCast(@max(max_depth, 0)), std.mem.span(schema_name)) catch null;
 }
 
-fn loadText(bytes: []const u8, all: bool, merge_keys: bool, max_depth: usize) Raised!*c.PyObject {
+fn loadText(bytes: []const u8, all: bool, merge_keys: bool, max_depth: usize, schema_name: []const u8) Raised!*c.PyObject {
+    const s = std.meta.stringToEnum(yaml.schema.Schema, schema_name) orelse return raise("the schema is core, yaml11, json or failsafe", null);
     var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
     defer arena.deinit();
     const gpa = arena.allocator();
@@ -248,7 +314,7 @@ fn loadText(bytes: []const u8, all: bool, merge_keys: bool, max_depth: usize) Ra
     };
     defer if (text.ptr != bytes.ptr) gpa.free(text);
 
-    var composer: yaml.Composer = .init(gpa, text, .{ .max_depth = max_depth });
+    var composer: yaml.Composer = .init(gpa, text, .{ .max_depth = max_depth, .schema = s });
     defer composer.deinit();
     const state = c.PyEval_SaveThread();
     var composed = compose(gpa, &composer, all);
@@ -258,7 +324,7 @@ fn loadText(bytes: []const u8, all: bool, merge_keys: bool, max_depth: usize) Ra
     if (composed.failure) |d| return raise(d.message, d.mark);
     if (composed.extra) |start| return raise("expected a single document in the stream, but found another document", start);
 
-    var builder: Builder = .{ .gpa = gpa, .composer = &composer, .merge_keys = merge_keys, .max_depth = max_depth };
+    var builder: Builder = .{ .gpa = gpa, .composer = &composer, .schema = s, .merge_keys = merge_keys, .max_depth = max_depth };
     defer builder.deinit();
     if (!all) {
         if (composed.roots.items.len == 0) return none();
@@ -276,7 +342,8 @@ fn loadText(bytes: []const u8, all: bool, merge_keys: bool, max_depth: usize) Ra
 
 /// The types and singletons `_dump` tells objects by, taken from instances
 /// when the module loads, and held for its life: Python's type objects are
-/// data symbols, which Windows imports only when declared so.
+/// data symbols, which Windows imports only when declared so. With them,
+/// datetime's types, which `_load` builds timestamps with.
 var types: struct {
     none: *c.PyObject,
     true_: *c.PyObject,
@@ -287,6 +354,11 @@ var types: struct {
     dict: *c.PyObject,
     list: *c.PyObject,
     tuple: *c.PyObject,
+    date: *c.PyObject,
+    datetime: *c.PyObject,
+    timedelta: *c.PyObject,
+    timezone: *c.PyObject,
+    utc: *c.PyObject,
 } = undefined;
 
 /// The type of `instance`, a new one dropped once it is read.
@@ -297,6 +369,9 @@ fn typeOf(instance: ?*c.PyObject) ?*c.PyObject {
 }
 
 fn initTypes() bool {
+    const datetime = c.PyImport_ImportModule("datetime") orelse return false;
+    defer c.Py_DecRef(datetime);
+    const timezone_type = c.PyObject_GetAttrString(datetime, "timezone") orelse return false;
     types = .{
         .none = c.Py_BuildValue("") orelse return false,
         .true_ = c.PyBool_FromLong(1) orelse return false,
@@ -307,6 +382,11 @@ fn initTypes() bool {
         .dict = typeOf(c.PyDict_New()) orelse return false,
         .list = typeOf(c.PyList_New(0)) orelse return false,
         .tuple = typeOf(c.PyTuple_New(0)) orelse return false,
+        .date = c.PyObject_GetAttrString(datetime, "date") orelse return false,
+        .datetime = c.PyObject_GetAttrString(datetime, "datetime") orelse return false,
+        .timedelta = c.PyObject_GetAttrString(datetime, "timedelta") orelse return false,
+        .timezone = timezone_type,
+        .utc = c.PyObject_GetAttrString(timezone_type, "utc") orelse return false,
     };
     return true;
 }

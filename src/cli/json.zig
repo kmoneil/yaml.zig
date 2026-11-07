@@ -43,7 +43,8 @@ fn writeValue(arena: Allocator, s: *std.json.Stringify, value: Value) WriteError
             try s.write(x);
         },
         // An integer past an i64, as written: JSON's numbers have no
-        // bound, so a decimal one is written as it is.
+        // bound, so a decimal one is written as it is. Any other form
+        // (`0x`, YAML 1.1's `0777` octal, `1_000`) is a string.
         .number_string => |text| if (isDecimal(text)) try s.print("{s}", .{text}) else try s.write(text),
         .string => |text| try s.write(text),
         .sequence => |items| {
@@ -66,7 +67,7 @@ fn isDecimal(text: []const u8) bool {
     const digits = if (text.len > 0 and (text[0] == '-' or text[0] == '+')) text[1..] else text;
     if (digits.len == 0) return false;
     for (digits) |c| if (!std.ascii.isDigit(c)) return false;
-    return text[0] != '+';
+    return text[0] != '+' and (digits[0] != '0' or digits.len == 1);
 }
 
 /// A mapping key as JSON's object keys are: a string.

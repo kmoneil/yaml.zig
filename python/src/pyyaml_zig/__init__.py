@@ -6,9 +6,11 @@
         config = yaml.safe_load(f)
 
 It reads YAML 1.2 with the core schema: `yes`, `no`, `on` and `off` are
-strings, and only `true` and `false` are booleans. Merge keys (`<<:
-*defaults`) are applied, as PyYAML applies them. A mapping with two equal
-keys is an error, and alias bombs and deep nesting are capped.
+strings, and only `true` and `false` are booleans. With schema="yaml11"
+it reads YAML 1.1 as PyYAML does: `yes` is True, `0777` is 511, and
+`2001-12-14` is a date. Merge keys (`<<: *defaults`) are applied, as
+PyYAML applies them. A mapping with two equal keys is an error, and alias
+bombs and deep nesting are capped.
 """
 
 from __future__ import annotations
@@ -22,6 +24,8 @@ __all__ = ["safe_load", "safe_load_all", "safe_dump", "safe_dump_all", "YAMLErro
 __version__: str = _yaml.__version__
 
 Stream = Union[str, bytes, IO[str], IO[bytes]]
+
+SCHEMAS = ("core", "yaml11", "json", "failsafe")
 
 
 class Mark:
@@ -59,25 +63,36 @@ def _text(stream: Stream) -> str | bytes:
     return read() if read is not None else stream
 
 
-def _load(stream: Stream, all: bool, merge_keys: bool, max_depth: int) -> Any:
+def _load(stream: Stream, all: bool, schema: str, merge_keys: bool, max_depth: int) -> Any:
+    if schema not in SCHEMAS:
+        raise ValueError("schema is one of " + ", ".join(SCHEMAS))
     try:
-        return _yaml._load(_text(stream), all, merge_keys, max_depth)
+        return _yaml._load(_text(stream), all, merge_keys, max_depth, schema)
     except _yaml.Error as e:
         problem, line, column = e.args
         mark = Mark(line, column) if line >= 0 else None
         raise YAMLError(problem, mark) from None
 
 
-def safe_load(stream: Stream, *, merge_keys: bool = True, max_depth: int = 256) -> Any:
+def safe_load(
+    stream: Stream, *, schema: str = "core", merge_keys: bool = True, max_depth: int = 256
+) -> Any:
     """The one document in `stream` (a str, bytes, or a file open for
     reading) as Python objects; None for an empty stream. More than one
-    document is an error: use safe_load_all."""
-    return _load(stream, False, merge_keys, max_depth)
+    document is an error: use safe_load_all.
+
+    `schema` says how unquoted scalars are typed: "core", YAML 1.2's;
+    "yaml11", YAML 1.1's as PyYAML types them (`yes` True, `0777` octal,
+    dates and times as datetime's); "json", where any other word is an
+    error; or "failsafe", where every scalar is a str."""
+    return _load(stream, False, schema, merge_keys, max_depth)
 
 
-def safe_load_all(stream: Stream, *, merge_keys: bool = True, max_depth: int = 256) -> Iterator[Any]:
+def safe_load_all(
+    stream: Stream, *, schema: str = "core", merge_keys: bool = True, max_depth: int = 256
+) -> Iterator[Any]:
     """Every document in `stream`, in order."""
-    return iter(_load(stream, True, merge_keys, max_depth))
+    return iter(_load(stream, True, schema, merge_keys, max_depth))
 
 
 def safe_dump(

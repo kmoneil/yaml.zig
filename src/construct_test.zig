@@ -78,6 +78,36 @@ test "Value: any document, keys of any kind, big integers as text" {
     try testing.expectEqual(null, v.get("missing"));
 }
 
+test "the yaml11 schema: a file written for PyYAML, read as PyYAML reads it" {
+    const Legacy = struct { enabled: bool, mode: u32, minutes: u32, ratio: f64, since: []const u8, country: []const u8 };
+    const text = "enabled: yes\nmode: 0755\nminutes: 1:30\nratio: 1_000.5\nsince: 2001-12-14\ncountry: NO\n";
+    const parsed = try yaml.parseFromSlice(Legacy, testing.allocator, text, .{ .schema = .yaml11 });
+    defer parsed.deinit();
+    try testing.expect(parsed.value.enabled);
+    try testing.expectEqual(0o755, parsed.value.mode);
+    try testing.expectEqual(90, parsed.value.minutes);
+    try testing.expectEqual(1000.5, parsed.value.ratio);
+    // A timestamp into a string is its text, and so is a boolean, as
+    // under core.
+    try testing.expectEqualStrings("2001-12-14", parsed.value.since);
+    try testing.expectEqualStrings("NO", parsed.value.country);
+    // Under core, `yes` is a string, which no bool takes.
+    try expectFailure(Legacy, text, .{}, error.UnexpectedType, 1, 10);
+
+    const v = try yaml.parseFromSlice(yaml.Value, testing.allocator, "[0777, 0b11, on, 1:20.5, 2001-12-14, 1e3, y]", .{ .schema = .yaml11 });
+    defer v.deinit();
+    const items = v.value.sequence;
+    try testing.expectEqual(511, items[0].integer);
+    try testing.expectEqual(3, items[1].integer);
+    try testing.expect(items[2].bool);
+    try testing.expectEqual(80.5, items[3].float);
+    try testing.expectEqualStrings("2001-12-14", items[4].string);
+    try testing.expectEqualStrings("1e3", items[5].string);
+    try testing.expectEqualStrings("y", items[6].string);
+    // Keys equal by 1.1's values: 0777 is 511.
+    try expectFailure(yaml.Value, "{0777: a, 511: b}", .{ .schema = .yaml11 }, error.DuplicateKey, 1, 11);
+}
+
 test "an empty stream is a null document" {
     try testing.expectEqual(null, try yaml.parseFromSliceLeaky(?u8, testing.allocator, "# nothing\n", .{}));
     try testing.expectEqual(.null, std.meta.activeTag(try yaml.parseFromSliceLeaky(yaml.Value, testing.allocator, "", .{})));

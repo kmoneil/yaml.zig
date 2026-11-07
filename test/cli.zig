@@ -17,6 +17,7 @@ const files = [_]struct { []const u8, []const u8 }{
     .{ "late.yaml", "--- a\n--- {b: 1, b: 2}\n" },
     .{ "merge.yaml", "base: &b {x: 1, y: 2}\nchild:\n  <<: *b\n  y: 3\n" },
     .{ "badmerge.yaml", "m: {<<: 3}\n" },
+    .{ "legacy.yaml", "on: yes\nmode: 0755\nat: 2001-12-14\nbig: 0777777777777777777777777\n" },
 };
 
 const Case = struct {
@@ -53,6 +54,10 @@ const cases = [_]Case{
     .{ .argv = &.{ "get", "--merge-keys", ".child.x", "merge.yaml" }, .exit = 0, .stdout = "1\n" },
     .{ .argv = &.{ "get", ".child.x", "merge.yaml" }, .exit = 1, .stderr = "yaml: merge.yaml: no value at `.child.x`: nothing at step 2 of it\n" },
     .{ .argv = &.{ "json", "--merge-keys", "badmerge.yaml" }, .exit = 1, .stderr = "yaml: badmerge.yaml:1:9: a merge key's value is not a mapping or a sequence of mappings\n" },
+    // the yaml11 schema: as PyYAML reads a file
+    .{ .argv = &.{ "json", "legacy.yaml" }, .exit = 0, .stdout = "{\"on\":\"yes\",\"mode\":755,\"at\":\"2001-12-14\",\"big\":\"0777777777777777777777777\"}\n" },
+    .{ .argv = &.{ "json", "--schema", "yaml11", "legacy.yaml" }, .exit = 0, .stdout = "{\"true\":true,\"mode\":493,\"at\":\"2001-12-14\",\"big\":\"0777777777777777777777777\"}\n" },
+    .{ .argv = &.{ "check", "--schema", "yaml12", "legacy.yaml" }, .exit = 2, .stderr = "yaml: --schema is core, yaml11, json or failsafe\nRun `yaml --help` for the usage.\n" },
     // json and from-json
     .{ .argv = &.{ "json", "stream.yaml" }, .exit = 0, .stdout = "{\"a\":1}\n[\"x\",\"y\"]\nnull\n" },
     .{ .argv = &.{ "json", "--indent", "2", "alias.yaml" }, .exit = 0, .stdout = "{\n  \"base\": {\n    \"k\": \"v\"\n  },\n  \"use\": {\n    \"k\": \"v\"\n  }\n}\n" },
