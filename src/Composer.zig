@@ -533,8 +533,10 @@ fn allocNode(c: *Composer) Allocator.Error!*Node {
 }
 
 /// A node's tag: the one written if it is specific, or else the one its
-/// kind, its style and the schema give it.
-fn resolveTag(c: *Composer, mark: Mark, written: ?[]const u8, data: Node.Data) Error![]const u8 {
+/// kind, its style and the schema give it. Inlined: with two callers,
+/// composing whole and a node at a time, the compiler kept it a call
+/// apart, a call a node, 4% of compose's instructions (t56).
+inline fn resolveTag(c: *Composer, mark: Mark, written: ?[]const u8, data: Node.Data) Error![]const u8 {
     if (written) |tag| {
         // A core tag written out, `!!int`, is given as the schema's own
         // text, so `schema.core` finds it by its pointer.
