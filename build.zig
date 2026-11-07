@@ -69,6 +69,34 @@ pub fn build(b: *std.Build) void {
     // carries, into zig-out/release/.
     const release = b.step("release", "Build the yaml command for every release platform into zig-out/release/");
     for (release_targets) |release_target| release.dependOn(releaseBinary(b, release_target.query, release_target.name, build_options));
+
+    // pyyaml-zig (python/, karte t63): the CPython extension, built against
+    // the headers of the Python -Dpython-include names (python3 -c "import
+    // sysconfig; print(sysconfig.get_paths()['include'])"), into
+    // zig-out/python/pyyaml_zig/ with the package's Python files, which
+    // PYTHONPATH=zig-out/python imports. The stable ABI (python/src/python.h):
+    // one build serves CPython 3.9 and later. Symbols are Python's, so the
+    // library is left to find them where it is loaded.
+    if (b.option([]const u8, "python-include", "Python's include directory, for pyyaml-zig (zig build python)")) |include| {
+        const python_c = b.addTranslateC(.{ .root_source_file = b.path("python/src/python.h"), .target = target, .optimize = optimize, .link_libc = true });
+        python_c.addIncludePath(.{ .cwd_relative = include });
+        const ext_mod = b.createModule(.{
+            .root_source_file = b.path("python/src/ext.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "yaml", .module = mod },
+                .{ .name = "python", .module = python_c.createModule() },
+            },
+        });
+        ext_mod.addOptions("build_options", build_options);
+        const ext = b.addLibrary(.{ .linkage = .dynamic, .name = "_yaml", .root_module = ext_mod });
+        ext.linker_allow_shlib_undefined = true;
+        const python_step = b.step("python", "Build pyyaml-zig into zig-out/python/ (-Dpython-include=...)");
+        python_step.dependOn(&b.addInstallFileWithDir(ext.getEmittedBin(), .{ .custom = "python/pyyaml_zig" }, "_yaml.abi3.so").step);
+        python_step.dependOn(&b.addInstallDirectory(.{ .source_dir = b.path("python/src/pyyaml_zig"), .install_dir = .{ .custom = "python/pyyaml_zig" }, .install_subdir = "" }).step);
+    }
     // `zig build run -- check config.yaml`: the command, built and run,
     // with the arguments after `--`.
     const run_cli = b.addRunArtifact(cli);
@@ -153,7 +181,7 @@ pub fn build(b: *std.Build) void {
     // that is almost certainly wrong. A program on the PATH, not a package.
     // `zig build test` runs it too, so no change is tested without it.
     // zigvet skips zig-pkg and hidden directories by itself.
-    const lint = b.addSystemCommand(&.{ "zigvet", "build.zig", "src", "test", "tools", "examples" });
+    const lint = b.addSystemCommand(&.{ "zigvet", "build.zig", "src", "test", "tools", "examples", "python" });
     lint.setCwd(b.path("."));
     b.step("lint", "Report code that compiles but is wrong (zigvet, from the PATH)").dependOn(&lint.step);
     test_step.dependOn(&lint.step);
@@ -170,7 +198,7 @@ pub fn build(b: *std.Build) void {
     b.step("complexity", "Fail a function newly over its complexity limit (gnarl, from the PATH)").dependOn(&complexity.step);
     test_step.dependOn(&complexity.step);
 
-    const fmt = b.addFmt(.{ .paths = &.{ b.path("build.zig"), b.path("src"), b.path("test"), b.path("tools"), b.path("examples") } });
+    const fmt = b.addFmt(.{ .paths = &.{ b.path("build.zig"), b.path("src"), b.path("test"), b.path("tools"), b.path("examples"), b.path("python") } });
     b.step("fmt", "Format the Zig in build.zig, src/, test/, tools/ and examples/").dependOn(&fmt.step);
 }
 

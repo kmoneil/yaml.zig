@@ -20,6 +20,9 @@ BOARD.md
 .claude/
 CLAUDE.md
 
+# Python's bytecode, from running pyyaml-zig's tests.
+__pycache__/
+
 # Zig build output
 .zig-cache/
 zig-out/
