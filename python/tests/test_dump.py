@@ -77,8 +77,11 @@ class Options(unittest.TestCase):
 
     def test_indent(self):
         self.assertEqual(yaml.safe_dump({"a": {"b": 1}}, indent=4), "a:\n    b: 1\n")
+        # An indent PyYAML ignores is the default, as there; 9 it takes
+        # and pyyaml-zig cannot.
+        self.assertEqual(yaml.safe_dump({"a": {"b": 1}}, indent=1), "a:\n  b: 1\n")
         with self.assertRaises(ValueError):
-            yaml.safe_dump({}, indent=1)
+            yaml.safe_dump({}, indent=9)
 
 
 class Refused(unittest.TestCase):

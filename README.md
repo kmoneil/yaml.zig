@@ -20,9 +20,9 @@ and check files from the command line.
   `4:3: server: unknown field "tag"; expected one of: hosts, tags, tls,
   root (did you mean "tags"?)`.
 - **A command-line tool.** `yaml check`, `yaml get`, `yaml json`.
-- **Python too.** [pyyaml-zig](#python) puts this parser behind PyYAML's
-  API. It loads YAML 37 times faster than PyYAML and writes it 13 times
-  faster.
+- **Python too.** [pyyaml-zig](#python) is a drop-in for PyYAML on this
+  parser. It loads YAML 37 times faster than PyYAML and writes it 13
+  times faster.
 
 <!-- suite -->
 | check | cases | passing |
@@ -300,8 +300,8 @@ has no value, and 2 for a usage error. `yaml --help` lists everything.
 
 ## Python
 
-pyyaml-zig puts yaml.zig behind PyYAML's safe API, so switching is
-usually a one-line change:
+pyyaml-zig puts yaml.zig behind PyYAML's API, so switching is a
+one-line change:
 
 ```python
 import pyyaml_zig as yaml
@@ -325,10 +325,11 @@ back, with identical results:
 
 Like the Zig library, it reads YAML 1.2, refuses duplicate keys and caps
 alias bombs; it applies merge keys, as PyYAML does, and parses outside
-Python's global interpreter lock. For files written for PyYAML,
-`schema="yaml11"` reads YAML 1.1 as PyYAML does, dates as `datetime`.
-It is built and tested here, in [python/](python/README.md); its first
-release on PyPI is next.
+Python's global interpreter lock. Code written for PyYAML runs
+unchanged: `load(f, Loader=yaml.SafeLoader)` and PyYAML's other loaders
+read YAML 1.1 exactly as PyYAML does, checked against PyYAML on the YAML
+test suite. It is built and tested here, in
+[python/](python/README.md); its first release on PyPI is next.
 
 ## Speed
 

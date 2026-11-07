@@ -124,7 +124,7 @@ class Errors(unittest.TestCase):
         try:
             yaml.safe_load("a: 1\na: 2\n")
         except yaml.YAMLError as e:
-            self.assertEqual(str(e), "a mapping cannot have two equal keys\n  in line 2, column 1")
+            self.assertEqual(str(e), 'a mapping cannot have two equal keys\n  in "<unicode string>", line 2, column 1')
 
 
 class SameAsPyYAML(unittest.TestCase):

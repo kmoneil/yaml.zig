@@ -24,7 +24,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PACKAGE = os.path.join(ROOT, "zig-out", "python", "pyyaml_zig")
 OUT = os.path.join(ROOT, "zig-out", "wheels")
 
-SUMMARY = "Fast, safe YAML for Python, with PyYAML's API: YAML 1.2 on yaml.zig."
+SUMMARY = "Fast, safe YAML for Python: a drop-in for PyYAML, on yaml.zig."
 
 
 def version() -> str:

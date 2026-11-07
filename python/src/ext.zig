@@ -24,21 +24,43 @@ const Mark = yaml.Composer.Mark;
 // and musl alike, and no state shared between calls, which may run at once
 // with the GIL released while they compose.
 
-/// The exception the extension raises for input it cannot load: args
-/// (message, line, column), line and column from 0, or -1 when no place
-/// is known. pyyaml_zig turns it into YAMLError.
+/// The exception the extension raises for input it cannot load or data it
+/// cannot write: args (message, line, column, kind), line and column from
+/// 0, or -1 when no place is known, and kind a `Kind`'s name. pyyaml_zig
+/// raises PyYAML's error class for the kind.
 var error_type: ?*c.PyObject = null;
 
 /// A Python exception is set: the caller returns null to Python.
 const Raised = error{Raised};
 
+/// Which of PyYAML's error classes an error is, by what found it: the
+/// input's encoding (ReaderError), its syntax (ScannerError and
+/// ParserError, which yaml.zig does not tell apart), composing (an
+/// undefined alias, a second document), building objects
+/// (ConstructorError), or writing (RepresenterError).
+const Kind = enum { reader, syntax, composer, constructor, representer };
+
+/// Raises an error building objects, the most common kind.
 fn raise(message: []const u8, mark: ?Mark) Raised {
+    return raiseAs(.constructor, message, mark);
+}
+
+fn raiseAs(kind: Kind, message: []const u8, mark: ?Mark) Raised {
     const line: c.Py_ssize_t = if (mark) |m| @intCast(m.line) else -1;
     const column: c.Py_ssize_t = if (mark) |m| @intCast(m.column) else -1;
-    const args = c.Py_BuildValue("(s#nn)", message.ptr, @as(c.Py_ssize_t, @intCast(message.len)), line, column) orelse return error.Raised;
+    const args = c.Py_BuildValue("(s#nns)", message.ptr, @as(c.Py_ssize_t, @intCast(message.len)), line, column, @tagName(kind).ptr) orelse return error.Raised;
     defer c.Py_DecRef(args);
     c.PyErr_SetObject(error_type, args);
     return error.Raised;
+}
+
+/// The kind of a composing error.
+fn kindOf(err: yaml.Composer.Error) Kind {
+    return switch (err) {
+        error.UndefinedAlias => .composer,
+        error.DuplicateKey, error.NotInSchema => .constructor,
+        else => .syntax,
+    };
 }
 
 fn noMemory() Raised {
@@ -106,7 +128,8 @@ const Builder = struct {
         const tag = node.tag orelse "";
         const core = yaml.schema.core(tag) orelse {
             if (std.mem.eql(u8, tag, yaml.schema.tag.timestamp)) return timestamp(text, node.start);
-            return raise("could not determine a constructor for the tag", node.start);
+            if (std.mem.eql(u8, tag, binary_tag)) return binary(text, node.start);
+            return b.unknownTag(node);
         };
         const s = b.schema;
         if (!s.fits(tag, text)) return raise("the scalar's text is not what its tag says", node.start);
@@ -120,7 +143,27 @@ const Builder = struct {
         };
     }
 
+    /// Refuses a node whose tag safe_load has no constructor for, as
+    /// PyYAML's safe loader does: `!!python/...`, a custom tag, and on a
+    /// collection any but its own kind's (`!!set` and `!!omap` among them).
+    fn unknownTag(b: *Builder, node: *const Node) Raised {
+        const message = std.fmt.allocPrint(b.gpa, "could not determine a constructor for the tag '{s}'", .{node.tag orelse ""}) catch return noMemory();
+        return raise(message, node.start);
+    }
+
+    /// Whether a collection's tag is its kind's, as nearly every one's is:
+    /// the composer's own constant, found by its pointer (schema.core).
+    fn isPlainKind(node: *const Node, kind: yaml.schema.Core) bool {
+        const tag = node.tag orelse return true;
+        return yaml.schema.core(tag) == kind;
+    }
+
     fn sequence(b: *Builder, node: *const Node, items: []const *Node, depth: usize) Raised!*c.PyObject {
+        if (!isPlainKind(node, .seq)) {
+            const tag = node.tag.?;
+            if (std.mem.eql(u8, tag, omap_tag) or std.mem.eql(u8, tag, pairs_tag)) return b.pairList(node, items, depth);
+            return b.unknownTag(node);
+        }
         const list = c.PyList_New(@intCast(items.len)) orelse return error.Raised;
         errdefer c.Py_DecRef(list);
         try b.remember(node, list);
@@ -132,13 +175,56 @@ const Builder = struct {
         return list;
     }
 
+    /// `!!omap` and `!!pairs`, a sequence of one-pair mappings: a list
+    /// of (key, value) tuples, as PyYAML builds both.
+    fn pairList(b: *Builder, node: *const Node, items: []const *Node, depth: usize) Raised!*c.PyObject {
+        const list = c.PyList_New(0) orelse return error.Raised;
+        errdefer c.Py_DecRef(list);
+        try b.remember(node, list);
+        for (items) |from| {
+            const item = from.target();
+            if (item.data != .mapping or item.data.mapping.pairs.len != 1) return raise("an ordered map's items are each a mapping of one pair", item.start);
+            const pair = item.data.mapping.pairs[0];
+            const key = try b.build(pair.key, depth + 2);
+            defer c.Py_DecRef(key);
+            const value = try b.build(pair.value, depth + 2);
+            defer c.Py_DecRef(value);
+            const tuple = c.PyTuple_Pack(2, key, value) orelse return error.Raised;
+            defer c.Py_DecRef(tuple);
+            if (c.PyList_Append(list, tuple) != 0) return error.Raised;
+        }
+        return list;
+    }
+
     fn mapping(b: *Builder, node: *const Node, depth: usize) Raised!*c.PyObject {
+        if (!isPlainKind(node, .map)) {
+            if (std.mem.eql(u8, node.tag.?, set_tag)) return b.set(node, depth);
+            return b.unknownTag(node);
+        }
         const dict = c.PyDict_New() orelse return error.Raised;
         errdefer c.Py_DecRef(dict);
         try b.remember(node, dict);
+        try b.fill(dict, node, depth);
+        return dict;
+    }
+
+    /// `!!set`, a mapping whose keys are the members: a set, as PyYAML
+    /// builds one.
+    fn set(b: *Builder, node: *const Node, depth: usize) Raised!*c.PyObject {
+        const dict = c.PyDict_New() orelse return error.Raised;
+        defer c.Py_DecRef(dict);
+        try b.fill(dict, node, depth);
+        const members = c.PySet_New(dict) orelse return error.Raised;
+        errdefer c.Py_DecRef(members);
+        try b.remember(node, members);
+        return members;
+    }
+
+    /// Puts a mapping's pairs in `dict`, its merge keys applied.
+    fn fill(b: *Builder, dict: *c.PyObject, node: *const Node, depth: usize) Raised!void {
         if (!b.merge_keys) {
             for (node.data.mapping.pairs) |pair| try b.put(dict, pair.key, pair.value, depth);
-            return dict;
+            return;
         }
         var pairs = yaml.merge.Pairs.init(b.gpa, node, b.composer, b.max_depth) catch return noMemory();
         defer pairs.deinit();
@@ -146,7 +232,6 @@ const Builder = struct {
             const pair = (pairs.next() catch |err| return mergeFailed(err, pairs.failed_at)) orelse break;
             try b.put(dict, pair.key, pair.value, depth);
         }
-        return dict;
     }
 
     fn put(b: *Builder, dict: *c.PyObject, key_node: *const Node, value_node: *const Node, depth: usize) Raised!void {
@@ -219,6 +304,23 @@ fn baseOf(s: yaml.schema.Schema, digits: *[]const u8) c_int {
     return if (s == .yaml11 and digits.len > 1 and digits.*[0] == '0') 8 else 10;
 }
 
+const set_tag = yaml.schema.core_prefix ++ "set";
+const omap_tag = yaml.schema.core_prefix ++ "omap";
+const pairs_tag = yaml.schema.core_prefix ++ "pairs";
+const binary_tag = yaml.schema.core_prefix ++ "binary";
+
+/// `!!binary`: bytes, from base64 as PyYAML reads it, the text's blanks
+/// and line breaks skipped (binascii.a2b_base64).
+fn binary(text: []const u8, mark: Mark) Raised!*c.PyObject {
+    for (text) |ch| {
+        if (ch >= 0x80) return raise("failed to convert base64 data into ascii", mark);
+    }
+    return c.PyObject_CallFunction(types.a2b_base64, "(y#)", text.ptr, @as(c.Py_ssize_t, @intCast(text.len))) orelse {
+        c.PyErr_Clear();
+        return raise("failed to decode base64 data", mark);
+    };
+}
+
 /// A date, or a datetime, as PyYAML builds one: with no zone a naive
 /// one, with `Z` or an offset of 0 in UTC.
 fn timestamp(text: []const u8, mark: Mark) Raised!*c.PyObject {
@@ -261,15 +363,23 @@ const Composed = struct {
     roots: std.ArrayList(*Node) = .empty,
     /// The start of a second document, where one was asked for.
     extra: ?Mark = null,
-    failure: ?yaml.Composer.Diagnostic = null,
+    failure: ?struct { diagnostic: yaml.Composer.Diagnostic, kind: Kind } = null,
     out_of_memory: bool = false,
+
+    fn failed(out: *Composed, composer: *const yaml.Composer, err: yaml.Composer.Error) void {
+        if (err == error.OutOfMemory) {
+            out.out_of_memory = true;
+        } else {
+            out.failure = .{ .diagnostic = composer.diagnostic, .kind = kindOf(err) };
+        }
+    }
 };
 
 fn compose(gpa: std.mem.Allocator, composer: *yaml.Composer, all: bool) Composed {
     var out: Composed = .{};
     while (true) {
         const document = composer.next() catch |err| {
-            if (err == error.OutOfMemory) out.out_of_memory = true else out.failure = composer.diagnostic;
+            out.failed(composer, err);
             return out;
         } orelse return out;
         out.roots.append(gpa, document.root) catch {
@@ -279,7 +389,7 @@ fn compose(gpa: std.mem.Allocator, composer: *yaml.Composer, all: bool) Composed
         if (all) continue;
         // One document asked for: another after it is an error, as in PyYAML.
         const start = composer.beginDocument() catch |err| {
-            if (err == error.OutOfMemory) out.out_of_memory = true else out.failure = composer.diagnostic;
+            out.failed(composer, err);
             return out;
         };
         out.extra = start;
@@ -287,44 +397,71 @@ fn compose(gpa: std.mem.Allocator, composer: *yaml.Composer, all: bool) Composed
     }
 }
 
-/// `_load(text, all, merge_keys, max_depth, schema)`: the document of
-/// `text` (str or UTF-8, UTF-16 or UTF-32 bytes), None for an empty
-/// stream; with `all`, a list of every document. `schema` is a
-/// yaml.schema.Schema's name.
+/// How `_load` reads.
+const LoadOptions = struct {
+    all: bool,
+    merge_keys: bool,
+    max_depth: usize,
+    schema: yaml.schema.Schema,
+    /// Keep a mapping's later equal key, as PyYAML does, not refuse it.
+    keep_duplicates: bool,
+};
+
+/// `_load(text, all, merge_keys, max_depth, schema, keep_duplicates)`:
+/// the document of `text` (str or UTF-8, UTF-16 or UTF-32 bytes), None
+/// for an empty stream; with `all`, a list of every document. `schema`
+/// is a yaml.schema.Schema's name.
 fn load(_: ?*c.PyObject, args: ?*c.PyObject) callconv(.c) ?*c.PyObject {
+    return loadArgs(args) catch null;
+}
+
+fn loadArgs(args: ?*c.PyObject) Raised!*c.PyObject {
     var ptr: [*c]const u8 = undefined;
     var len: c.Py_ssize_t = 0;
     var all: c_int = 0;
     var merge_keys: c_int = 0;
     var max_depth: c.Py_ssize_t = 0;
     var schema_name: [*c]const u8 = undefined;
-    if (c.PyArg_ParseTuple(args, "s#ppns", &ptr, &len, &all, &merge_keys, &max_depth, &schema_name) == 0) return null;
-    return loadText(ptr[0..@intCast(len)], all != 0, merge_keys != 0, @intCast(@max(max_depth, 0)), std.mem.span(schema_name)) catch null;
+    var keep_duplicates: c_int = 0;
+    if (c.PyArg_ParseTuple(args, "s#ppnsp", &ptr, &len, &all, &merge_keys, &max_depth, &schema_name, &keep_duplicates) == 0) return error.Raised;
+    const s = std.meta.stringToEnum(yaml.schema.Schema, std.mem.span(schema_name)) orelse
+        return raise("the schema is core, yaml11, json or failsafe", null);
+    return loadText(ptr[0..@intCast(len)], .{
+        .all = all != 0,
+        .merge_keys = merge_keys != 0,
+        .max_depth = @intCast(@max(max_depth, 0)),
+        .schema = s,
+        .keep_duplicates = keep_duplicates != 0,
+    });
 }
 
-fn loadText(bytes: []const u8, all: bool, merge_keys: bool, max_depth: usize, schema_name: []const u8) Raised!*c.PyObject {
-    const s = std.meta.stringToEnum(yaml.schema.Schema, schema_name) orelse return raise("the schema is core, yaml11, json or failsafe", null);
+fn loadText(bytes: []const u8, options: LoadOptions) Raised!*c.PyObject {
+    const all = options.all;
     var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
     defer arena.deinit();
     const gpa = arena.allocator();
     var diagnostic: yaml.Diagnostic = .{};
     const text = yaml.encoding.toUtf8(gpa, bytes, &diagnostic) catch |err| switch (err) {
         error.OutOfMemory => return noMemory(),
-        else => return raise(diagnostic.message, diagnostic.mark),
+        else => return raiseAs(.reader, diagnostic.message, diagnostic.mark),
     };
     defer if (text.ptr != bytes.ptr) gpa.free(text);
 
-    var composer: yaml.Composer = .init(gpa, text, .{ .max_depth = max_depth, .schema = s });
+    var composer: yaml.Composer = .init(gpa, text, .{
+        .max_depth = options.max_depth,
+        .schema = options.schema,
+        .duplicate_keys = if (options.keep_duplicates) .keep else .refuse,
+    });
     defer composer.deinit();
     const state = c.PyEval_SaveThread();
     var composed = compose(gpa, &composer, all);
     c.PyEval_RestoreThread(state);
     defer composed.roots.deinit(gpa);
     if (composed.out_of_memory) return noMemory();
-    if (composed.failure) |d| return raise(d.message, d.mark);
-    if (composed.extra) |start| return raise("expected a single document in the stream, but found another document", start);
+    if (composed.failure) |f| return raiseAs(f.kind, f.diagnostic.message, f.diagnostic.mark);
+    if (composed.extra) |start| return raiseAs(.composer, "expected a single document in the stream, but found another document", start);
 
-    var builder: Builder = .{ .gpa = gpa, .composer = &composer, .schema = s, .merge_keys = merge_keys, .max_depth = max_depth };
+    var builder: Builder = .{ .gpa = gpa, .composer = &composer, .schema = options.schema, .merge_keys = options.merge_keys, .max_depth = options.max_depth };
     defer builder.deinit();
     if (!all) {
         if (composed.roots.items.len == 0) return none();
@@ -359,6 +496,7 @@ var types: struct {
     timedelta: *c.PyObject,
     timezone: *c.PyObject,
     utc: *c.PyObject,
+    a2b_base64: *c.PyObject,
 } = undefined;
 
 /// The type of `instance`, a new one dropped once it is read.
@@ -369,25 +507,34 @@ fn typeOf(instance: ?*c.PyObject) ?*c.PyObject {
 }
 
 fn initTypes() bool {
+    return initBuiltins() and initImported();
+}
+
+fn initBuiltins() bool {
+    types.none = c.Py_BuildValue("") orelse return false;
+    types.true_ = c.PyBool_FromLong(1) orelse return false;
+    types.false_ = c.PyBool_FromLong(0) orelse return false;
+    types.int = typeOf(c.PyLong_FromLong(0)) orelse return false;
+    types.float = typeOf(c.PyFloat_FromDouble(0)) orelse return false;
+    types.str = typeOf(c.PyUnicode_FromStringAndSize("", 0)) orelse return false;
+    types.dict = typeOf(c.PyDict_New()) orelse return false;
+    types.list = typeOf(c.PyList_New(0)) orelse return false;
+    types.tuple = typeOf(c.PyTuple_New(0)) orelse return false;
+    return true;
+}
+
+/// datetime's types and binascii's base64 reader.
+fn initImported() bool {
     const datetime = c.PyImport_ImportModule("datetime") orelse return false;
     defer c.Py_DecRef(datetime);
-    const timezone_type = c.PyObject_GetAttrString(datetime, "timezone") orelse return false;
-    types = .{
-        .none = c.Py_BuildValue("") orelse return false,
-        .true_ = c.PyBool_FromLong(1) orelse return false,
-        .false_ = c.PyBool_FromLong(0) orelse return false,
-        .int = typeOf(c.PyLong_FromLong(0)) orelse return false,
-        .float = typeOf(c.PyFloat_FromDouble(0)) orelse return false,
-        .str = typeOf(c.PyUnicode_FromStringAndSize("", 0)) orelse return false,
-        .dict = typeOf(c.PyDict_New()) orelse return false,
-        .list = typeOf(c.PyList_New(0)) orelse return false,
-        .tuple = typeOf(c.PyTuple_New(0)) orelse return false,
-        .date = c.PyObject_GetAttrString(datetime, "date") orelse return false,
-        .datetime = c.PyObject_GetAttrString(datetime, "datetime") orelse return false,
-        .timedelta = c.PyObject_GetAttrString(datetime, "timedelta") orelse return false,
-        .timezone = timezone_type,
-        .utc = c.PyObject_GetAttrString(timezone_type, "utc") orelse return false,
-    };
+    types.date = c.PyObject_GetAttrString(datetime, "date") orelse return false;
+    types.datetime = c.PyObject_GetAttrString(datetime, "datetime") orelse return false;
+    types.timedelta = c.PyObject_GetAttrString(datetime, "timedelta") orelse return false;
+    types.timezone = c.PyObject_GetAttrString(datetime, "timezone") orelse return false;
+    types.utc = c.PyObject_GetAttrString(types.timezone, "utc") orelse return false;
+    const binascii = c.PyImport_ImportModule("binascii") orelse return false;
+    defer c.Py_DecRef(binascii);
+    types.a2b_base64 = c.PyObject_GetAttrString(binascii, "a2b_base64") orelse return false;
     return true;
 }
 
@@ -404,10 +551,11 @@ fn isInstance(obj: *c.PyObject, t: *c.PyObject) Raised!bool {
 const Dumper = struct {
     gpa: std.mem.Allocator,
     sort_keys: bool,
+    flow: bool,
     max_depth: usize,
 
     fn value(d: *const Dumper, obj: *c.PyObject, depth: usize) Raised!yaml.Value {
-        if (depth > d.max_depth) return raise("the data nests deeper than max_depth, or holds itself", null);
+        if (depth > d.max_depth) return raiseAs(.representer, "the data nests deeper than max_depth, or holds itself", null);
         if (obj == types.none) return .null;
         if (obj == types.true_) return .{ .bool = true };
         if (obj == types.false_) return .{ .bool = false };
@@ -416,7 +564,26 @@ const Dumper = struct {
         if (try isInstance(obj, types.str)) return .{ .string = try d.utf8(obj) };
         if (try isInstance(obj, types.dict)) return .{ .mapping = try d.pairs(obj, depth) };
         if (try isInstance(obj, types.list) or try isInstance(obj, types.tuple)) return .{ .sequence = try d.items(obj, depth) };
+        // A datetime is a date too: it is told first.
+        if (try isInstance(obj, types.datetime)) return d.timestamp(obj, " ");
+        if (try isInstance(obj, types.date)) return d.timestamp(obj, null);
         return d.cannotRepresent(obj);
+    }
+
+    /// A date or a datetime as PyYAML writes one: its isoformat(), with a
+    /// blank between a datetime's date and time, plain, so a YAML 1.1
+    /// reader reads it back as a timestamp. (Value's number_string is
+    /// written plain as it is, which is all this needs of it.)
+    fn timestamp(d: *const Dumper, obj: *c.PyObject, separator: ?[*:0]const u8) Raised!yaml.Value {
+        const iso = (if (separator) |sep| c.PyObject_CallMethod(obj, "isoformat", "(s)", sep) else c.PyObject_CallMethod(obj, "isoformat", null)) orelse return error.Raised;
+        defer c.Py_DecRef(iso);
+        const text = try d.utf8(iso);
+        // In flow style a `:` cannot be plain, and quoted, a time would
+        // read back as a string. (PyYAML tags it; Value has no tags.)
+        if (d.flow and std.mem.findScalar(u8, text, ':') != null) {
+            return raiseAs(.representer, "a datetime cannot be written in flow style, where it would read back as a string: write it in block style", null);
+        }
+        return .{ .number_string = text };
     }
 
     fn integer(d: *const Dumper, obj: *c.PyObject) Raised!yaml.Value {
@@ -477,8 +644,8 @@ const Dumper = struct {
         const name = c.PyObject_GetAttrString(t, "__name__") orelse return error.Raised;
         defer c.Py_DecRef(name);
         const text = try d.utf8(name);
-        const message = std.fmt.allocPrint(d.gpa, "cannot represent an object of type {s}: safe_dump writes dict, list, tuple, str, int, float, bool and None", .{text}) catch return noMemory();
-        return raise(message, null);
+        const message = std.fmt.allocPrint(d.gpa, "cannot represent an object of type {s}: pyyaml-zig writes dict, list, tuple, str, int, float, bool, None, date and datetime", .{text}) catch return noMemory();
+        return raiseAs(.representer, message, null);
     }
 };
 
@@ -499,7 +666,7 @@ fn dumpValue(obj: *c.PyObject, flow: bool, indent: u8, width: usize, sort_keys: 
     var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
     defer arena.deinit();
     const gpa = arena.allocator();
-    const dumper: Dumper = .{ .gpa = gpa, .sort_keys = sort_keys, .max_depth = max_depth };
+    const dumper: Dumper = .{ .gpa = gpa, .sort_keys = sort_keys, .flow = flow, .max_depth = max_depth };
     const value = try dumper.value(obj, 0);
     var out: std.Io.Writer.Allocating = .init(gpa);
     // Writing is yaml.zig's alone: the GIL is let go while it runs.
@@ -507,7 +674,7 @@ fn dumpValue(obj: *c.PyObject, flow: bool, indent: u8, width: usize, sort_keys: 
     const written = yaml.stringify(gpa, value, .{ .style = if (flow) .flow else .block, .indent = indent, .width = width }, &out.writer);
     c.PyEval_RestoreThread(state);
     written catch |err| return switch (err) {
-        error.InvalidUtf8 => raise("a string is not UTF-8", null),
+        error.InvalidUtf8 => raiseAs(.representer, "a string is not UTF-8", null),
         error.OutOfMemory, error.WriteFailed => noMemory(),
     };
     const text = out.written();
@@ -515,7 +682,7 @@ fn dumpValue(obj: *c.PyObject, flow: bool, indent: u8, width: usize, sort_keys: 
 }
 
 var methods = [_]c.PyMethodDef{
-    .{ .ml_name = "_load", .ml_meth = @ptrCast(&load), .ml_flags = c.METH_VARARGS, .ml_doc = "_load(text, all, merge_keys, max_depth)" },
+    .{ .ml_name = "_load", .ml_meth = @ptrCast(&load), .ml_flags = c.METH_VARARGS, .ml_doc = "_load(text, all, merge_keys, max_depth, schema, keep_duplicates)" },
     .{ .ml_name = "_dump", .ml_meth = @ptrCast(&dump), .ml_flags = c.METH_VARARGS, .ml_doc = "_dump(data, flow, indent, width, sort_keys, max_depth)" },
     .{ .ml_name = null, .ml_meth = null, .ml_flags = 0, .ml_doc = null },
 };
