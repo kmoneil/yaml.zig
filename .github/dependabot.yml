@@ -1,0 +1,15 @@
+# Keeps the pinned GitHub Actions current. The workflows pin each action to
+# a commit SHA with its version in a trailing comment, the form Dependabot
+# reads and rewrites. yaml.zig's one dependency, the yaml-test-suite's data,
+# is pinned by build.zig.zon.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # Grouped: an action bump changes what CI does, and a pull request for
+    # each action means merging one makes the rest out of date.
+    groups:
+      actions:
+        patterns: ["*"]

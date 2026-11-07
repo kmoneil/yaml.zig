@@ -1,0 +1,67 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# The workflow only reads the repository.
+permissions:
+  contents: read
+
+# A newer push to a pull request supersedes its older runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# setup-zig is given no version: it installs build.zig.zon's
+# minimum_zig_version, so the pin lives in one place. zigvet and gnarl are
+# released binaries, each pinned by digest in .github/actions/vet-tools.
+jobs:
+  check:
+    name: format and docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      - name: zig fmt
+        run: zig fmt --check build.zig build.zig.zon src test tools examples
+      - name: API documentation
+        run: zig build docs
+
+  # The unit tests, the yaml-test-suite and its ratchet, the README's
+  # examples, the yaml command end to end and the fuzz targets' seeded
+  # draws, with zigvet and gnarl; then the security suite and its catalog.
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      - uses: ./.github/actions/vet-tools
+      - name: zig build test
+        run: zig build test --summary line
+      - name: zig build security
+        run: zig build security --summary line
+
+  # A package that depends on this one builds it in its own mode: the tests
+  # again with yaml built ReleaseSafe and ReleaseFast, where a panic in
+  # Debug is one or undefined behaviour.
+  release-modes:
+    name: release modes
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          cache-key: release-modes
+      - name: zig build test-release
+        run: zig build test-release --summary line
