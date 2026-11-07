@@ -21,10 +21,10 @@
 //! alias may name and a mapping's key, so a reader building as it reads
 //! holds a fraction of the graph (t47).
 //!
-//! The events come from the reader (Reader.zig), which reads most YAML in
-//! one pass, and past what it does not read from the parser, which reads
-//! the stream again from its start and goes on where the reader stopped
-//! (t56).
+//! The events come from the reader (Reader.zig), which reads YAML in one
+//! pass, and past an error or the few forms it leaves to the parser from
+//! the parser, which reads the stream again from its start and goes on
+//! where the reader stopped (t56).
 //!
 //! Nodes live as long as the composer. Not threadsafe.
 
