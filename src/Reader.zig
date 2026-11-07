@@ -149,15 +149,31 @@ pub fn setMaxDepth(r: *Reader, depth: usize) void {
 
 /// The next event, where the reader keeps it: valid until the next call.
 /// After `stream_end`, `stream_end` again. `error.Unsupported` once is
-/// the reader's last word: it must not be called again.
-pub fn next(r: *Reader) Error!*const Event {
-    if (r.head == r.events.items.len) {
-        r.events.clearRetainingCapacity();
-        r.head = 0;
-        while (r.events.items.len == 0 or r.hold != null) try r.step();
-    }
+/// the reader's last word: it must not be called again. Inlined to an
+/// event already read, the queue read again in a call apart.
+pub inline fn next(r: *Reader) Error!*const Event {
+    if (r.head == r.events.items.len) try r.refill();
     r.head += 1;
     return &r.events.items[r.head - 1];
+}
+
+/// How many events `refill` reads at least, its last step's past it,
+/// where the stream goes on. A refill, and a return through `step`, for
+/// each event or two cost compose 6% of its time (t56); 64 is no faster.
+const batch = 16;
+
+/// Reads the next events into the queue, emptied: `batch` or more, held
+/// ones until they are let go. A step that fails after others in the
+/// batch leaves their events ungiven, and the parser, taking over, gives
+/// them, as it does every event past those `next` gave.
+noinline fn refill(r: *Reader) Error!void {
+    r.events.clearRetainingCapacity();
+    r.head = 0;
+    while (r.events.items.len == 0 or r.hold != null) try r.step();
+    while (r.events.items.len < batch and r.state != .end) {
+        try r.step();
+        while (r.hold != null) try r.step();
+    }
 }
 
 fn step(r: *Reader) Error!void {
@@ -196,8 +212,9 @@ inline fn emit(r: *Reader, start: Mark, end: Mark, data: Event.Data) Error!void 
     r.events.appendAssumeCapacity(.{ .start = start, .end = end, .data = data });
 }
 
+/// Makes room for a batch of events at once, as `refill` reads them.
 noinline fn growEvents(r: *Reader) Error!void {
-    try r.events.ensureUnusedCapacity(r.s.gpa, 1);
+    try r.events.ensureUnusedCapacity(r.s.gpa, batch);
 }
 
 
@@ -775,7 +792,9 @@ fn blockMappingKey(r: *Reader) Error!void {
     }
     const key = try r.scanKeyAfter(start, props) orelse return error.Unsupported;
     try r.emit(key.start, key.end, key.data);
-    r.state = .block_mapping_value;
+    // The cursor is at the key's `:`: its value is read on at once, not a
+    // step later, a return through `step` saved a key.
+    return r.blockMappingValue(false);
 }
 
 /// An explicit key at the cursor's `?`, and its node, which may be a
