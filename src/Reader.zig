@@ -653,9 +653,14 @@ fn emptyEvent(props: Props) Event {
 
 /// The properties at the cursor, an anchor and a tag in either order, on
 /// one line, and the blanks after them; null with none. A second anchor
-/// or tag is the parser's.
-fn scanProps(r: *Reader) Error!?Props {
+/// or tag is the parser's. Inlined to its first check: most nodes have
+/// none.
+inline fn scanProps(r: *Reader) Error!?Props {
     if (r.s.ch(0) != '&' and r.s.ch(0) != '!') return null;
+    return try r.scanSomeProps();
+}
+
+fn scanSomeProps(r: *Reader) Error!Props {
     var props: Props = .{ .start = r.s.mark, .end = r.s.mark };
     while (true) {
         switch (r.s.ch(0)) {
@@ -1376,6 +1381,13 @@ fn flowScalar(r: *Reader) Error!Scanner.Token {
         return r.s.scanQuotedScalar(if (c == '\'') .single_quoted else .double_quoted) catch |err| unsupported(err);
     }
     if (!r.atPlainStart()) return error.Unsupported;
+    // Most end on their line, where there is nothing to fold: the
+    // scanner's scanPlainScalar, its line read again, only for the rest.
+    const start = r.s.mark;
+    var end: Mark = undefined;
+    r.s.scanPlainLine(&end) catch |err| return unsupported(err);
+    if (!chars.isBreak(r.s.ch(0))) return .{ .start = start, .end = end, .data = .{ .scalar = .{ .value = r.s.input[start.offset..end.offset], .style = .plain } } };
+    r.s.mark = start;
     return r.s.scanPlainScalar() catch |err| unsupported(err);
 }
 
@@ -1416,11 +1428,22 @@ fn skipSeparation(r: *Reader) Error!void {
     if (c == 0 or chars.isBreak(c) or c == '#' or c == '[' or c == '{') return;
     return error.Unsupported;
 }
+
 /// Moves past the blanks, comments and line breaks between flow tokens.
 /// A line a token begins after a break must be indented past the block
 /// around the collection, with spaces; a document marker, or the end,
-/// is the parser's.
-fn skipFlowSpace(r: *Reader) Error!void {
+/// is the parser's. Inlined to the blanks before a token on their line,
+/// the most common case, with the rest in a call apart: inlined whole,
+/// its registers were saved on every call.
+inline fn skipFlowSpace(r: *Reader) Error!void {
+    r.skipBlanks();
+    const c = r.s.ch(0);
+    if (c != '#' and !chars.isBreak(c) and !r.atEnd() and r.s.mark.column > 0) return;
+    return r.skipFlowLines();
+}
+
+/// skipFlowSpace's comments, line breaks and checks after them.
+noinline fn skipFlowLines(r: *Reader) Error!void {
     var new_line = false;
     while (true) {
         r.skipBlanks();
