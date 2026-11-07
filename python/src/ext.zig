@@ -17,7 +17,11 @@ const build_options = @import("build_options");
 
 const Node = yaml.Composer.Node;
 const Mark = yaml.Composer.Mark;
-const gpa = std.heap.c_allocator;
+
+// Each call allocates in an arena of its own over the system's pages, freed
+// as a whole when it returns: no libc, so on Linux one library serves glibc
+// and musl alike, and no state shared between calls, which may run at once
+// with the GIL released while they compose.
 
 /// The exception the extension raises for input it cannot load: args
 /// (message, line, column), line and column from 0, or -1 when no place
@@ -41,21 +45,22 @@ fn noMemory() Raised {
     return error.Raised;
 }
 
-fn none() *c.PyObject {
-    const obj: *c.PyObject = @ptrCast(&c._Py_NoneStruct);
-    c.Py_IncRef(obj);
-    return obj;
+// None, True and False through functions, not Python's data symbols: on
+// Windows a function is imported through python3.lib alone, data needs
+// declaring as imported.
+
+fn none() Raised!*c.PyObject {
+    return c.Py_BuildValue("") orelse error.Raised;
 }
 
-fn boolean(v: bool) *c.PyObject {
-    const obj: *c.PyObject = if (v) @ptrCast(@alignCast(&c._Py_TrueStruct)) else @ptrCast(@alignCast(&c._Py_FalseStruct));
-    c.Py_IncRef(obj);
-    return obj;
+fn boolean(v: bool) Raised!*c.PyObject {
+    return c.PyBool_FromLong(@intFromBool(v)) orelse error.Raised;
 }
 
 /// Builds the objects of one document, its anchored nodes' objects kept
 /// so each alias is the object its anchor names.
 const Builder = struct {
+    gpa: std.mem.Allocator,
     composer: *yaml.Composer,
     merge_keys: bool,
     max_depth: usize,
@@ -64,7 +69,7 @@ const Builder = struct {
     anchored: std.AutoHashMapUnmanaged(*const Node, *c.PyObject) = .empty,
 
     fn deinit(b: *Builder) void {
-        b.anchored.deinit(gpa);
+        b.anchored.deinit(b.gpa);
     }
 
     fn build(b: *Builder, from: *const Node, depth: usize) Raised!*c.PyObject {
@@ -91,11 +96,10 @@ const Builder = struct {
     /// built, so an alias inside it finds it.
     fn remember(b: *Builder, node: *const Node, obj: *c.PyObject) Raised!void {
         if (node.anchor == null) return;
-        b.anchored.put(gpa, node, obj) catch return noMemory();
+        b.anchored.put(b.gpa, node, obj) catch return noMemory();
     }
 
     fn scalar(b: *Builder, node: *const Node, text: []const u8, style: yaml.Composer.ScalarStyle) Raised!*c.PyObject {
-        _ = b;
         _ = style;
         const tag = node.tag orelse "";
         const core = yaml.schema.core(tag) orelse return raise("could not determine a constructor for the tag", node.start);
@@ -103,7 +107,7 @@ const Builder = struct {
         return switch (core) {
             .null => none(),
             .bool => boolean(yaml.schema.parseBool(text).?),
-            .int => integer(text, node),
+            .int => integer(b.gpa, text),
             .float => c.PyFloat_FromDouble(yaml.schema.parseFloat(text).?) orelse error.Raised,
             .str => c.PyUnicode_FromStringAndSize(text.ptr, @intCast(text.len)) orelse error.Raised,
             .seq, .map => raise("a scalar cannot be tagged as a collection", node.start),
@@ -130,7 +134,7 @@ const Builder = struct {
             for (node.data.mapping.pairs) |pair| try b.put(dict, pair.key, pair.value, depth);
             return dict;
         }
-        var pairs = yaml.merge.Pairs.init(gpa, node, b.composer, b.max_depth) catch return noMemory();
+        var pairs = yaml.merge.Pairs.init(b.gpa, node, b.composer, b.max_depth) catch return noMemory();
         defer pairs.deinit();
         while (true) {
             const pair = (pairs.next() catch |err| return mergeFailed(err, pairs.failed_at)) orelse break;
@@ -164,7 +168,7 @@ fn mergeFailed(err: yaml.merge.Error, at: ?*const Node) Raised {
 
 /// A core-schema integer: an int, of any size, from its text (decimal,
 /// 0o octal or 0x hexadecimal, with a sign).
-fn integer(text: []const u8, node: *const Node) Raised!*c.PyObject {
+fn integer(gpa: std.mem.Allocator, text: []const u8) Raised!*c.PyObject {
     if (yaml.schema.parseInt(text)) |n| {
         if (std.math.cast(c_longlong, n)) |small| return c.PyLong_FromLongLong(small) orelse error.Raised;
     }
@@ -185,7 +189,6 @@ fn integer(text: []const u8, node: *const Node) Raised!*c.PyObject {
     }
     const z = std.fmt.allocPrintSentinel(gpa, "{s}{s}", .{ if (negative) "-" else "", digits }, 0) catch return noMemory();
     defer gpa.free(z);
-    _ = node;
     return c.PyLong_FromString(z.ptr, null, base) orelse error.Raised;
 }
 
@@ -199,7 +202,7 @@ const Composed = struct {
     out_of_memory: bool = false,
 };
 
-fn compose(composer: *yaml.Composer, all: bool) Composed {
+fn compose(gpa: std.mem.Allocator, composer: *yaml.Composer, all: bool) Composed {
     var out: Composed = .{};
     while (true) {
         const document = composer.next() catch |err| {
@@ -235,6 +238,9 @@ fn load(_: ?*c.PyObject, args: ?*c.PyObject) callconv(.c) ?*c.PyObject {
 }
 
 fn loadText(bytes: []const u8, all: bool, merge_keys: bool, max_depth: usize) Raised!*c.PyObject {
+    var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
     var diagnostic: yaml.Diagnostic = .{};
     const text = yaml.encoding.toUtf8(gpa, bytes, &diagnostic) catch |err| switch (err) {
         error.OutOfMemory => return noMemory(),
@@ -245,14 +251,14 @@ fn loadText(bytes: []const u8, all: bool, merge_keys: bool, max_depth: usize) Ra
     var composer: yaml.Composer = .init(gpa, text, .{ .max_depth = max_depth });
     defer composer.deinit();
     const state = c.PyEval_SaveThread();
-    var composed = compose(&composer, all);
+    var composed = compose(gpa, &composer, all);
     c.PyEval_RestoreThread(state);
     defer composed.roots.deinit(gpa);
     if (composed.out_of_memory) return noMemory();
     if (composed.failure) |d| return raise(d.message, d.mark);
     if (composed.extra) |start| return raise("expected a single document in the stream, but found another document", start);
 
-    var builder: Builder = .{ .composer = &composer, .merge_keys = merge_keys, .max_depth = max_depth };
+    var builder: Builder = .{ .gpa = gpa, .composer = &composer, .merge_keys = merge_keys, .max_depth = max_depth };
     defer builder.deinit();
     if (!all) {
         if (composed.roots.items.len == 0) return none();

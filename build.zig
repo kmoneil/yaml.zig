@@ -75,8 +75,10 @@ pub fn build(b: *std.Build) void {
     // sysconfig; print(sysconfig.get_paths()['include'])"), into
     // zig-out/python/pyyaml_zig/ with the package's Python files, which
     // PYTHONPATH=zig-out/python imports. The stable ABI (python/src/python.h):
-    // one build serves CPython 3.9 and later. Symbols are Python's, so the
-    // library is left to find them where it is loaded.
+    // one build serves CPython 3.9 and later. Its symbols are Python's: on
+    // Windows linked through python3.lib in the -Dpython-lib directory,
+    // elsewhere left to be found where the library is loaded. No libc, so
+    // on Linux one library serves glibc and musl.
     if (b.option([]const u8, "python-include", "Python's include directory, for pyyaml-zig (zig build python)")) |include| {
         const python_c = b.addTranslateC(.{ .root_source_file = b.path("python/src/python.h"), .target = target, .optimize = optimize, .link_libc = true });
         python_c.addIncludePath(.{ .cwd_relative = include });
@@ -84,7 +86,9 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("python/src/ext.zig"),
             .target = target,
             .optimize = optimize,
-            .link_libc = true,
+            // A wheel's library carries no debug info, which holds the paths
+            // of the machine that built it.
+            .strip = optimize != .debug,
             .imports = &.{
                 .{ .name = "yaml", .module = mod },
                 .{ .name = "python", .module = python_c.createModule() },
@@ -92,9 +96,17 @@ pub fn build(b: *std.Build) void {
         });
         ext_mod.addOptions("build_options", build_options);
         const ext = b.addLibrary(.{ .linkage = .dynamic, .name = "_yaml", .root_module = ext_mod });
-        ext.linker_allow_shlib_undefined = true;
+        const windows = target.result.os.tag == .windows;
+        if (windows) {
+            const lib_dir = b.option([]const u8, "python-lib", "On Windows, the directory holding Python's python3.lib") orelse
+                @panic("-Dpython-lib names the directory holding python3.lib, on Windows");
+            ext_mod.addLibraryPath(.{ .cwd_relative = lib_dir });
+            ext_mod.linkSystemLibrary("python3", .{});
+        } else {
+            ext.linker_allow_shlib_undefined = true;
+        }
         const python_step = b.step("python", "Build pyyaml-zig into zig-out/python/ (-Dpython-include=...)");
-        python_step.dependOn(&b.addInstallFileWithDir(ext.getEmittedBin(), .{ .custom = "python/pyyaml_zig" }, "_yaml.abi3.so").step);
+        python_step.dependOn(&b.addInstallFileWithDir(ext.getEmittedBin(), .{ .custom = "python/pyyaml_zig" }, if (windows) "_yaml.pyd" else "_yaml.abi3.so").step);
         python_step.dependOn(&b.addInstallDirectory(.{ .source_dir = b.path("python/src/pyyaml_zig"), .install_dir = .{ .custom = "python/pyyaml_zig" }, .install_subdir = "" }).step);
     }
     // `zig build run -- check config.yaml`: the command, built and run,

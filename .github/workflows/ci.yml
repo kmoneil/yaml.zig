@@ -55,6 +55,12 @@ jobs:
       - name: zig build security
         run: zig build security --summary line
 
+  # pyyaml-zig's wheel for each platform, built, installed by pip and
+  # tested: see python.yml.
+  python:
+    name: python
+    uses: ./.github/workflows/python.yml
+
   # A package that depends on this one builds it in its own mode: the tests
   # again with yaml built ReleaseSafe and ReleaseFast, where a panic in
   # Debug is one or undefined behaviour.
