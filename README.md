@@ -46,7 +46,7 @@ Zig 0.17.1. Add the package to your `build.zig.zon`:
 zig fetch --save=yaml git+https://github.com/kmoneil/yaml.zig
 ```
 
-Put `#v0.1.0` (or another release tag) after the URL to pin a release.
+Put `#v0.2.0` (or another release tag) after the URL to pin a release.
 Then in `build.zig`:
 
 ```zig
@@ -309,6 +309,10 @@ everything.
 pyyaml-zig puts yaml.zig behind PyYAML's API, so switching is a
 one-line change:
 
+```sh
+pip install pyyaml-zig
+```
+
 ```python
 import pyyaml_zig as yaml
 
@@ -334,8 +338,8 @@ alias bombs; it applies merge keys, as PyYAML does, and parses outside
 Python's global interpreter lock. Code written for PyYAML runs
 unchanged: `load(f, Loader=yaml.SafeLoader)` and PyYAML's other loaders
 read YAML 1.1 exactly as PyYAML does, checked against PyYAML on the YAML
-test suite. It is built and tested here, in
-[python/](python/README.md); its first release on PyPI is next.
+test suite. Wheels for Linux, macOS and Windows, x86_64 and arm64, need
+no compiler; the source is in [python/](python/README.md).
 
 ## Speed
 
