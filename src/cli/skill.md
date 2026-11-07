@@ -1,6 +1,6 @@
 ---
 name: yaml
-description: Check YAML files for errors with the line and column of each, read one value out of a YAML file by path, and convert YAML to JSON and back, with the `yaml` command (yaml.zig). Use before committing or deploying YAML, when a YAML file will not load and you need where and why, to read a config value without writing a script, and to turn YAML into JSON for jq or a test.
+description: Check YAML files for errors with the line and column of each, lint them for values YAML 1.1 tools such as PyYAML read differently, read one value out of a YAML file by path, and convert YAML to JSON and back, with the `yaml` command (yaml.zig). Use before committing or deploying YAML, when a YAML file will not load and you need where and why, to read a config value without writing a script, and to turn YAML into JSON for jq or a test.
 ---
 
 # yaml: check, read and convert YAML
@@ -61,6 +61,41 @@ $ yaml check --format json dup.yaml
 
 A file named `-` is read from standard input. UTF-16 and UTF-32 files
 are read too.
+
+## Lint files
+
+`yaml lint` checks as `check` does, then warns of YAML that is valid
+but reads one way here and another in YAML 1.1 tools such as PyYAML, or
+is likely a mistake. Each warning says how to fix it:
+
+```console
+$ yaml lint lint.yaml
+lint.yaml:1:10: warning: `yes` is a string in YAML 1.2 but a boolean in YAML 1.1 (PyYAML): quote it, 'yes', if it is a string
+enabled: yes
+         ^
+lint.yaml:2:7: warning: `0755` is 755 in YAML 1.2 but 493 in YAML 1.1 (PyYAML), which reads a leading 0 as octal: write 755 or 493, as meant
+mode: 0755
+      ^
+lint.yaml:4:8: warning: the anchor &s is never used: no alias names it
+spare: &s {z: 2}
+       ^
+lint.yaml:7:1: warning: the key `name` differs from `Name`, on line 6, only in case, which some readers ignore: rename one
+name: b
+^
+lint.yaml:8:11: warning: blanks at the end of the line
+port: 8080  
+          ^
+```
+
+Fix what it says and run it again. Each warning has a rule: `yaml11`,
+`tab` (a tab in the indentation), `trailing-space`, `line-length` (with
+`--max-line <n>`), `unused-anchor` and `key-case`. `--allow
+trailing-space,line-length` turns rules off; `--fail-on yaml11` exits 1
+for that rule's warnings only. `--format json` gives each finding its
+`"severity"` and a warning its `"rule"`. A GitHub Actions workflow's
+`on:` key is a `yaml11` warning, rightly, as PyYAML reads it as `true`;
+GitHub reads a string, so quote it, `'on':`, or lint workflows with
+`--allow yaml11`.
 
 ## Read a value
 
@@ -134,7 +169,7 @@ name: x
 (PyYAML, older libraries) read those as booleans, `1:20` as 80, `1_000`
 as 1000 and `2001-12-14` as a date. `yaml` writes them quoted, as above,
 so either reads a string; in a file you write by hand, quote them too
-when such a tool may read it.
+when such a tool may read it. `yaml lint` finds each one.
 
 YAML 1.1's merge key, `<<: *base`, which configs often use (docker
 compose, GitLab CI), is a key like any other in 1.2. `--merge-keys`
@@ -151,10 +186,10 @@ $ yaml json --merge-keys merge.yaml
 ## Exit status
 
 0 when every file is YAML and the command did what it was asked; 1 when
-a file is not YAML or JSON, a path has no value, or a value cannot be
-written as JSON; 2 on a usage error or a file that could not be read.
-What went wrong is on standard error, but for `check`'s findings, which
-are its output.
+a file is not YAML or JSON, `lint` warns, a path has no value, or a
+value cannot be written as JSON; 2 on a usage error or a file that could
+not be read. What went wrong is on standard error, but for `check`'s
+and `lint`'s findings, which are their output.
 
 ## How a file reads
 

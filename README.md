@@ -19,7 +19,8 @@ and check files from the command line.
 - **Clear errors.** Line, column, the path to the value, and a hint:
   `4:3: server: unknown field "tag"; expected one of: hosts, tags, tls,
   root (did you mean "tags"?)`.
-- **A command-line tool.** `yaml check`, `yaml get`, `yaml json`.
+- **A command-line tool.** `yaml check`, `yaml lint`, `yaml get`,
+  `yaml json`.
 - **Python too.** [pyyaml-zig](#python) is a drop-in for PyYAML on this
   parser. It loads YAML 37 times faster than PyYAML and writes it 13
   times faster.
@@ -285,6 +286,10 @@ $ yaml json --merge-keys compose.yaml | jq .services
 
 - `yaml check FILE...` reports each file that is not valid YAML, with
   the line, the column and a caret. `--format json` is for tools and CI.
+- `yaml lint FILE...` checks too, then warns of what YAML 1.1 tools such
+  as PyYAML read differently (`yes`, `0755`, `1e3`), tabs in the
+  indentation, trailing blanks, long lines, unused anchors, and keys
+  that differ only in case. `--allow RULE,...` turns rules off.
 - `yaml get PATH FILE` prints one value, as YAML or with `--json` as
   JSON. A path looks like `.servers[0].name` or `.["a key"]`.
 - `yaml json FILE` converts YAML to JSON, and `yaml from-json FILE`
@@ -295,8 +300,9 @@ $ yaml json --merge-keys compose.yaml | jq .services
 - `yaml skill` prints a guide for AI coding agents, every example in it
   tested; `yaml skill --install DIR` installs it.
 
-The exit status is 0 on success, 1 when a file is not YAML or a path
-has no value, and 2 for a usage error. `yaml --help` lists everything.
+The exit status is 0 on success, 1 when a file is not YAML, lint warns,
+or a path has no value, and 2 for a usage error. `yaml --help` lists
+everything.
 
 ## Python
 

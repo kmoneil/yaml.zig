@@ -9,9 +9,12 @@ const yaml = @import("yaml");
 const build_options = @import("build_options");
 const tree = @import("tree.zig");
 const json = @import("json.zig");
+const linting = @import("lint.zig");
 
 const usage =
     \\Usage: yaml check [--format text|json] [options] <file>...
+    \\       yaml lint [--format text|json] [--allow <rules>] [--fail-on <rules>]
+    \\                 [--max-line <n>] [options] <file>...
     \\       yaml get [--document <n>] [--json [--indent <n>]] [options] <path> <file>
     \\       yaml json [--indent <n>] [options] <file>
     \\       yaml from-json <file>
@@ -25,6 +28,16 @@ const usage =
     \\caret under the column. --format json writes the findings as a JSON
     \\array instead, each {"file", "line", "column", "message"}, lines and
     \\columns from 1.
+    \\
+    \\lint checks each file as check does, then warns of YAML that is valid
+    \\but reads one way here and another in YAML 1.1 tools such as PyYAML,
+    \\or is likely a mistake: file:line:column: warning: what, the line and
+    \\a caret. Each warning has a rule: yaml11 (`yes`, `0777`, `1:20`, read
+    \\otherwise by YAML 1.1), tab (a tab in the indentation), trailing-space,
+    \\line-length (past --max-line <n>), unused-anchor, and key-case (`Name`
+    \\beside `name`). --allow <rule>,... turns rules off; --fail-on
+    \\<rule>,... exits 1 for those rules' warnings only. With --format json
+    \\each finding says its "severity", and a warning its "rule".
     \\
     \\get prints the value at <path> in a file of one document, or in the
     \\document --document picks (from 0), as YAML, or as JSON with --json.
@@ -57,18 +70,18 @@ const usage =
     \\  --indent <n>                  JSON's indentation: 0 (one line, the
     \\                                default), 1, 2, 3, 4 or 8.
     \\
-    \\Exit status: 0 on success; 1 when a file is not YAML (or JSON), or
-    \\get finds no value at the path or one JSON cannot hold; 2 on a usage
-    \\error or a file that could not be read.
+    \\Exit status: 0 on success; 1 when a file is not YAML (or JSON), lint
+    \\warns, or get finds no value at the path or one JSON cannot hold; 2 on
+    \\a usage error or a file that could not be read.
     \\
 ;
 
 /// The most a file may hold: a mark counts in 32 bits.
 const max_bytes = yaml.Scanner.max_input;
 
-const Command = enum { check, get, json, @"from-json", events, skill };
+const Command = enum { check, lint, get, json, @"from-json", events, skill };
 
-const commands = "check, get, json, from-json, events or skill";
+const commands = "check, lint, get, json, from-json, events or skill";
 
 /// The agent skill: `yaml skill` prints it (t59).
 const skill_text = @embedFile("skill.md");
@@ -92,6 +105,11 @@ const Options = struct {
     indent: u8 = 0,
     /// skill: the directory to write yaml/SKILL.md under.
     install: ?[]const u8 = null,
+    /// lint: the rules turned off, the rules whose warnings fail (null
+    /// for all), and the longest line.
+    allow: std.EnumSet(linting.Rule) = .empty,
+    fail_on: ?std.EnumSet(linting.Rule) = null,
+    max_line: ?usize = null,
 };
 
 const Args = struct {
@@ -171,7 +189,7 @@ fn parseArgs(arena: Allocator, argv: []const []const u8) Allocator.Error!Parsed 
 /// What is wrong with `n` operands for `command`, if anything.
 fn wrongOperands(arena: Allocator, command: Command, n: usize) Allocator.Error!?[]const u8 {
     const want: struct { usize, usize, []const u8 } = switch (command) {
-        .check => .{ 1, std.math.maxInt(usize), "one file or more" },
+        .check, .lint => .{ 1, std.math.maxInt(usize), "one file or more" },
         .get => .{ 2, 2, "a path and a file" },
         .json, .@"from-json", .events => .{ 1, 1, "one file" },
         .skill => .{ 0, 0, "no file" },
@@ -199,9 +217,30 @@ fn setOption(arena: Allocator, options: *Options, name: []const u8, value: []con
         options.indent = std.fmt.parseInt(u8, value, 10) catch return "--indent is 0, 1, 2, 3, 4 or 8";
         if (json.whitespace(options.indent) == null) return "--indent is 0, 1, 2, 3, 4 or 8";
     } else {
+        return setLintOption(arena, options, name, value);
+    }
+    return null;
+}
+
+fn setLintOption(arena: Allocator, options: *Options, name: []const u8, value: []const u8) Allocator.Error!?[]const u8 {
+    if (std.mem.eql(u8, name, "--allow")) {
+        options.allow.setUnion(rulesOf(value) orelse return "--allow takes rules, with commas between: " ++ linting.rule_names);
+    } else if (std.mem.eql(u8, name, "--fail-on")) {
+        options.fail_on = rulesOf(value) orelse return "--fail-on takes rules, with commas between: " ++ linting.rule_names;
+    } else if (std.mem.eql(u8, name, "--max-line")) {
+        options.max_line = std.fmt.parseInt(usize, value, 10) catch return "--max-line is a number";
+    } else {
         return try std.fmt.allocPrint(arena, "no option {s}", .{name});
     }
     return null;
+}
+
+/// The rules a comma-separated list names; null if one is no rule.
+fn rulesOf(list: []const u8) ?std.EnumSet(linting.Rule) {
+    var set: std.EnumSet(linting.Rule) = .empty;
+    var names = std.mem.splitScalar(u8, list, ',');
+    while (names.next()) |name| set.insert(std.meta.stringToEnum(linting.Rule, name) orelse return null);
+    return set;
 }
 
 fn run(gpa: Allocator, io: Io, out: *Io.Writer, args: Args) !u8 {
@@ -210,6 +249,7 @@ fn run(gpa: Allocator, io: Io, out: *Io.Writer, args: Args) !u8 {
     const arena = arena_state.allocator();
     return switch (args.command) {
         .check => check(arena, io, out, args),
+        .lint => lint(arena, io, out, args),
         .get => get(arena, io, out, args),
         .json => toJson(arena, io, out, args),
         .@"from-json" => fromJson(arena, io, out, args),
@@ -327,41 +367,105 @@ fn compose(arena: Allocator, path: []const u8, text: []const u8, options: Option
 
 // Findings
 
+/// What check and lint found in a file, at a mark: an error, or one of
+/// lint's warnings, with its rule.
+const Item = struct {
+    path: []const u8,
+    /// The text read, decoded to UTF-8, that the mark is in.
+    text: []const u8,
+    mark: yaml.Composer.Mark,
+    message: []const u8,
+    rule: ?linting.Rule = null,
+
+    fn ofFinding(f: Finding) Item {
+        return .{ .path = f.path, .text = f.text, .mark = f.diagnostic.mark, .message = f.diagnostic.detail() };
+    }
+};
+
 /// `path:line:column: message`, then the line and a caret under the
 /// column, when the mark is in a line of the text.
 fn writeFinding(w: *Io.Writer, f: Finding) Io.Writer.Error!void {
-    const mark = f.diagnostic.mark;
-    try w.print("{s}:{d}:{d}: {s}\n", .{ f.path, mark.line + 1, mark.column + 1, f.diagnostic.detail() });
-    if (mark.offset > f.text.len) return;
-    var start: usize = mark.offset;
-    while (start > 0 and f.text[start - 1] != '\n' and f.text[start - 1] != '\r') start -= 1;
-    var end: usize = mark.offset;
-    while (end < f.text.len and f.text[end] != '\n' and f.text[end] != '\r') end += 1;
+    return writeItem(w, .ofFinding(f));
+}
+
+/// An item as writeFinding writes one, a warning's message after
+/// `warning: `.
+fn writeItem(w: *Io.Writer, item: Item) Io.Writer.Error!void {
+    const mark = item.mark;
+    const severity = if (item.rule != null) "warning: " else "";
+    try w.print("{s}:{d}:{d}: {s}{s}\n", .{ item.path, mark.line + 1, mark.column + 1, severity, item.message });
+    if (mark.offset <= item.text.len) try writeCaret(w, item.text, mark.offset);
+}
+
+/// The line of `text` that `offset` is in, and a caret under it.
+fn writeCaret(w: *Io.Writer, text: []const u8, offset: usize) Io.Writer.Error!void {
+    var start: usize = offset;
+    while (start > 0 and text[start - 1] != '\n' and text[start - 1] != '\r') start -= 1;
+    var end: usize = offset;
+    while (end < text.len and text[end] != '\n' and text[end] != '\r') end += 1;
     if (start == end) return;
     // A control character in the line is shown as `?`, so the input
     // cannot write to the terminal (CWE-150); one character for one, so
     // the caret still lines up.
-    for (f.text[start..end]) |c| try w.writeByte(if ((c < 0x20 and c != '\t') or c == 0x7F) '?' else c);
+    for (text[start..end]) |c| try w.writeByte(if ((c < 0x20 and c != '\t') or c == 0x7F) '?' else c);
     try w.writeByte('\n');
-    for (f.text[start..mark.offset]) |c| {
+    for (text[start..offset]) |c| {
         if (c == '\t') try w.writeByte('\t') else if (c & 0xC0 != 0x80) try w.writeByte(' ');
     }
     try w.writeAll("^\n");
 }
 
-fn writeFindingJson(w: *Io.Writer, f: Finding) Io.Writer.Error!void {
+/// An item as a JSON object, {"file", "line", "column", "message"}, and
+/// for lint its "severity" and a warning's "rule".
+fn writeItemJson(w: *Io.Writer, item: Item, lint_fields: bool) Io.Writer.Error!void {
     var s: std.json.Stringify = .{ .writer = w };
     try s.beginObject();
     try s.objectField("file");
-    try s.write(f.path);
+    try s.write(item.path);
     try s.objectField("line");
-    try s.write(f.diagnostic.mark.line + 1);
+    try s.write(item.mark.line + 1);
     try s.objectField("column");
-    try s.write(f.diagnostic.mark.column + 1);
+    try s.write(item.mark.column + 1);
+    if (lint_fields) {
+        try s.objectField("severity");
+        try s.write(if (item.rule != null) "warning" else "error");
+        if (item.rule) |rule| {
+            try s.objectField("rule");
+            try s.write(@tagName(rule));
+        }
+    }
     try s.objectField("message");
-    try s.write(f.diagnostic.detail());
+    try s.write(item.message);
     try s.endObject();
 }
+
+/// check's and lint's output: their items as text, or as a JSON array.
+const Report = struct {
+    out: *Io.Writer,
+    format: @FieldType(Options, "format"),
+    /// lint's JSON objects say each item's severity and rule.
+    lint: bool,
+    count: usize = 0,
+
+    fn begin(r: *Report) Io.Writer.Error!void {
+        if (r.format == .json) try r.out.writeAll("[");
+    }
+
+    fn add(r: *Report, item: Item) Io.Writer.Error!void {
+        switch (r.format) {
+            .text => try writeItem(r.out, item),
+            .json => {
+                try r.out.writeAll(if (r.count == 0) "\n" else ",\n");
+                try writeItemJson(r.out, item, r.lint);
+            },
+        }
+        r.count += 1;
+    }
+
+    fn end(r: *Report) Io.Writer.Error!void {
+        if (r.format == .json) try r.out.writeAll(if (r.count == 0) "]\n" else "\n]\n");
+    }
+};
 
 /// A finding on standard error, for the commands that read one file.
 fn reportFinding(f: Finding) void {
@@ -375,8 +479,8 @@ fn reportFinding(f: Finding) void {
 
 fn check(arena: Allocator, io: Io, out: *Io.Writer, args: Args) !u8 {
     var unreadable = false;
-    var findings: usize = 0;
-    if (args.options.format == .json) try out.writeAll("[");
+    var report: Report = .{ .out = out, .format = args.options.format, .lint = false };
+    try report.begin();
     for (args.operands) |path| {
         const bytes = try readFile(arena, io, path) orelse {
             unreadable = true;
@@ -384,19 +488,40 @@ fn check(arena: Allocator, io: Io, out: *Io.Writer, args: Args) !u8 {
         };
         var finding: Finding = undefined;
         const clean = if (try decode(arena, path, bytes, &finding)) |text| try validate(arena, path, text, args.options, &finding) else false;
-        if (clean) continue;
-        switch (args.options.format) {
-            .text => try writeFinding(out, finding),
-            .json => {
-                try out.writeAll(if (findings == 0) "\n" else ",\n");
-                try writeFindingJson(out, finding);
-            },
-        }
-        findings += 1;
+        if (!clean) try report.add(.ofFinding(finding));
     }
-    if (args.options.format == .json) try out.writeAll(if (findings == 0) "]\n" else "\n]\n");
+    try report.end();
     if (unreadable) return 2;
-    return @intFromBool(findings > 0);
+    return @intFromBool(report.count > 0);
+}
+
+fn lint(arena: Allocator, io: Io, out: *Io.Writer, args: Args) !u8 {
+    const options = args.options;
+    var unreadable = false;
+    var failing = false;
+    var report: Report = .{ .out = out, .format = options.format, .lint = true };
+    try report.begin();
+    for (args.operands) |path| {
+        const bytes = try readFile(arena, io, path) orelse {
+            unreadable = true;
+            continue;
+        };
+        var finding: Finding = undefined;
+        const text = try decode(arena, path, bytes, &finding);
+        const read = if (text) |t| try compose(arena, path, t, options, &finding) else null;
+        const documents = read orelse {
+            try report.add(.ofFinding(finding));
+            failing = true;
+            continue;
+        };
+        for (try linting.lint(arena, text.?, documents.roots, .{ .allow = options.allow, .max_line = options.max_line })) |w| {
+            try report.add(.{ .path = path, .text = text.?, .mark = w.mark, .message = w.message, .rule = w.rule });
+            if (options.fail_on == null or options.fail_on.?.contains(w.rule)) failing = true;
+        }
+    }
+    try report.end();
+    if (unreadable) return 2;
+    return @intFromBool(failing);
 }
 
 /// The documents of the one file a command reads: null, said, when it

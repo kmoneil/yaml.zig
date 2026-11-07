@@ -18,6 +18,8 @@ const files = [_]struct { []const u8, []const u8 }{
     .{ "merge.yaml", "base: &b {x: 1, y: 2}\nchild:\n  <<: *b\n  y: 3\n" },
     .{ "badmerge.yaml", "m: {<<: 3}\n" },
     .{ "legacy.yaml", "on: yes\nmode: 0755\nat: 2001-12-14\nbig: 0777777777777777777777777\n" },
+    .{ "lint.yaml", "enabled: yes\nmode: 0755\nbase: &b {x: 1}\nspare: &s {z: 2}\nuse: *b\nName: a\nname: b\nport: 8080  \n" },
+    .{ "tabbed.yaml", "text: |\n  \tindented by a tab\nratio: 1e3\n" },
 };
 
 const Case = struct {
@@ -58,6 +60,15 @@ const cases = [_]Case{
     .{ .argv = &.{ "json", "legacy.yaml" }, .exit = 0, .stdout = "{\"on\":\"yes\",\"mode\":755,\"at\":\"2001-12-14\",\"big\":\"0777777777777777777777777\"}\n" },
     .{ .argv = &.{ "json", "--schema", "yaml11", "legacy.yaml" }, .exit = 0, .stdout = "{\"true\":true,\"mode\":493,\"at\":\"2001-12-14\",\"big\":\"0777777777777777777777777\"}\n" },
     .{ .argv = &.{ "check", "--schema", "yaml12", "legacy.yaml" }, .exit = 2, .stderr = "yaml: --schema is core, yaml11, json or failsafe\nRun `yaml --help` for the usage.\n" },
+    // lint: clean, an error as check reports it, each rule, and the options
+    .{ .argv = &.{ "lint", "good.yaml", "alias.yaml" }, .exit = 0 },
+    .{ .argv = &.{ "lint", "dup.yaml", "good.yaml" }, .exit = 1, .stdout = "dup.yaml:2:1: a mapping cannot have two equal keys\na: 2\n^\n" },
+    .{ .argv = &.{ "lint", "tabbed.yaml" }, .exit = 1, .stdout = "tabbed.yaml:2:3: warning: a tab in the indentation: indent with spaces, as YAML's blocks must be\n  \tindented by a tab\n  ^\ntabbed.yaml:3:8: warning: `1e3` is a float in YAML 1.2 but a string in YAML 1.1 (PyYAML): write it with a point, and a sign on any exponent: 1.0e+3\nratio: 1e3\n       ^\n" },
+    .{ .argv = &.{ "lint", "--allow", "yaml11,key-case", "--allow", "unused-anchor,trailing-space", "lint.yaml" }, .exit = 0 },
+    .{ .argv = &.{ "lint", "--fail-on", "tab", "--allow", "yaml11,key-case,trailing-space", "lint.yaml" }, .exit = 0, .stdout = "lint.yaml:4:8: warning: the anchor &s is never used: no alias names it\nspare: &s {z: 2}\n       ^\n" },
+    .{ .argv = &.{ "lint", "--max-line", "12", "--allow", "yaml11,key-case,trailing-space,unused-anchor", "lint.yaml" }, .exit = 1, .stdout = "lint.yaml:3:13: warning: the line is 15 characters long, past --max-line 12\nbase: &b {x: 1}\n            ^\nlint.yaml:4:13: warning: the line is 16 characters long, past --max-line 12\nspare: &s {z: 2}\n            ^\n" },
+    .{ .argv = &.{ "lint", "--format", "json", "--allow", "yaml11,key-case,unused-anchor", "lint.yaml", "dup.yaml" }, .exit = 1, .stdout = "[\n{\"file\":\"lint.yaml\",\"line\":8,\"column\":11,\"severity\":\"warning\",\"rule\":\"trailing-space\",\"message\":\"blanks at the end of the line\"},\n{\"file\":\"dup.yaml\",\"line\":2,\"column\":1,\"severity\":\"error\",\"message\":\"a mapping cannot have two equal keys\"}\n]\n" },
+    .{ .argv = &.{ "lint", "--allow", "tabs", "lint.yaml" }, .exit = 2, .stderr = "yaml: --allow takes rules, with commas between: yaml11, tab, trailing-space, line-length, unused-anchor or key-case\nRun `yaml --help` for the usage.\n" },
     // json and from-json
     .{ .argv = &.{ "json", "stream.yaml" }, .exit = 0, .stdout = "{\"a\":1}\n[\"x\",\"y\"]\nnull\n" },
     .{ .argv = &.{ "json", "--indent", "2", "alias.yaml" }, .exit = 0, .stdout = "{\n  \"base\": {\n    \"k\": \"v\"\n  },\n  \"use\": {\n    \"k\": \"v\"\n  }\n}\n" },
@@ -66,8 +77,8 @@ const cases = [_]Case{
     .{ .argv = &.{ "events", "alias.yaml" }, .exit = 0, .stdout = "+STR\n+DOC\n+MAP\n=VAL :base\n+MAP {} &b\n=VAL :k\n=VAL :v\n-MAP\n=VAL :use\n=ALI *b\n-MAP\n-DOC\n-STR\n" },
     .{ .argv = &.{ "events", "bad.yaml" }, .exit = 1, .stdout = "+STR\n+DOC\n+MAP\n=VAL :list\n+SEQ []\n=VAL :1\n", .stderr = "bad.yaml:2:1: a flow collection's lines must be indented past its block's, with spaces\nnext: 3\n^\n" },
     // usage
-    .{ .argv = &.{}, .exit = 2, .stderr = "yaml: a command is needed: check, get, json, from-json, events or skill\nRun `yaml --help` for the usage.\n" },
-    .{ .argv = &.{ "lint", "good.yaml" }, .exit = 2, .stderr = "yaml: no command `lint`: check, get, json, from-json, events or skill\nRun `yaml --help` for the usage.\n" },
+    .{ .argv = &.{}, .exit = 2, .stderr = "yaml: a command is needed: check, lint, get, json, from-json, events or skill\nRun `yaml --help` for the usage.\n" },
+    .{ .argv = &.{ "format", "good.yaml" }, .exit = 2, .stderr = "yaml: no command `format`: check, lint, get, json, from-json, events or skill\nRun `yaml --help` for the usage.\n" },
     .{ .argv = &.{ "skill", "good.yaml" }, .exit = 2, .stderr = "yaml: skill takes no file\nRun `yaml --help` for the usage.\n" },
     .{ .argv = &.{ "skill", "--install", "agents" }, .exit = 0, .stdout = "wrote agents/yaml/SKILL.md\n" },
     .{ .argv = &.{ "get", ".a" }, .exit = 2, .stderr = "yaml: get takes a path and a file\nRun `yaml --help` for the usage.\n" },
