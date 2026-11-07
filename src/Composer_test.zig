@@ -70,6 +70,9 @@ test "duplicate keys: scalars, collections, through aliases" {
         "[1, 2]: a\n[1, 2]: b\n",
         "{x: 1, y: 2}: a\n{y: 2, x: 1}: b\n",
         "&k a: 1\n*k : 2\n",
+        // A string key after an alias of the same string.
+        "x: &k a\n*k : 1\na: 2\n",
+        "\"\": a\n'': b\n",
         "!!str a: 1\n!!str a: 2\n",
         "{a: 1, a: 2}",
         // Under the core schema, keys are equal by value.
@@ -90,6 +93,7 @@ test "duplicate keys: scalars, collections, through aliases" {
     // A number and a string differ, and so do other tags or contents.
     const distinct = [_][]const u8{
         "1: a\n\"1\": b\n",
+        "x: &k 1\n*k : a\n\"1\": b\n",
         "[1, 2]: a\n[2, 1]: b\n",
         "!!str a: 1\n!!int a: 2\n",
         "{x: 1}: a\n{x: 2}: b\n",

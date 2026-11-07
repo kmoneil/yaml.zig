@@ -623,6 +623,7 @@ fn checkKey(c: *Composer, frame: *Frame, key: *Node) Error!void {
 /// `set`.
 fn checkKeyAmong(c: *Composer, items: []const *Node, stride: usize, set: *KeySet, key: *Node) Error!void {
     if (items.len / stride < linear_keys) {
+        if (isString(key)) return c.checkStringKey(items, stride, key);
         var i: usize = 0;
         while (i < items.len) : (i += stride) {
             if (equal(items[i], key)) return c.duplicate(key);
@@ -632,6 +633,26 @@ fn checkKeyAmong(c: *Composer, items: []const *Node, stride: usize, set: *KeySet
     if (set.count() == 0) try c.fillKeySet(items, stride, set);
     const entry = try set.getOrPutContext(c.parser.scanner.gpa, key, .{ .seed = c.hashSeed() });
     if (entry.found_existing) return c.duplicate(key);
+}
+
+/// checkKeyAmong's search key by key for a string key, as nearly every
+/// key is: equal only to a string of the same text, compared by its
+/// length and first byte before the rest, or to an alias of one, which
+/// `equal` follows. Any other node has another tag (resolveTag gives
+/// every string the schema's own) or is no scalar. Through `equal` for
+/// each key, the check was about a tenth of compose's samples; this way
+/// compose is 3% faster (t56).
+fn checkStringKey(c: *Composer, items: []const *Node, stride: usize, key: *Node) Error!void {
+    const text = key.data.scalar.value;
+    var i: usize = 0;
+    while (i < items.len) : (i += stride) {
+        const other = items[i];
+        const same = if (isString(other)) same: {
+            const value = other.data.scalar.value;
+            break :same value.len == text.len and (text.len == 0 or value[0] == text[0]) and std.mem.eql(u8, value, text);
+        } else other.data == .alias and equal(other, key);
+        if (same) return c.duplicate(key);
+    }
 }
 
 /// Puts a mapping's keys so far, every `stride`th of `items`, in `set`,
