@@ -17,7 +17,7 @@ from typing import IO, Any, Iterator, Union
 
 from . import _yaml
 
-__all__ = ["safe_load", "safe_load_all", "YAMLError", "Mark", "__version__"]
+__all__ = ["safe_load", "safe_load_all", "safe_dump", "safe_dump_all", "YAMLError", "Mark", "__version__"]
 
 __version__: str = _yaml.__version__
 
@@ -78,3 +78,75 @@ def safe_load(stream: Stream, *, merge_keys: bool = True, max_depth: int = 256) 
 def safe_load_all(stream: Stream, *, merge_keys: bool = True, max_depth: int = 256) -> Iterator[Any]:
     """Every document in `stream`, in order."""
     return iter(_load(stream, True, merge_keys, max_depth))
+
+
+def safe_dump(
+    data: Any,
+    stream: IO[Any] | None = None,
+    *,
+    default_flow_style: bool | None = False,
+    indent: int = 2,
+    width: int = 80,
+    sort_keys: bool = True,
+    explicit_start: bool = False,
+    explicit_end: bool = False,
+    encoding: str | None = None,
+    allow_unicode: bool = True,
+    max_depth: int = 256,
+) -> Any:
+    """`data` written as YAML: returned as a str (bytes with `encoding`),
+    or written to `stream`, which is returned None. It writes dict, list,
+    tuple, str, int, float, bool and None, what safe_load gives back; a
+    string any reader, YAML 1.1 ones too, would read as something else is
+    quoted. Keys are sorted unless `sort_keys=False`. Text is UTF-8 as it
+    is, as with `allow_unicode=True` (accepted, and ignored)."""
+    return safe_dump_all(
+        [data],
+        stream,
+        default_flow_style=default_flow_style,
+        indent=indent,
+        width=width,
+        sort_keys=sort_keys,
+        explicit_start=explicit_start,
+        explicit_end=explicit_end,
+        encoding=encoding,
+        allow_unicode=allow_unicode,
+        max_depth=max_depth,
+    )
+
+
+def safe_dump_all(
+    documents: Any,
+    stream: IO[Any] | None = None,
+    *,
+    default_flow_style: bool | None = False,
+    indent: int = 2,
+    width: int = 80,
+    sort_keys: bool = True,
+    explicit_start: bool = False,
+    explicit_end: bool = False,
+    encoding: str | None = None,
+    allow_unicode: bool = True,
+    max_depth: int = 256,
+) -> Any:
+    """Each of `documents` written as a YAML document, `---` before each
+    after the first (before the first too with `explicit_start`)."""
+    if not 2 <= indent <= 8:
+        raise ValueError("indent is 2 to 8")
+    parts = []
+    for i, doc in enumerate(documents):
+        try:
+            text = _yaml._dump(doc, bool(default_flow_style), indent, width, sort_keys, max_depth)
+        except _yaml.Error as e:
+            raise YAMLError(e.args[0]) from None
+        if explicit_start or i > 0:
+            text = "---\n" + text
+        if explicit_end:
+            text += "...\n"
+        parts.append(text)
+    out = "".join(parts)
+    data = out.encode(encoding) if encoding is not None else out
+    if stream is None:
+        return data
+    stream.write(data)
+    return None

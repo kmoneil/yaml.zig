@@ -274,8 +274,169 @@ fn loadText(bytes: []const u8, all: bool, merge_keys: bool, max_depth: usize) Ra
     return list;
 }
 
+/// The types and singletons `_dump` tells objects by, taken from instances
+/// when the module loads, and held for its life: Python's type objects are
+/// data symbols, which Windows imports only when declared so.
+var types: struct {
+    none: *c.PyObject,
+    true_: *c.PyObject,
+    false_: *c.PyObject,
+    int: *c.PyObject,
+    float: *c.PyObject,
+    str: *c.PyObject,
+    dict: *c.PyObject,
+    list: *c.PyObject,
+    tuple: *c.PyObject,
+} = undefined;
+
+/// The type of `instance`, a new one dropped once it is read.
+fn typeOf(instance: ?*c.PyObject) ?*c.PyObject {
+    const obj = instance orelse return null;
+    defer c.Py_DecRef(obj);
+    return c.PyObject_Type(obj);
+}
+
+fn initTypes() bool {
+    types = .{
+        .none = c.Py_BuildValue("") orelse return false,
+        .true_ = c.PyBool_FromLong(1) orelse return false,
+        .false_ = c.PyBool_FromLong(0) orelse return false,
+        .int = typeOf(c.PyLong_FromLong(0)) orelse return false,
+        .float = typeOf(c.PyFloat_FromDouble(0)) orelse return false,
+        .str = typeOf(c.PyUnicode_FromStringAndSize("", 0)) orelse return false,
+        .dict = typeOf(c.PyDict_New()) orelse return false,
+        .list = typeOf(c.PyList_New(0)) orelse return false,
+        .tuple = typeOf(c.PyTuple_New(0)) orelse return false,
+    };
+    return true;
+}
+
+fn isInstance(obj: *c.PyObject, t: *c.PyObject) Raised!bool {
+    return switch (c.PyObject_IsInstance(obj, t)) {
+        1 => true,
+        0 => false,
+        else => error.Raised,
+    };
+}
+
+/// Python objects as yaml.zig's Values, for safe_dump: what safe_load
+/// gives back, and nothing else.
+const Dumper = struct {
+    gpa: std.mem.Allocator,
+    sort_keys: bool,
+    max_depth: usize,
+
+    fn value(d: *const Dumper, obj: *c.PyObject, depth: usize) Raised!yaml.Value {
+        if (depth > d.max_depth) return raise("the data nests deeper than max_depth, or holds itself", null);
+        if (obj == types.none) return .null;
+        if (obj == types.true_) return .{ .bool = true };
+        if (obj == types.false_) return .{ .bool = false };
+        if (try isInstance(obj, types.int)) return d.integer(obj);
+        if (try isInstance(obj, types.float)) return .{ .float = c.PyFloat_AsDouble(obj) };
+        if (try isInstance(obj, types.str)) return .{ .string = try d.utf8(obj) };
+        if (try isInstance(obj, types.dict)) return .{ .mapping = try d.pairs(obj, depth) };
+        if (try isInstance(obj, types.list) or try isInstance(obj, types.tuple)) return .{ .sequence = try d.items(obj, depth) };
+        return d.cannotRepresent(obj);
+    }
+
+    fn integer(d: *const Dumper, obj: *c.PyObject) Raised!yaml.Value {
+        var overflow: c_int = 0;
+        const n = c.PyLong_AsLongLongAndOverflow(obj, &overflow);
+        if (overflow == 0) {
+            if (n == -1 and c.PyErr_Occurred() != null) return error.Raised;
+            return .{ .integer = n };
+        }
+        // Past 64 bits: its decimal digits, which YAML reads back as one.
+        const text = c.PyObject_Str(obj) orelse return error.Raised;
+        defer c.Py_DecRef(text);
+        return .{ .number_string = try d.utf8(text) };
+    }
+
+    /// A str's UTF-8, copied into the arena.
+    fn utf8(d: *const Dumper, obj: *c.PyObject) Raised![]const u8 {
+        const bytes = c.PyUnicode_AsUTF8String(obj) orelse return error.Raised;
+        defer c.Py_DecRef(bytes);
+        var ptr: [*c]u8 = undefined;
+        var len: c.Py_ssize_t = 0;
+        if (c.PyBytes_AsStringAndSize(bytes, &ptr, &len) != 0) return error.Raised;
+        return d.gpa.dupe(u8, ptr[0..@intCast(len)]) catch noMemory();
+    }
+
+    fn pairs(d: *const Dumper, dict: *c.PyObject, depth: usize) Raised![]yaml.Value.Pair {
+        const keys = c.PyDict_Keys(dict) orelse return error.Raised;
+        defer c.Py_DecRef(keys);
+        // Sorted, as PyYAML's safe_dump sorts them unless told not to; keys
+        // that cannot be compared (an int and a str) stay in the dict's
+        // order, as PyYAML leaves them.
+        if (d.sort_keys and c.PyList_Sort(keys) != 0) c.PyErr_Clear();
+        const n: usize = @intCast(c.PyList_Size(keys));
+        const out = d.gpa.alloc(yaml.Value.Pair, n) catch return noMemory();
+        for (out, 0..) |*pair, i| {
+            const key = c.PyList_GetItem(keys, @intCast(i)) orelse return error.Raised;
+            const val = c.PyDict_GetItem(dict, key) orelse return error.Raised;
+            pair.* = .{ .key = try d.value(key, depth + 1), .value = try d.value(val, depth + 1) };
+        }
+        return out;
+    }
+
+    fn items(d: *const Dumper, seq: *c.PyObject, depth: usize) Raised![]yaml.Value {
+        const n = c.PySequence_Size(seq);
+        if (n < 0) return error.Raised;
+        const out = d.gpa.alloc(yaml.Value, @intCast(n)) catch return noMemory();
+        for (out, 0..) |*v, i| {
+            const item = c.PySequence_GetItem(seq, @intCast(i)) orelse return error.Raised;
+            defer c.Py_DecRef(item);
+            v.* = try d.value(item, depth + 1);
+        }
+        return out;
+    }
+
+    fn cannotRepresent(d: *const Dumper, obj: *c.PyObject) Raised {
+        const t = c.PyObject_Type(obj) orelse return error.Raised;
+        defer c.Py_DecRef(t);
+        const name = c.PyObject_GetAttrString(t, "__name__") orelse return error.Raised;
+        defer c.Py_DecRef(name);
+        const text = try d.utf8(name);
+        const message = std.fmt.allocPrint(d.gpa, "cannot represent an object of type {s}: safe_dump writes dict, list, tuple, str, int, float, bool and None", .{text}) catch return noMemory();
+        return raise(message, null);
+    }
+};
+
+/// `_dump(data, flow, indent, width, sort_keys, max_depth)`: `data` as one
+/// YAML document's text.
+fn dump(_: ?*c.PyObject, args: ?*c.PyObject) callconv(.c) ?*c.PyObject {
+    var obj: ?*c.PyObject = null;
+    var flow: c_int = 0;
+    var indent: c.Py_ssize_t = 2;
+    var width: c.Py_ssize_t = 80;
+    var sort_keys: c_int = 1;
+    var max_depth: c.Py_ssize_t = 256;
+    if (c.PyArg_ParseTuple(args, "Opnnpn", &obj, &flow, &indent, &width, &sort_keys, &max_depth) == 0) return null;
+    return dumpValue(obj.?, flow != 0, @intCast(std.math.clamp(indent, 2, 8)), @intCast(@max(width, 1)), sort_keys != 0, @intCast(@max(max_depth, 0))) catch null;
+}
+
+fn dumpValue(obj: *c.PyObject, flow: bool, indent: u8, width: usize, sort_keys: bool, max_depth: usize) Raised!*c.PyObject {
+    var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
+    const dumper: Dumper = .{ .gpa = gpa, .sort_keys = sort_keys, .max_depth = max_depth };
+    const value = try dumper.value(obj, 0);
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    // Writing is yaml.zig's alone: the GIL is let go while it runs.
+    const state = c.PyEval_SaveThread();
+    const written = yaml.stringify(gpa, value, .{ .style = if (flow) .flow else .block, .indent = indent, .width = width }, &out.writer);
+    c.PyEval_RestoreThread(state);
+    written catch |err| return switch (err) {
+        error.InvalidUtf8 => raise("a string is not UTF-8", null),
+        error.OutOfMemory, error.WriteFailed => noMemory(),
+    };
+    const text = out.written();
+    return c.PyUnicode_FromStringAndSize(text.ptr, @intCast(text.len)) orelse error.Raised;
+}
+
 var methods = [_]c.PyMethodDef{
     .{ .ml_name = "_load", .ml_meth = @ptrCast(&load), .ml_flags = c.METH_VARARGS, .ml_doc = "_load(text, all, merge_keys, max_depth)" },
+    .{ .ml_name = "_dump", .ml_meth = @ptrCast(&dump), .ml_flags = c.METH_VARARGS, .ml_doc = "_dump(data, flow, indent, width, sort_keys, max_depth)" },
     .{ .ml_name = null, .ml_meth = null, .ml_flags = 0, .ml_doc = null },
 };
 
@@ -292,6 +453,7 @@ var module_def = c.PyModuleDef{
 };
 
 export fn PyInit__yaml() ?*c.PyObject {
+    if (!initTypes()) return null;
     const module = c.PyModule_Create2(&module_def, c.PYTHON_ABI_VERSION) orelse return null;
     error_type = c.PyErr_NewException("pyyaml_zig._yaml.Error", null, null) orelse {
         c.Py_DecRef(module);

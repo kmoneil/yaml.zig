@@ -21,7 +21,8 @@ and check files from the command line.
   root (did you mean "tags"?)`.
 - **A command-line tool.** `yaml check`, `yaml get`, `yaml json`.
 - **Python too.** [pyyaml-zig](#python) puts this parser behind PyYAML's
-  API, and loads YAML 37 times faster than PyYAML.
+  API. It loads YAML 37 times faster than PyYAML and writes it 13 times
+  faster.
 
 <!-- suite -->
 | check | cases | passing |
@@ -295,16 +296,20 @@ import pyyaml_zig as yaml
 
 with open("config.yaml") as f:
     config = yaml.safe_load(f)
+
+with open("out.yaml", "w") as f:
+    yaml.safe_dump(config, f)
 ```
 
-On the 4.9 MB file from the speed table below, with identical results:
+On the 4.9 MB file from the speed table below, loaded and then written
+back, with identical results:
 
-| Loader | Time |
-| --- | ---: |
-| **pyyaml-zig** | **35 ms** |
-| PyYAML with libyaml (`CSafeLoader`) | 1,266 ms |
-| PyYAML, pure Python (`SafeLoader`) | 5,994 ms |
-| `json.loads`, the same data as JSON | 16 ms |
+| | Load | Write |
+| --- | ---: | ---: |
+| **pyyaml-zig** | **35 ms** | **56 ms** |
+| PyYAML with libyaml (`CSafeLoader`, `CSafeDumper`) | 1,266 ms | 753 ms |
+| PyYAML, pure Python (`SafeLoader`, `SafeDumper`) | 5,994 ms | 2,626 ms |
+| `json`, the same data as JSON | 16 ms | 15 ms |
 
 Like the Zig library, it reads YAML 1.2, refuses duplicate keys and caps
 alias bombs; it applies merge keys, as PyYAML does, and parses outside
