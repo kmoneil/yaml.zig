@@ -29,7 +29,7 @@ detail_buffer: [512]u8 = undefined,
 detail_len: usize = 0,
 
 /// Where in the document typed construction failed, from its root:
-/// `machine.types[2]`, a map's key quoted when it is not a plain word.
+/// `server.hosts[2]`, a map's key quoted when it is not a plain word.
 /// Empty at the root, and for errors before construction.
 pub fn path(d: *const Diagnostic) []const u8 {
     return d.path_buffer[0..d.path_len];

@@ -373,13 +373,13 @@ fn expectLine(comptime T: type, input: []const u8, expected: []const u8) !void {
     try testing.expectEqualStrings(expected, w.buffered());
 }
 
-const Machine = struct {
-    types: []const []const u8,
-    zones: []const []const u8 = &.{},
-    spot: bool = false,
-    image: []const u8 = "debian",
+const Server = struct {
+    hosts: []const []const u8,
+    tags: []const []const u8 = &.{},
+    tls: bool = false,
+    root: []const u8 = "/srv",
 };
-const JobSpec = struct { name: []const u8, machine: Machine, env: yaml.ArrayHashMap(u16) = .{} };
+const Site = struct { name: []const u8, server: Server, env: yaml.ArrayHashMap(u16) = .{} };
 
 test "diagnostics: a detail too long for its buffer is cut where a character begins" {
     const S = struct { a: u8 };
@@ -399,31 +399,31 @@ test "diagnostics: a detail too long for its buffer is cut where a character beg
 }
 
 test "diagnostics: an unknown field named, the fields listed, the near one suggested" {
-    try expectLine(JobSpec, "name: x\nmachine:\n  types: [e2]\n  zone: a\n",
-        \\4:3: machine: unknown field "zone"; expected one of: types, zones, spot, image (did you mean "zones"?)
+    try expectLine(Site, "name: x\nserver:\n  hosts: [a]\n  tag: b\n",
+        \\4:3: server: unknown field "tag"; expected one of: hosts, tags, tls, root (did you mean "tags"?)
     );
-    try expectLine(JobSpec, "name: x\nmachine:\n  types: [e2]\n  colour: red\n",
-        \\4:3: machine: unknown field "colour"; expected one of: types, zones, spot, image
+    try expectLine(Site, "name: x\nserver:\n  hosts: [a]\n  colour: red\n",
+        \\4:3: server: unknown field "colour"; expected one of: hosts, tags, tls, root
     );
 }
 
 test "diagnostics: a missing field named, at the mapping without it" {
-    try expectLine(JobSpec, "name: x\nmachine:\n  spot: true\n",
-        \\3:3: machine: missing field "types"
+    try expectLine(Site, "name: x\nserver:\n  tls: true\n",
+        \\3:3: server: missing field "hosts"
     );
-    try expectLine(JobSpec, "machine: {types: []}\n",
+    try expectLine(Site, "server: {hosts: []}\n",
         \\1:1: missing field "name"
     );
 }
 
 test "diagnostics: a wrong type three levels deep, a sequence index in the path" {
-    try expectLine(JobSpec, "name: x\nmachine:\n  types:\n  - e2\n  - n2\n  - {big: yes}\n",
-        \\6:5: machine.types[2]: expected a string, found a mapping
+    try expectLine(Site, "name: x\nserver:\n  hosts:\n  - a\n  - b\n  - {big: yes}\n",
+        \\6:5: server.hosts[2]: expected a string, found a mapping
     );
-    try expectLine(JobSpec, "name: x\nmachine: {types: [a], spot: maybe}\n",
-        \\2:29: machine.spot: expected a boolean, found the string "maybe"
+    try expectLine(Site, "name: x\nserver: {hosts: [a], tls: maybe}\n",
+        \\2:27: server.tls: expected a boolean, found the string "maybe"
     );
-    try expectLine(JobSpec, "name: x\nmachine: {types: [a]}\nenv: {\"PORT NUMBER\": 70000}\n",
+    try expectLine(Site, "name: x\nserver: {hosts: [a]}\nenv: {\"PORT NUMBER\": 70000}\n",
         \\3:22: env."PORT NUMBER": the integer 70000 does not fit a u16
     );
 }

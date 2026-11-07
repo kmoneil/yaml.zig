@@ -211,10 +211,10 @@ that `stringify` writes (`s.write`).
 
 ### Errors say where, and why
 
-An error names the path to the value and what it found: `machine:
-unknown field "zone"; expected one of: types, zones, spot, image (did
-you mean "zones"?)`, `machine.types[2]: expected a string, found a
-mapping`, `machine: missing field "types"`.
+An error names the path to the value and what it found: `server:
+unknown field "tag"; expected one of: hosts, tags, tls, root (did you
+mean "tags"?)`, `server.hosts[2]: expected a string, found a mapping`,
+`server: missing field "hosts"`.
 
 <!-- example: examples/errors.zig -->
 ```zig
