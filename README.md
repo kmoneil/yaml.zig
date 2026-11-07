@@ -19,13 +19,16 @@ by `zig build test`:
 (yaml-test-suite data-2022-01-17; written by `zig build suite -- readme`.)
 <!-- /suite -->
 
-Private, not open-sourced. Work is tracked on the `yaml.zig` karte
-board.
-
 ## Use
 
-Zig 0.17.1. Add the package (a tarball or `git+https` URL of this
-repository) with `zig fetch --save=yaml <url>`, then in `build.zig`:
+Zig 0.17.1. `zig fetch` adds the package to your `build.zig.zon` (put
+`#<tag>` after the URL for a release):
+
+```sh
+zig fetch --save=yaml git+https://github.com/kmoneil/yaml.zig
+```
+
+Then in `build.zig`:
 
 ```zig
 const yaml = b.dependency("yaml", .{ .target = target, .optimize = optimize });
@@ -469,3 +472,7 @@ on macOS) and 200 KiB in release. On a smaller stack, lower
 - `zig build doc-examples`: check this README's examples against
   `examples/` (`-- --fix` to rewrite them).
 - `zig build fmt`: format.
+
+## License
+
+MIT: see [LICENSE](LICENSE).
