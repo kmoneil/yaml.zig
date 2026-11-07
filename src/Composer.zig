@@ -132,6 +132,12 @@ parsed: Event = undefined,
 options: Options,
 /// Nodes and their lists.
 arena: std.heap.ArenaAllocator,
+/// Nodes made in the arena and not given yet: `newNode` takes them from
+/// a run, the arena's own allocation, safe across threads, a call a node
+/// was a twelfth of composing (t56).
+spare_nodes: []Node = &.{},
+/// How many nodes the runs so far have made room for.
+made_nodes: usize = 0,
 /// The open collections, innermost last.
 frames: std.ArrayList(Frame) = .empty,
 /// The open collections' items, innermost last: one stack on the gpa, so
@@ -425,7 +431,7 @@ pub fn finish(c: *Composer, head: Node) Error!*Node {
 fn finishStream(c: *Composer, head: Node) Error!*Node {
     var stream = c.streams.pop().?;
     c.recycle(&stream.keys);
-    const node = try c.arena.allocator().create(Node);
+    const node = try c.allocNode();
     node.* = head;
     try c.frames.append(c.parser.scanner.gpa, .{ .node = node, .start = c.items.items.len });
     return c.composeFrom(try c.nextEvent());
@@ -500,12 +506,29 @@ fn composeFrom(c: *Composer, first: *const Event) Error!*Node {
 
 /// A node for `event`, its tag resolved and its anchor recorded.
 fn newNode(c: *Composer, event: *const Event, properties: *const Event.Properties, data: Node.Data) Error!*Node {
-    const node = try c.arena.allocator().create(Node);
+    const node = try c.allocNode();
     const tag = if (data == .alias) null else try c.resolveTag(event.start, properties.tag, data);
     node.* = .{ .start = event.start, .end = event.end, .tag = tag, .anchor = properties.anchor, .data = data };
     if (properties.anchor) |name| {
         try c.anchors.putContext(c.parser.scanner.gpa, name, node, .{ .seed = c.hashSeed() });
     }
+    return node;
+}
+
+/// The most nodes made room for in the arena at once. The first run is
+/// 16, each after as many as all before it, so a small document leaves
+/// few to spare and a large one makes a run of this many.
+const max_node_run = 1024;
+
+/// A node's room in the arena, taken from the run `spare_nodes` holds.
+fn allocNode(c: *Composer) Allocator.Error!*Node {
+    if (c.spare_nodes.len == 0) {
+        const run = std.math.clamp(c.made_nodes, max_node_run / 64, max_node_run);
+        c.spare_nodes = try c.arena.allocator().alloc(Node, run);
+        c.made_nodes += run;
+    }
+    const node = &c.spare_nodes[0];
+    c.spare_nodes = c.spare_nodes[1..];
     return node;
 }
 
