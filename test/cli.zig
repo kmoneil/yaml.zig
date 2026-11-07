@@ -15,6 +15,8 @@ const files = [_]struct { []const u8, []const u8 }{
     .{ "data.json", "{\"name\": \"x\", \"on\": \"yes\", \"n\": [1, 2.5, null, true]}\n" },
     .{ "tab.yaml", "a:\n\tb: 1\n" },
     .{ "late.yaml", "--- a\n--- {b: 1, b: 2}\n" },
+    .{ "merge.yaml", "base: &b {x: 1, y: 2}\nchild:\n  <<: *b\n  y: 3\n" },
+    .{ "badmerge.yaml", "m: {<<: 3}\n" },
 };
 
 const Case = struct {
@@ -44,6 +46,13 @@ const cases = [_]Case{
     .{ .argv = &.{ "get", "--document", "1", "[0]", "stream.yaml" }, .exit = 0, .stdout = "x\n" },
     .{ .argv = &.{ "get", ".", "cycle.yaml" }, .exit = 1, .stderr = "yaml: cycle.yaml: an alias leads back into a collection it is in, which a value cannot hold\n" },
     .{ .argv = &.{ "get", "servers", "good.yaml" }, .exit = 2, .stderr = "yaml: `servers` is no path: `.` for the whole document, or steps such as `.key`, `.[\"a key\"]`, `[0]`\n" },
+    // merge keys: off by default, `<<` a key; with --merge-keys merged,
+    // the mapping's own keys first and winning
+    .{ .argv = &.{ "json", "merge.yaml" }, .exit = 0, .stdout = "{\"base\":{\"x\":1,\"y\":2},\"child\":{\"<<\":{\"x\":1,\"y\":2},\"y\":3}}\n" },
+    .{ .argv = &.{ "json", "--merge-keys", "merge.yaml" }, .exit = 0, .stdout = "{\"base\":{\"x\":1,\"y\":2},\"child\":{\"y\":3,\"x\":1}}\n" },
+    .{ .argv = &.{ "get", "--merge-keys", ".child.x", "merge.yaml" }, .exit = 0, .stdout = "1\n" },
+    .{ .argv = &.{ "get", ".child.x", "merge.yaml" }, .exit = 1, .stderr = "yaml: merge.yaml: no value at `.child.x`: nothing at step 2 of it\n" },
+    .{ .argv = &.{ "json", "--merge-keys", "badmerge.yaml" }, .exit = 1, .stderr = "yaml: badmerge.yaml:1:9: a merge key's value is not a mapping or a sequence of mappings\n" },
     // json and from-json
     .{ .argv = &.{ "json", "stream.yaml" }, .exit = 0, .stdout = "{\"a\":1}\n[\"x\",\"y\"]\nnull\n" },
     .{ .argv = &.{ "json", "--indent", "2", "alias.yaml" }, .exit = 0, .stdout = "{\n  \"base\": {\n    \"k\": \"v\"\n  },\n  \"use\": {\n    \"k\": \"v\"\n  }\n}\n" },

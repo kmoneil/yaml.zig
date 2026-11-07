@@ -352,7 +352,8 @@ $ yaml from-json data.json > data.yaml
 - `yaml events FILE` prints the events a file reads to, in the
   yaml-test-suite's notation.
 - `--schema`, `--duplicate-keys keep` and `--max-depth` set the library's
-  options; a file named `-` is standard input. The exit status is 0 on
+  options, and `--merge-keys` applies YAML 1.1's merge key for `get` and
+  `json`; a file named `-` is standard input. The exit status is 0 on
   success, 1 when a file is not YAML (or a path has no value), 2 on a
   usage error or a file that could not be read. `yaml --help` says all.
 - `yaml skill` prints a skill for AI coding agents: each command with an
@@ -375,6 +376,10 @@ $ yaml from-json data.json > data.yaml
 - Keys are equal by value under the schema (`1` and `0x1` are one key),
   and a mapping with two equal keys is refused unless
   `duplicate_keys = .keep` (a struct field then takes the last).
+- YAML 1.1's merge key, `<<: *base`, which YAML 1.2 dropped and most
+  readers still apply, when asked for: `ParseOptions.merge_keys`. The
+  mapping's own keys win, then the merged mappings' in order, and a
+  merged node counts toward `max_alias_nodes` as an alias's does.
 
 ## Speed
 
@@ -415,7 +420,7 @@ where yaml.zig's resolves each tag and refuses an equal key.
 
 | Limit | Default | Where |
 | --- | ---: | --- |
-| Nodes built through aliases (a "billion laughs" document) | 1,000,000 | `ParseOptions.max_alias_nodes` |
+| Nodes built through aliases or merge keys (a "billion laughs" document) | 1,000,000 | `ParseOptions.max_alias_nodes` |
 | Depth construction goes into a document | 256 | `ParseOptions.max_depth` |
 | Collections open at once in the scanner | 10,000 | `Scanner.max_depth`, `Composer.Options.max_depth` |
 | %TAG directives in a document | 64 | `ParseOptions.max_tag_directives`, `Composer.Options.max_tag_directives`, `Parser.max_tag_directives` |

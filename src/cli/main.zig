@@ -48,6 +48,8 @@ const usage =
     \\                                (the default), or kept.
     \\  --max-depth <n>               The most collections open at once
     \\                                (default 256).
+    \\  --merge-keys                  get and json: apply YAML 1.1's merge
+    \\                                key, `<<: *base`, as most readers do.
     \\  --indent <n>                  JSON's indentation: 0 (one line, the
     \\                                default), 1, 2, 3, 4 or 8.
     \\
@@ -81,6 +83,8 @@ const Options = struct {
     composer: yaml.Composer.Options = .{ .max_depth = 256 },
     document: ?usize = null,
     as_json: bool = false,
+    /// get and json: apply merge keys (yaml.merge).
+    merge_keys: bool = false,
     indent: u8 = 0,
     /// skill: the directory to write yaml/SKILL.md under.
     install: ?[]const u8 = null,
@@ -138,6 +142,10 @@ fn parseArgs(arena: Allocator, argv: []const []const u8) Allocator.Error!Parsed 
         }
         if (std.mem.eql(u8, arg, "--json")) {
             options.as_json = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--merge-keys")) {
+            options.merge_keys = true;
             continue;
         }
         if (std.mem.eql(u8, arg, "--help")) return .help;
@@ -276,10 +284,23 @@ fn readSteps(c: *yaml.Composer) yaml.Composer.Error!void {
     }
 }
 
-/// Composes every document of `text`, their roots; null, the finding
-/// set, when it is not YAML.
-fn compose(arena: Allocator, path: []const u8, text: []const u8, options: Options, finding: *Finding) Allocator.Error!?[]const *yaml.Composer.Node {
-    var c: yaml.Composer = .init(arena, text, options.composer);
+/// A file's documents: their roots, and the composer they live in.
+const Documents = struct {
+    roots: []const *yaml.Composer.Node,
+    composer: *yaml.Composer,
+
+    /// The merges `--merge-keys` asks for, over these documents.
+    fn merges(d: Documents, options: Options) ?tree.Merges {
+        if (!options.merge_keys) return null;
+        return .{ .composer = d.composer, .max_depth = options.composer.max_depth };
+    }
+};
+
+/// Composes every document of `text`; null, the finding set, when it is
+/// not YAML.
+fn compose(arena: Allocator, path: []const u8, text: []const u8, options: Options, finding: *Finding) Allocator.Error!?Documents {
+    const c = try arena.create(yaml.Composer);
+    c.* = .init(arena, text, options.composer);
     var roots: std.ArrayList(*yaml.Composer.Node) = .empty;
     while (true) {
         const document = c.next() catch |err| switch (err) {
@@ -288,7 +309,7 @@ fn compose(arena: Allocator, path: []const u8, text: []const u8, options: Option
                 finding.* = .{ .path = path, .text = text, .diagnostic = c.diagnostic };
                 return null;
             },
-        } orelse return roots.items;
+        } orelse return .{ .roots = roots.items, .composer = c };
         try roots.append(arena, document.root);
     }
 }
@@ -369,7 +390,7 @@ fn check(arena: Allocator, io: Io, out: *Io.Writer, args: Args) !u8 {
 
 /// The documents of the one file a command reads: null, said, when it
 /// cannot be read (2) or is not YAML (1).
-fn readDocuments(arena: Allocator, io: Io, path: []const u8, options: Options, status: *u8) Allocator.Error!?[]const *yaml.Composer.Node {
+fn readDocuments(arena: Allocator, io: Io, path: []const u8, options: Options, status: *u8) Allocator.Error!?Documents {
     const bytes = try readFile(arena, io, path) orelse {
         status.* = 2;
         return null;
@@ -398,26 +419,47 @@ fn get(arena: Allocator, io: Io, out: *Io.Writer, args: Args) !u8 {
         },
     };
     var status: u8 = 0;
-    const roots = try readDocuments(arena, io, file, args.options, &status) orelse return status;
+    const docs = try readDocuments(arena, io, file, args.options, &status) orelse return status;
+    const roots = docs.roots;
     const at = args.options.document orelse 0;
     if (args.options.document == null and roots.len != 1 or at >= roots.len) {
         std.debug.print("yaml: {s}: the stream holds {d} document{s}: choose one with --document <n>, from 0\n", .{ file, roots.len, if (roots.len == 1) "" else "s" });
         return 1;
     }
-    const node = switch (tree.find(roots[at], path)) {
+    const merges = docs.merges(args.options);
+    const node = switch (try tree.find(arena, roots[at], path, merges)) {
         .node => |n| n,
         .missing => |step| {
             std.debug.print("yaml: {s}: no value at `{s}`: nothing at step {d} of it\n", .{ file, path_text, step + 1 });
             return 1;
         },
+        .merge_failed => |f| return reportMerge(file, f),
     };
-    return writeValue(arena, out, file, node, args.options);
+    return writeValue(arena, out, file, node, args.options, merges);
+}
+
+/// Says why a merge failed, at its place in `file`: 1.
+fn reportMerge(file: []const u8, f: tree.MergeFailure) u8 {
+    const why = switch (f.err) {
+        error.NotMergeable => "a merge key's value is not a mapping or a sequence of mappings",
+        error.Cycle => "a merge names a mapping it is merged into, which a value cannot hold",
+        error.DepthLimit => "merges go deeper than --max-depth",
+        error.OutOfMemory => "out of memory",
+    };
+    if (f.at) |n| {
+        std.debug.print("yaml: {s}:{d}:{d}: {s}\n", .{ file, n.start.line + 1, n.start.column + 1, why });
+    } else {
+        std.debug.print("yaml: {s}: {s}\n", .{ file, why });
+    }
+    return 1;
 }
 
 /// Writes what `node` holds as YAML or JSON: 1, said, when it cannot be.
-fn writeValue(arena: Allocator, out: *Io.Writer, file: []const u8, node: *const yaml.Composer.Node, options: Options) !u8 {
-    const value = tree.valueOf(arena, node) catch |err| switch (err) {
+fn writeValue(arena: Allocator, out: *Io.Writer, file: []const u8, node: *const yaml.Composer.Node, options: Options, merges: ?tree.Merges) !u8 {
+    var failure: tree.MergeFailure = undefined;
+    const value = tree.valueOf(arena, node, merges, &failure) catch |err| switch (err) {
         error.OutOfMemory => |e| return e,
+        error.MergeFailed => return reportMerge(file, failure),
         error.Cycle => {
             std.debug.print("yaml: {s}: an alias leads back into a collection it is in, which a value cannot hold\n", .{file});
             return 1;
@@ -444,11 +486,11 @@ fn writeValue(arena: Allocator, out: *Io.Writer, file: []const u8, node: *const 
 
 fn toJson(arena: Allocator, io: Io, out: *Io.Writer, args: Args) !u8 {
     var status: u8 = 0;
-    const roots = try readDocuments(arena, io, args.operands[0], args.options, &status) orelse return status;
+    const docs = try readDocuments(arena, io, args.operands[0], args.options, &status) orelse return status;
     var options = args.options;
     options.as_json = true;
-    for (roots) |root| {
-        const written = try writeValue(arena, out, args.operands[0], root, options);
+    for (docs.roots) |root| {
+        const written = try writeValue(arena, out, args.operands[0], root, options, docs.merges(options));
         if (written != 0) return written;
     }
     return 0;

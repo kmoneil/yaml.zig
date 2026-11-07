@@ -32,6 +32,7 @@ const Allocator = std.mem.Allocator;
 const Composer = @import("Composer.zig");
 const chars = @import("chars.zig");
 const encoding = @import("encoding.zig");
+const merge = @import("merge.zig");
 const schema = @import("schema.zig");
 const Node = Composer.Node;
 const Diagnostic = Composer.Diagnostic;
@@ -45,6 +46,14 @@ pub const ParseOptions = struct {
     duplicate_keys: @FieldType(Composer.Options, "duplicate_keys") = .refuse,
     /// Skip a mapping key no field of a struct is named.
     ignore_unknown_fields: bool = false,
+    /// Apply YAML 1.1's merge key, as most YAML readers do (merge.zig): a
+    /// plain `<<: *defaults` merges that mapping's pairs into the one it
+    /// is in, the mapping's own keys winning. A struct, a map and a Value
+    /// take merged pairs; a type's yamlParse hook sees the mapping as it
+    /// is written. Merged nodes count as an alias's toward
+    /// `max_alias_nodes`. With it on, a mapping is composed whole before
+    /// it is built, as its own keys win wherever they stand.
+    merge_keys: bool = false,
     /// The most nodes construction builds through aliases.
     max_alias_nodes: usize = 1_000_000,
     /// The deepest construction goes into a document, and the most
@@ -159,22 +168,34 @@ const Src = union(enum) {
     }
 };
 
-/// A mapping's key, whole, and its value.
-const KeyValue = struct { key: *const Node, value: Src };
+/// A mapping's key, whole, and its value; `merged` when a merge key
+/// brought it in (`ParseOptions.merge_keys`).
+const KeyValue = struct { key: *const Node, value: Src, merged: bool = false };
 
 /// A collection's entries as construction reads them: a node's, or the
 /// composer's steps to the collection's end, one at a time.
 const Entries = struct {
     b: *Builder,
-    from: union(enum) { items: []const *Node, pairs: []const Node.Pair, steps },
+    /// A mapping with its merges applied is read through `merged`, held
+    /// on the scratch allocator, not in each level's stack frame, which it
+    /// would swell past what max_depth's stack allows.
+    from: union(enum) { items: []const *Node, pairs: []const Node.Pair, steps, merged: *merge.Pairs },
     index: usize = 0,
     /// The key and value last read from steps, by value, on the builder's
     /// `slots`: they live until the next entry is read.
     slots: *[2]Node = undefined,
 
-    /// Gives back the slots of entries read from steps.
-    fn done(e: *const Entries) void {
-        if (e.from == .steps) e.b.slots.len -= 1;
+    /// Gives back the slots of entries read from steps, or what a
+    /// mapping's merges held.
+    fn done(e: *Entries) void {
+        switch (e.from) {
+            .steps => e.b.slots.len -= 1,
+            .merged => |m| {
+                m.deinit();
+                e.b.scratch.destroy(m);
+            },
+            .items, .pairs => {},
+        }
     }
 
     /// How many entries there are, if known before they are read.
@@ -182,7 +203,7 @@ const Entries = struct {
         return switch (e.from) {
             .items => |items| items.len,
             .pairs => |pairs| pairs.len,
-            .steps => null,
+            .steps, .merged => null,
         };
     }
 
@@ -194,7 +215,7 @@ const Entries = struct {
                 e.index += 1;
                 return .{ .node = items[e.index - 1] };
             },
-            .pairs => unreachable,
+            .pairs, .merged => unreachable,
             .steps => return e.b.step(&e.slots[1]),
         }
     }
@@ -213,6 +234,11 @@ const Entries = struct {
                 // The composer gives a key whole, and a value after it.
                 const key = try e.b.step(&e.slots[0]) orelse return null;
                 return .{ .key = key.node, .value = (try e.b.step(&e.slots[1])).? };
+            },
+            .merged => |m| {
+                const pair = m.next() catch |err| return e.b.mergeFailed(err, m.failed_at);
+                const p = pair orelse return null;
+                return .{ .key = p.key, .value = .{ .node = p.value }, .merged = p.merged };
             },
         }
     }
@@ -303,6 +329,34 @@ const Builder = struct {
         return switch (src) {
             .node => |n| .{ .b = b, .from = if (kind == .sequence) .{ .items = n.data.sequence.items } else .{ .pairs = n.data.mapping.pairs } },
             .begun => .{ .b = b, .from = .steps, .slots = try b.slots.push(b.scratch) },
+        };
+    }
+
+    /// A struct's, a map's or a Value's mapping: with merge keys on, its
+    /// pairs with them applied, the mapping composed whole first, as its
+    /// own keys win over merged ones wherever they stand.
+    fn mappingEntries(b: *Builder, src: Src) ParseError!Entries {
+        if (!b.options.merge_keys) return b.entries(src, .mapping);
+        const node = src.head();
+        if (node.data != .mapping) return b.failExpected(node, "a mapping");
+        const mapping = try b.whole(src);
+        const pairs = try b.scratch.create(merge.Pairs);
+        errdefer b.scratch.destroy(pairs);
+        pairs.* = merge.Pairs.init(b.scratch, mapping, b.composer, b.options.max_depth) catch |err| return b.mergeFailed(err, mapping);
+        return .{ .b = b, .from = .{ .merged = pairs } };
+    }
+
+    /// Gives merging's error, at the node it failed at.
+    fn mergeFailed(b: *const Builder, err: merge.Error, at: ?*const Node) ParseError {
+        const node = at orelse return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            else => unreachable,
+        };
+        return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.NotMergeable => b.failExpected(node, "a mapping, or a sequence of mappings, to merge"),
+            error.Cycle => b.fail(node, error.Cycle, "a merge names a mapping it is merged into: a cycle no value can hold"),
+            error.DepthLimit => b.fail(node, error.DepthLimit, "merges go deeper than max_depth"),
         };
     }
 
@@ -615,7 +669,7 @@ const Builder = struct {
         const info = @typeInfo(T).@"struct";
         if (info.is_tuple) return b.buildTuple(T, src, depth);
         if (comptime @hasDecl(T, "yaml_map_value")) return b.buildMap(T, src, depth);
-        var pairs = try b.entries(src, .mapping);
+        var pairs = try b.mappingEntries(src);
         defer pairs.done();
         try b.enterSrc(src);
         defer b.leaveSrc(src);
@@ -624,6 +678,10 @@ const Builder = struct {
         while (try pairs.nextPair()) |pair| {
             const key = pair.key.target();
             const name = try b.nameOf(key);
+            // A merged pair is built again where it is merged, as an
+            // alias's node is: it counts toward max_alias_nodes.
+            b.alias_depth += @intFromBool(pair.merged);
+            defer b.alias_depth -= @intFromBool(pair.merged);
             if (try b.buildField(T, &out, &seen, name, pair.value, depth)) continue;
             if (!b.options.ignore_unknown_fields) return b.unknownField(info.field_names, key, name, "no field of the struct has this name");
             try b.skip(pair.value);
@@ -647,7 +705,7 @@ const Builder = struct {
     /// the map's value type, in the document's order. With duplicate keys
     /// kept, a later key's value replaces the earlier's, in its place.
     fn buildMap(b: *Builder, comptime T: type, src: Src, depth: usize) ParseError!T {
-        var pairs = try b.entries(src, .mapping);
+        var pairs = try b.mappingEntries(src);
         defer pairs.done();
         try b.enterSrc(src);
         defer b.leaveSrc(src);
@@ -657,6 +715,8 @@ const Builder = struct {
             const key = pair.key.target();
             if (key.data != .scalar) return b.fail(key, error.UnexpectedType, "a map's keys are scalars, and this is a collection");
             try b.checkScalar(key);
+            b.alias_depth += @intFromBool(pair.merged);
+            defer b.alias_depth -= @intFromBool(pair.merged);
             const value = try b.buildNamed(T.yaml_map_value, pair.value, key.data.scalar.value, depth);
             const entry = try out.map.getOrPutContext(b.allocator, key.data.scalar.value, out.context);
             if (!entry.found_existing) entry.key_ptr.* = try b.allocator.dupe(u8, key.data.scalar.value);
@@ -744,16 +804,20 @@ const Builder = struct {
 
     /// A Value mapping's pairs in their order, a key any Value.
     fn buildValuePairs(b: *Builder, src: Src, depth: usize) ParseError![]Value.Pair {
-        var pairs = try b.entries(src, .mapping);
+        var pairs = try b.mappingEntries(src);
         defer pairs.done();
         try b.enterSrc(src);
         defer b.leaveSrc(src);
         var gathered: Gathered(Value.Pair) = try .begin(b);
         defer gathered.end(b);
-        while (try pairs.nextPair()) |pair| try gathered.append(b, .{
-            .key = try b.build(Value, .{ .node = pair.key }, depth + 1),
-            .value = try b.buildNamed(Value, pair.value, keyName(pair.key), depth),
-        });
+        while (try pairs.nextPair()) |pair| {
+            b.alias_depth += @intFromBool(pair.merged);
+            defer b.alias_depth -= @intFromBool(pair.merged);
+            try gathered.append(b, .{
+                .key = try b.build(Value, .{ .node = pair.key }, depth + 1),
+                .value = try b.buildNamed(Value, pair.value, keyName(pair.key), depth),
+            });
+        }
         return gathered.finish(b, null);
     }
 

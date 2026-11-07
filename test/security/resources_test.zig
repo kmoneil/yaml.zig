@@ -37,6 +37,27 @@ test "security: CWE-776 alias expansion (billion laughs)" {
     _ = (try composer.next()).?;
 }
 
+test "security: CWE-407 merge-key fan-out is held to max_alias_nodes, and a mapping is merged once" {
+    // With merge keys on, a mapping of 1,000 keys merged into each of
+    // 2,000 mappings is two million pairs from 31 KB: a merged node counts
+    // as an alias's does, and the defaults stop it.
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(gpa);
+    try text.appendSlice(gpa, "base: &b {");
+    for (0..1000) |i| try text.print(gpa, "k{d}: v, ", .{i});
+    try text.appendSlice(gpa, "}\nall:\n");
+    for (0..2000) |_| try text.appendSlice(gpa, "- {<<: *b}\n");
+    try testing.expectError(error.AliasLimit, yaml.parseFromSlice(yaml.Value, gpa, text.items, .{ .merge_keys = true }));
+    // Merges that name a mapping twice at each of 30 levels: merged each
+    // time it is named, 2^30 pairs; merged once, 30.
+    text.clearRetainingCapacity();
+    try text.appendSlice(gpa, "l0: &l0 {k0: 0}\n");
+    for (1..30) |i| try text.print(gpa, "l{d}: &l{d} {{<<: [*l{d}, *l{d}], k{d}: {d}}}\n", .{ i, i, i - 1, i - 1, i, i });
+    const parsed = try yaml.parseFromSlice(yaml.Value, gpa, text.items, .{ .merge_keys = true });
+    defer parsed.deinit();
+    try testing.expectEqual(30, parsed.value.get("l29").?.mapping.len);
+}
+
 test "security: CWE-674 an alias inside the node it names is a cycle, not followed" {
     try testing.expectError(error.Cycle, yaml.parseFromSlice(yaml.Value, gpa, "&a [x, *a]", .{}));
     try testing.expectError(error.Cycle, yaml.parseFromSlice(yaml.Value, gpa, "&a {k: *a}", .{}));

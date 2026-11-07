@@ -82,6 +82,7 @@ const corpus = [_][]const u8{
     "a: &a\n  - 1\nb: *a\n",
     "[a: b, ? c : d, : e, [f]: g, &h i: j, *h : l, \"m\":n]\n",
     "{? a, [b]: c, &d e: f, !!str : g, *d : i, {j: k}: l}\n",
+    "a: &a {x: 1, <<: {y: 2}}\nb:\n  <<: [*a, &c {z: 3}]\n  x: 4\nc: {<<: *c, \"<<\": 5}\n",
     "&a\n!!str\nx\n---\nk: &b\n !!map\n  c: d\n",
 };
 
@@ -204,7 +205,9 @@ fn fuzzConstruct(_: void, d: *Draw) !void {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const input = try drawInput(d, arena);
-    const options: yaml.ParseOptions = .{ .max_alias_nodes = 2_000, .max_depth = 64, .duplicate_keys = if (d.boolean()) .refuse else .keep };
+    // With merge keys or without: a merged Value is a Value as any other,
+    // so it too reads back the same.
+    const options: yaml.ParseOptions = .{ .max_alias_nodes = 2_000, .max_depth = 64, .duplicate_keys = if (d.boolean()) .refuse else .keep, .merge_keys = d.boolean() };
     const parsed = yaml.parseFromSlice(yaml.Value, testing.allocator, input, options) catch |err| switch (err) {
         error.OutOfMemory => return err,
         // Each a refusal it documents.

@@ -776,8 +776,9 @@ fn equalPairs(a: []const Node.Pair, b: []const Node.Pair, budget: *usize) bool {
     return true;
 }
 
-/// A hash agreeing with `equal`: equal nodes hash the same.
-fn hashNode(node: *const Node, seed: u64) u64 {
+/// A hash agreeing with `equal`: equal nodes hash the same, under the
+/// seed (`hashSeed`).
+pub fn hashNode(node: *const Node, seed: u64) u64 {
     var hasher: std.hash.Wyhash = .init(seed);
     var budget: usize = node_budget;
     hashWithin(&hasher, node, &budget);

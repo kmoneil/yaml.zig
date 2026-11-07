@@ -33,6 +33,10 @@ pub const Emitter = @import("Emitter.zig");
 /// schemas, and the values their scalars hold.
 pub const schema = @import("schema.zig");
 
+/// YAML 1.1's merge key, `<<`, applied when asked for: a mapping's pairs
+/// with its merges (`ParseOptions.merge_keys`).
+pub const merge = @import("merge.zig");
+
 /// A stream's encoding, and decoding UTF-16 and UTF-32 to the UTF-8 the
 /// scanner reads.
 pub const encoding = @import("encoding.zig");
@@ -86,6 +90,7 @@ test {
     _ = @import("Composer_test.zig");
     _ = @import("schema_test.zig");
     _ = @import("construct_test.zig");
+    _ = @import("merge_test.zig");
     _ = @import("encoding_test.zig");
     _ = @import("Emitter_test.zig");
     _ = @import("stringify_test.zig");

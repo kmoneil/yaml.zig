@@ -1,5 +1,6 @@
 //! The CLI's reading of a document's node graph: the node a path names,
-//! and what a node holds as a `yaml.Value`, its aliases followed.
+//! and what a node holds as a `yaml.Value`, its aliases followed, and with
+//! `--merge-keys` its merge keys applied (yaml.merge).
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -73,24 +74,51 @@ fn index(text: []const u8, i: *usize) error{BadPath}!usize {
     return std.fmt.parseInt(usize, text[start..i.*], 10) catch error.BadPath;
 }
 
-/// What a path found: the node, or the step at which nothing was there.
+/// How `find` and `valueOf` apply merge keys, with `--merge-keys`: the
+/// composer of the document (its hash seed), and how deep merges go.
+pub const Merges = struct { composer: *yaml.Composer, max_depth: usize };
+
+/// Why and where a merge failed.
+pub const MergeFailure = struct { err: yaml.merge.Error, at: ?*const Node };
+
+/// What a path found: the node, the step at which nothing was there, or a
+/// merge that failed on the way.
 pub const Found = union(enum) {
     node: *const Node,
     missing: usize,
+    merge_failed: MergeFailure,
 };
 
 /// The node `path` names in the graph from `root`, aliases followed; a
-/// key matched by the text of a scalar key, whatever its tag.
-pub fn find(root: *const Node, path: []const Segment) Found {
+/// key matched by the text of a scalar key, whatever its tag, and with
+/// `merges` a merged key too (a mapping's own first).
+pub fn find(arena: Allocator, root: *const Node, path: []const Segment, merges: ?Merges) Allocator.Error!Found {
     var node = root.target();
     for (path, 0..) |segment, at_step| {
         const next: ?*const Node = switch (segment) {
-            .key => |key| if (node.data == .mapping) lookup(node.data.mapping.pairs, key) else null,
+            .key => |key| if (node.data != .mapping) null else if (merges) |m| switch (try lookupMerged(arena, node, key, m)) {
+                .found => |n| n,
+                .failed => |f| return .{ .merge_failed = f },
+            } else lookup(node.data.mapping.pairs, key),
             .index => |at| if (node.data == .sequence and at < node.data.sequence.items.len) node.data.sequence.items[at] else null,
         };
         node = (next orelse return .{ .missing = at_step }).target();
     }
     return .{ .node = node };
+}
+
+/// `key` in `mapping` with its merges applied.
+fn lookupMerged(arena: Allocator, mapping: *const Node, key: []const u8, m: Merges) Allocator.Error!union(enum) { found: ?*const Node, failed: MergeFailure } {
+    var pairs = yaml.merge.Pairs.init(arena, mapping, m.composer, m.max_depth) catch return error.OutOfMemory;
+    defer pairs.deinit();
+    while (true) {
+        const pair = pairs.next() catch |err| switch (err) {
+            error.OutOfMemory => |e| return e,
+            else => return .{ .failed = .{ .err = err, .at = pairs.failed_at } },
+        } orelse return .{ .found = null };
+        const k = pair.key.target();
+        if (k.data == .scalar and std.mem.eql(u8, k.data.scalar.value, key)) return .{ .found = pair.value };
+    }
 }
 
 fn lookup(pairs: []const Node.Pair, key: []const u8) ?*const Node {
@@ -107,6 +135,8 @@ pub const ValueError = error{
     Cycle,
     /// Following aliases would build more than `max_values` values.
     TooLarge,
+    /// A merge failed (`--merge-keys`): `failure` says why and where.
+    MergeFailed,
     OutOfMemory,
 };
 
@@ -116,14 +146,17 @@ pub const max_values = 1_000_000;
 
 /// What `node` holds as a Value, aliases followed: a scalar typed by its
 /// tag as parseFromSlice types one (a tag the schema has no type for
-/// gives the text), a collection's entries in order.
-pub fn valueOf(arena: Allocator, node: *const Node) ValueError!Value {
-    var b: Builder = .{ .arena = arena };
+/// gives the text), a collection's entries in order, with `merges` a
+/// mapping's merge keys applied. On MergeFailed, `failure` says why.
+pub fn valueOf(arena: Allocator, node: *const Node, merges: ?Merges, failure: *MergeFailure) ValueError!Value {
+    var b: Builder = .{ .arena = arena, .merges = merges, .failure = failure };
     return b.build(node);
 }
 
 const Builder = struct {
     arena: Allocator,
+    merges: ?Merges,
+    failure: *MergeFailure,
     /// The collections being built: an alias to one is a cycle.
     open: std.AutoHashMapUnmanaged(*const Node, void) = .empty,
     built: usize = 0,
@@ -138,7 +171,7 @@ const Builder = struct {
         defer _ = b.open.remove(node);
         return switch (node.data) {
             .sequence => |s| .{ .sequence = try b.items(s.items) },
-            .mapping => |m| .{ .mapping = try b.pairs(m.pairs) },
+            .mapping => |m| .{ .mapping = if (b.merges) |merges| try b.mergedPairs(node, merges) else try b.pairs(m.pairs) },
             .scalar, .alias => unreachable,
         };
     }
@@ -153,6 +186,24 @@ const Builder = struct {
         const out = try b.arena.alloc(Value.Pair, from.len);
         for (out, from) |*p, pair| p.* = .{ .key = try b.build(pair.key), .value = try b.build(pair.value) };
         return out;
+    }
+
+    /// A mapping's pairs with its merges applied, each merged value built
+    /// again, so counted toward `max_values`.
+    fn mergedPairs(b: *Builder, mapping: *const Node, m: Merges) ValueError![]Value.Pair {
+        var it = yaml.merge.Pairs.init(b.arena, mapping, m.composer, m.max_depth) catch return error.OutOfMemory;
+        defer it.deinit();
+        var out: std.ArrayList(Value.Pair) = .empty;
+        while (true) {
+            const pair = it.next() catch |err| switch (err) {
+                error.OutOfMemory => |e| return e,
+                else => {
+                    b.failure.* = .{ .err = err, .at = it.failed_at };
+                    return error.MergeFailed;
+                },
+            } orelse return out.items;
+            try out.append(b.arena, .{ .key = try b.build(pair.key), .value = try b.build(pair.value) });
+        }
     }
 };
 

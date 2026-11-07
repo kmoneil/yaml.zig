@@ -136,6 +136,18 @@ as 1000 and `2001-12-14` as a date. `yaml` writes them quoted, as above,
 so either reads a string; in a file you write by hand, quote them too
 when such a tool may read it.
 
+YAML 1.1's merge key, `<<: *base`, which configs often use (docker
+compose, GitLab CI), is a key like any other in 1.2. `--merge-keys`
+applies it for `get` and `json`, as PyYAML and most readers do, the
+mapping's own keys winning:
+
+```console
+$ yaml json merge.yaml
+{"base":{"x":1,"y":2},"child":{"<<":{"x":1,"y":2},"y":3}}
+$ yaml json --merge-keys merge.yaml
+{"base":{"x":1,"y":2},"child":{"y":3,"x":1}}
+```
+
 ## Exit status
 
 0 when every file is YAML and the command did what it was asked; 1 when

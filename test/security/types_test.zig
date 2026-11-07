@@ -51,6 +51,14 @@ test "security: CWE-1321 merge keys and __proto__ are keys like any other" {
     try testing.expect(user.get("<<").?.get("admin").?.bool);
     const User = struct { name: []const u8, admin: bool = false };
     try testing.expectError(error.UnknownField, yaml.parseFromSlice(User, gpa, "<<: {admin: true}\nname: x\n", .{}));
+    // Asked for, a merge fills this value's own keys from the document's
+    // own data, nothing beyond: `__proto__` stays a key.
+    const merged = try yaml.parseFromSlice(yaml.Value, gpa, text, .{ .merge_keys = true });
+    defer merged.deinit();
+    const merged_user = merged.value.get("user").?;
+    try testing.expect(merged_user.get("admin").?.bool);
+    try testing.expect(merged_user.get("__proto__").?.get("admin").?.bool);
+    try testing.expectEqual(null, merged.value.get("admin"));
 }
 
 test "security: CWE-704 YAML 1.1's booleans, octals and sexagesimals do not change type" {
