@@ -15,11 +15,21 @@
 //! is `tag:yaml.org,2002:`, `!` is `!`), so an event carries the whole
 //! tag. Event text lives as long as the parser.
 //!
+//! Its events come first from the reader (Reader.zig), which reads the
+//! YAML most documents are in one pass with no tokens, at twice the
+//! state machine's speed (t76). Where the reader stops (an error, or a
+//! form it leaves to the state machine) the state machine reads the
+//! stream again from its start and goes on past the events the reader
+//! gave: they are its own, marks and all, which the suite's `reader`
+//! check and the reader fuzz target hold the reader to. So every error,
+//! and its diagnostic, is the state machine's.
+//!
 //! Not threadsafe.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Scanner = @import("Scanner.zig");
+const Reader = @import("Reader.zig");
 const schema = @import("schema.zig");
 
 const Parser = @This();
@@ -126,10 +136,21 @@ after_end_marker: bool = true,
 /// parsing quadratic: 80,000 of them, 1.3 MB, took 2.6 s.
 max_tag_directives: usize = 64,
 diagnostic: Diagnostic = .{},
+/// Whether events come from the reader until it stops. Set false before
+/// the first `next` to read with the state machine alone, as the
+/// reader's checks do.
+use_reader: bool = true,
+reader: Reader,
+/// Events the reader has given: the state machine, taking over, reads
+/// as many again.
+given: usize = 0,
+/// The state machine's last event, where `nextInPlace` points at it.
+parsed: Event = undefined,
 
-/// A parser over `input`, UTF-8 (`encoding.toUtf8` for others).
+/// A parser over `input`, UTF-8 (`encoding.toUtf8` for others). It
+/// allocates nothing until `next`.
 pub fn init(gpa: Allocator, input: []const u8) Parser {
-    return .{ .scanner = .init(gpa, input) };
+    return .{ .scanner = .init(gpa, input), .reader = .init(gpa, input) };
 }
 
 /// Frees the parser and the text its events point at.
@@ -137,12 +158,53 @@ pub fn deinit(p: *Parser) void {
     p.states.deinit(p.scanner.gpa);
     p.tag_directives.deinit(p.scanner.gpa);
     p.scanner.deinit();
+    p.reader.deinit();
     p.* = undefined;
 }
 
 /// The next event. After `stream_end`, `stream_end` again. On
 /// `error.SyntaxError`, `diagnostic` says what and where.
 pub fn next(p: *Parser) Error!Event {
+    return (try p.nextInPlace()).*;
+}
+
+/// `next`'s event where the parser keeps it, not copied: valid until the
+/// next call, its text as long as the parser.
+pub inline fn nextInPlace(p: *Parser) Error!*const Event {
+    if (p.use_reader) {
+        // The reader reads on only with its queue empty: its limits are
+        // set then, the same test as its own. A flag tested an event
+        // cost compose 3% (t76).
+        if (p.reader.head == p.reader.events.items.len) p.setReader();
+        if (p.reader.next()) |got| {
+            p.given += 1;
+            return got;
+        } else |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.Unsupported => try p.handOver(),
+        }
+    }
+    p.parsed = try p.parse();
+    return &p.parsed;
+}
+
+/// The reader's limits, from the parser's (`scanner.max_depth`,
+/// `max_tag_directives`), which a caller may set after `init`.
+fn setReader(p: *Parser) void {
+    p.reader.setMaxDepth(p.scanner.max_depth);
+    p.reader.max_tag_directives = p.max_tag_directives;
+}
+
+/// Where the reader stops, the state machine reads the stream from its
+/// start, past the events the reader gave. The reader stays: the text of
+/// the events it gave is its own.
+noinline fn handOver(p: *Parser) Error!void {
+    p.use_reader = false;
+    for (0..p.given) |_| _ = try p.parse();
+}
+
+/// The state machine's next event.
+fn parse(p: *Parser) Error!Event {
     return switch (p.state) {
         .stream_start => p.parseStreamStart(),
         .document_start => p.parseDocumentStart(),

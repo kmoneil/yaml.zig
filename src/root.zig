@@ -15,15 +15,17 @@ pub const spec_version = "1.2.2";
 /// YAML text to tokens: the first stage, which the parser pulls from.
 pub const Scanner = @import("Scanner.zig");
 
-/// Tokens to events: a stream's documents and the nodes in them.
+/// YAML text to events, a stream's documents and the nodes in them: the
+/// reader's where it reads, and past where it stops a state machine's
+/// over the scanner's tokens.
 pub const Parser = @import("Parser.zig");
 
 /// Events to a graph of nodes, a document at a time.
 pub const Composer = @import("Composer.zig");
 
 /// YAML text to the parser's events in one pass, for the YAML most
-/// documents are: the composer's fast path, which hands what it does not
-/// read to the parser.
+/// documents are: the parser's fast path, which hands what it does not
+/// read to the parser's state machine.
 pub const Reader = @import("Reader.zig");
 
 /// Events to YAML text.

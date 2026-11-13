@@ -1565,6 +1565,7 @@ pub fn compare(gpa: Allocator, arena: Allocator, input: []const u8) Allocator.Er
     var reader: Reader = .init(gpa, input);
     defer reader.deinit();
     var parser: Parser = .init(gpa, input);
+    parser.use_reader = false;
     defer parser.deinit();
     // Each event takes at least a byte, but for a few around each node.
     const most = 8 * input.len + 64;

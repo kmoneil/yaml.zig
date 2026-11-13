@@ -161,17 +161,27 @@ fn fuzzParse(_: void, d: *Draw) !void {
     const input = try drawInput(d, arena_state.allocator());
     var parser: yaml.Parser = .init(testing.allocator, input);
     defer parser.deinit();
+    // The state machine alone: the parser's events, from its reader and
+    // past the hand-over, and its errors are its own (t76).
+    var alone: yaml.Parser = .init(testing.allocator, input);
+    alone.use_reader = false;
+    defer alone.deinit();
     var depth: usize = 0;
     var count: usize = 0;
     while (count < 8 * input.len + 64) : (count += 1) {
+        const want = alone.next();
         const event = parser.next() catch |err| switch (err) {
             error.SyntaxError, error.DepthLimit, error.TagDirectiveLimit => {
+                try testing.expectError(err, want);
+                try testing.expectEqual(alone.diagnostic.mark, parser.diagnostic.mark);
+                try testing.expectEqualStrings(alone.diagnostic.message, parser.diagnostic.message);
                 try testing.expect(parser.diagnostic.mark.offset <= input.len);
                 try testing.expect(parser.diagnostic.message.len > 0);
                 return;
             },
             error.OutOfMemory => return err,
         };
+        try testing.expect(yaml.Reader.same(try want, event));
         try checkNesting(event, &depth, count == 0);
         if (event.data == .stream_end) return testing.expectEqual(0, depth);
     }

@@ -21,17 +21,16 @@
 //! alias may name and a mapping's key, so a reader building as it reads
 //! holds a fraction of the graph (t47).
 //!
-//! The events come from the reader (Reader.zig), which reads YAML in one
-//! pass, and past an error or the few forms it leaves to the parser from
-//! the parser, which reads the stream again from its start and goes on
-//! where the reader stopped (t56).
+//! The events come from the parser, read where it keeps them: from its
+//! reader (Reader.zig), which reads YAML in one pass, and past an error
+//! or the few forms it leaves to the state machine, from that (t56,
+//! t76).
 //!
 //! Nodes live as long as the composer. Not threadsafe.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Parser = @import("Parser.zig");
-const Reader = @import("Reader.zig");
 const schema = @import("schema.zig");
 
 const Composer = @This();
@@ -121,14 +120,6 @@ pub const Options = struct {
 const node_budget = 256;
 
 parser: Parser,
-/// The fast path: events from it until it hands the stream over.
-reader: Reader,
-/// Where the events come from now.
-source: enum { reader, parser } = .reader,
-/// Events the reader has given: the parser, taking over, skips as many.
-given: usize = 0,
-/// The parser's last event, kept where `nextEvent` can point at it.
-parsed: Event = undefined,
 options: Options,
 /// Nodes and their lists.
 arena: std.heap.ArenaAllocator,
@@ -178,12 +169,8 @@ pub fn init(gpa: Allocator, input: []const u8, options: Options) Composer {
     var parser: Parser = .init(gpa, input);
     parser.scanner.max_depth = options.max_depth;
     parser.max_tag_directives = options.max_tag_directives;
-    var reader: Reader = .init(gpa, input);
-    reader.setMaxDepth(options.max_depth);
-    reader.max_tag_directives = options.max_tag_directives;
     return .{
         .parser = parser,
-        .reader = reader,
         .options = options,
         .arena = .init(gpa),
     };
@@ -218,7 +205,6 @@ pub fn deinit(c: *Composer) void {
     c.anchors.deinit(gpa);
     c.arena.deinit();
     c.parser.deinit();
-    c.reader.deinit();
     c.* = undefined;
 }
 
@@ -446,34 +432,10 @@ pub fn endDocument(c: *Composer) Error!void {
     };
 }
 
-/// The next event, where it is kept: valid until the next call. The
-/// reader's is read in place, not copied (t56).
+/// The next event, where the parser keeps it: valid until the next call,
+/// read in place, not copied (t56).
 fn nextEvent(c: *Composer) Error!*const Event {
-    if (c.source == .reader) {
-        if (c.reader.next()) |event| {
-            c.given += 1;
-            return event;
-        } else |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            error.Unsupported => try c.handOver(),
-        }
-    }
-    c.parsed = try c.parserEvent();
-    return &c.parsed;
-}
-
-/// Where the reader stops, the parser reads the stream from its start,
-/// past the events the reader gave: they are its own (the suite's
-/// `reader` check and the reader fuzz target hold the reader to that).
-/// So an error and its diagnostic are the parser's. The reader stays: a
-/// value it built may be a node's.
-fn handOver(c: *Composer) Error!void {
-    c.source = .parser;
-    for (0..c.given) |_| _ = try c.parserEvent();
-}
-
-fn parserEvent(c: *Composer) Error!Event {
-    return c.parser.next() catch |err| {
+    return c.parser.nextInPlace() catch |err| {
         if (err != error.OutOfMemory) c.diagnostic = c.parser.diagnostic;
         return err;
     };
