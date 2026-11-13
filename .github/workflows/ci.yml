@@ -75,3 +75,24 @@ jobs:
           cache-key: release-modes
       - name: zig build test-release
         run: zig build test-release --summary line
+
+  # Every dependency fetched from nothing, the lazy ones too: a hash that
+  # matches only a stale local copy fails here, not in someone's clean
+  # clone (libfyaml's did, fixed in c9b9351). Then the step that needs
+  # libfyaml, which no other job builds: the parser's events held to
+  # libfyaml's on every suite input, and the differential fuzz target's
+  # seeded draws.
+  fresh-fetch:
+    name: fresh fetch and the differential check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # No cache, so no package comes from anywhere but its URL.
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          use-cache: false
+      - name: every dependency fetched, its hash checked
+        run: zig build --fetch=all
+      - name: zig build differential
+        run: zig build differential -Ddifferential --summary line
