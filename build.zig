@@ -351,6 +351,13 @@ const libfyaml_sources = [_][]const u8{
 /// into one library, linked into the fuzz target and into the check of
 /// every suite input, which takes the suite's directory as the suite
 /// harness does. Nothing while a dependency is fetched.
+///
+/// The test binary runs its own tests alone (the filter): the library's
+/// come with root.zig, and `test` runs them. With them, `--fuzz` shared
+/// its runs among the library's fuzz targets too, and on Linux one test
+/// on a thread of its own hung: with libc and libfyaml linked, Zig
+/// 0.17.1's stack unwinder faulted in the testing allocator, and the
+/// fault handler waited on a lock the unwinder held.
 fn differential(b: *std.Build, step: *std.Build.Step, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
     const fy = b.lazyDependency("libfyaml", .{}) orelse return;
     const suite = suiteData(b) orelse return;
@@ -369,7 +376,7 @@ fn differential(b: *std.Build, step: *std.Build.Step, target: std.Build.Resolved
 
     const tests_mod = b.createModule(.{ .root_source_file = b.path("src/differential_test.zig"), .target = target, .optimize = optimize, .link_libc = true });
     tests_mod.linkLibrary(lib);
-    step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = tests_mod, .use_llvm = true })).step);
+    step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = tests_mod, .use_llvm = true, .filters = &.{"differential_test.test."} })).step);
 
     const check_mod = b.createModule(.{ .root_source_file = b.path("src/differential_test.zig"), .target = target, .optimize = optimize, .link_libc = true });
     check_mod.linkLibrary(lib);
