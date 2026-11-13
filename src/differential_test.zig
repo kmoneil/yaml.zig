@@ -13,7 +13,10 @@
 //! error the same as far as the shorter goes. An input our detection
 //! takes for UTF-16 or UTF-32 is skipped (decoding is not the grammar),
 //! and so is one that is not UTF-8, which libfyaml's printer aborts on,
-//! or holds a character YAML does not allow (`compared`).
+//! or holds a character YAML does not allow (`compared`). Where libfyaml
+//! itself gives a scalar text that is not UTF-8, the shim stops before its
+//! printer would abort, and the fault is known to be libfyaml's
+//! (`garbled_text`).
 
 const std = @import("std");
 const yaml = @import("root.zig");
@@ -35,6 +38,9 @@ const Outcome = struct {
     /// diagnostic.
     message: []const u8 = "",
     at: usize = 0,
+    /// libfyaml gave a scalar whose text is not UTF-8, the events before
+    /// it in `events` (the shim stops there: its printer would abort).
+    garbled: bool = false,
 };
 
 /// libfyaml's reading, its events copied into `arena`.
@@ -45,6 +51,7 @@ fn theirs(arena: std.mem.Allocator, input: []const u8) !Outcome {
     defer std.c.free(out);
     if (rc < 0) return error.LibfyamlFailed;
     const events = try arena.dupe(u8, if (out) |o| o[0..len] else "");
+    if (rc == 2) return .{ .events = events, .refused = false, .garbled = true, .message = "its text for a scalar is not UTF-8" };
     return .{ .events = events, .refused = rc == 1, .message = if (rc == 1) try arena.dupe(u8, diagnosticReason(std.mem.span(fy_shim_diagnostic()))) else "" };
 }
 
@@ -118,9 +125,19 @@ const libfyaml_lenient = [_]Lenient{
     },
 };
 
+/// libfyaml's text for a scalar not UTF-8 when the input is (`compared`):
+/// its fault whatever yaml.zig made of it, as no reading of UTF-8 gives
+/// other, and nothing to hold yaml.zig's reading to.
+const garbled_text: Lenient = .{
+    .message = "",
+    .at = null,
+    .why = "libfyaml's text for a scalar is not UTF-8, though the input is (a campaign's crash, its printer aborting: a folded scalar at the top whose last line ends in a two-byte character)",
+};
+
 /// The known disagreement `a` (yaml.zig's) and `b` (libfyaml's) are, if
 /// they are one.
 fn known(input: []const u8, a: Outcome, b: Outcome) ?Lenient {
+    if (b.garbled) return garbled_text;
     if (!a.refused or b.refused or a.at >= input.len) return null;
     for (libfyaml_lenient) |k| {
         if (!std.mem.eql(u8, a.message, k.message)) continue;
@@ -133,7 +150,7 @@ fn known(input: []const u8, a: Outcome, b: Outcome) ?Lenient {
 
 /// Whether the two readings agree (the file's comment says how).
 fn agree(a: Outcome, b: Outcome) bool {
-    if (a.refused != b.refused) return false;
+    if (a.garbled or b.garbled or a.refused != b.refused) return false;
     if (!a.refused) return std.mem.eql(u8, a.events, b.events);
     const shorter = if (a.events.len <= b.events.len) a.events else b.events;
     const longer = if (a.events.len <= b.events.len) b.events else a.events;
@@ -170,6 +187,23 @@ fn expectAgree(arena: std.mem.Allocator, input: []const u8) !void {
         if (b.refused) "refused" else "read", b.events,
     });
     return error.TestReadersDisagree;
+}
+
+test "libfyaml's text that is not UTF-8 is its fault, and no crash (t68)" {
+    // A campaign's crash (`differential-suite replay`): libfyaml's printer
+    // aborted on its own text for this folded scalar. The YAML reference
+    // parser reads it as yaml.zig does.
+    const input = ">-\n{\n? \nkey: ? \n}'a''b'%YAML 1.2\n!!str \n:y\nplain text! !!str \n >-# c\xc3\xa9\n";
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    try testing.expect(compared(input));
+    const a = try ours(arena, input);
+    try testing.expectEqualStrings("+STR\n+DOC\n=VAL >{ ?  key: ?  }'a''b'%YAML 1.2 !!str  :y plain text! !!str \\n >-# c\xc3\xa9\n-DOC\n-STR\n", a.events);
+    const b = try theirs(arena, input);
+    try testing.expect(b.garbled);
+    try testing.expect(known(input, a, b) != null);
+    try expectAgree(arena, input);
 }
 
 test "fuzz: differential: yaml.zig's events are libfyaml's" {
@@ -267,6 +301,23 @@ fn triage(gpa: std.mem.Allocator, n: usize, dump: ?Dump) !void {
     for (kinds.keys(), kinds.values()) |k, v| std.debug.print("{d:>6}  {s}\n", .{ v, k });
 }
 
+/// `differential-suite replay FILE`: the input the fuzzer saved where the
+/// target crashed (`.zig-cache/f/crash`: the values it gave the target's
+/// Smith), drawn again and printed, then read by each reader in turn,
+/// each named before it reads, so a crash says whose it is.
+fn replay(io: std.Io, arena: std.mem.Allocator, path: []const u8) !void {
+    const saved = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(1 << 24));
+    var smith: std.testing.Smith = .{ .in = saved };
+    var d: Draw = .{ .smith = &smith };
+    const input = try inputs.draw(&d, arena);
+    std.debug.print("input, {d} bytes, compared {}: \"{f}\"\nyaml.zig reads it\n", .{ input.len, compared(input), std.zig.fmtString(input) });
+    const a = try ours(arena, input);
+    std.debug.print("{s}{s}\n{s}libfyaml reads it\n", .{ if (a.refused) "refused: " else "read", a.message, a.events });
+    const b = try theirs(arena, input);
+    std.debug.print("{s}{s}\n{s}", .{ if (b.garbled) "garbled: " else if (b.refused) "refused: " else "read", b.message, b.events });
+    if (known(input, a, b)) |k| std.debug.print("known: {s}\n", .{k.why});
+}
+
 /// `differential-suite SUITE_DIR`, which `zig build differential`
 /// runs: every yaml-test-suite input, libfyaml's events through the shim
 /// the suite's (as fy-tool's are), and ours libfyaml's.
@@ -275,6 +326,7 @@ pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);
     if (std.mem.eql(u8, args[1], "triage")) return triage(init.gpa, try std.fmt.parseInt(usize, args[2], 10), null);
+    if (std.mem.eql(u8, args[1], "replay")) return replay(io, arena, args[2]);
     if (std.mem.eql(u8, args[1], "dump")) {
         var out = try std.Io.Dir.cwd().createDirPathOpen(io, args[3], .{});
         defer out.close(io);

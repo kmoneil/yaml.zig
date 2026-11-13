@@ -453,6 +453,12 @@ the test that shows yaml.zig holds up. `zig build security` runs them.
 - `zig build suite`: the yaml-test-suite's counts; `-- show <case>` for
   one case.
 - `zig build fuzz --fuzz`: fuzz.
+- `zig build differential -Ddifferential`: the parser's events held to
+  [libfyaml](https://github.com/pantoniou/libfyaml)'s on every suite
+  input (fetches libfyaml, which Zig compiles). With `--fuzz` it fuzzes
+  the two against each other; set `YAML_DIFFERENTIAL_DIR` to record
+  where they differ, and `tools/differential/arbitrate.sh` has the YAML
+  reference parser settle each one.
 - `zig build docs`: the API reference, in `zig-out/docs`.
 - `zig build doc-examples -- --fix`: copy `examples/` into this README
   and the guide.
