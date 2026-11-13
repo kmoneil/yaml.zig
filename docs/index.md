@@ -91,7 +91,7 @@ const yaml = b.dependency("yaml", .{ .target = target, .optimize = optimize });
 exe.root_module.addImport("yaml", yaml.module("yaml"));
 ```
 
-Put `#v0.2.0` (or another release tag) after the fetch URL to pin a
+Put `#v0.3.0` (or another release tag) after the fetch URL to pin a
 release. Every release file comes with `SHA256SUMS` and a
 build-provenance attestation.
 

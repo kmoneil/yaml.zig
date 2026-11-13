@@ -54,7 +54,7 @@ Zig 0.17.1. Add the package to your `build.zig.zon`:
 zig fetch --save=yaml git+https://github.com/kmoneil/yaml.zig
 ```
 
-Put `#v0.2.0` (or another release tag) after the URL to pin a release.
+Put `#v0.3.0` (or another release tag) after the URL to pin a release.
 Then in `build.zig`:
 
 ```zig
