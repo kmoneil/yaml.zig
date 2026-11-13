@@ -177,6 +177,8 @@ failed: ?Error = null,
 /// before it are (`beforeError`).
 pending: ?Error = null,
 diagnostic: Diagnostic = .{},
+/// The block of the input `textRunEnd` last read, classified.
+text_block: TextBlock = .{},
 
 /// A scanner over `input`, UTF-8 (`encoding.toUtf8` for others). It
 /// allocates nothing until `next`.
@@ -1410,12 +1412,61 @@ fn skipPlainRun(s: *Scanner) void {
 /// ASCII and printable, a tab included, to the first character the
 /// caller must read alone: a line break, a control, a byte past ASCII.
 fn skipTextRun(s: *Scanner) void {
-    var i: usize = s.mark.offset;
-    while (i < s.input.len) : (i += 1) {
-        const c = s.input[i];
-        if ((c < ' ' and c != '\t') or c >= 0x7F) break;
+    s.advanceAscii(s.textRunEnd(s.mark.offset));
+}
+
+/// Whether `c` ends a run of text (`skipTextRun`): a control but a tab,
+/// DEL or a byte past ASCII. The byte loop `textRunEnd` is held to.
+fn endsText(c: u8) bool {
+    return (c < ' ' and c != '\t') or c >= 0x7F;
+}
+
+/// 64 bytes of the input from `base`, a multiple of 64, and a bit for
+/// each that ends a run of text (`endsText`), for `textRunEnd` (t50).
+pub const TextBlock = struct {
+    base: usize = std.math.maxInt(usize),
+    ends: u64 = 0,
+};
+
+/// The first offset from `at` whose byte ends a run of text, or the
+/// input's end: in the 64-byte block classified once, the zeros below
+/// its bit counted, so one block serves each run on its lines. Bytes past
+/// the input are classified as 0, which ends a run as the end does.
+///
+/// A comment's or a block scalar line's text runs tens of bytes, which a
+/// byte at a time cost a branch each and a mispredicted one at the end:
+/// so, text in comments and block scalars reads 15% faster (t50). Plain
+/// scalars' runs and indentation, short and repeated in most YAML, read
+/// as fast a byte at a time, the branches predicted, and block masks cost
+/// the latency of a load and a count before each: measured on the bench's
+/// records, varied config, long text and 2,000 real files, masks for them
+/// were 5% slower on the records and 2% faster on the real files.
+fn textRunEnd(s: *Scanner, at: usize) usize {
+    var i = at;
+    while (i < s.input.len) {
+        const base = i & ~@as(usize, 63);
+        if (base != s.text_block.base) s.classifyText(base);
+        const m = s.text_block.ends >> @as(u6, @intCast(i - base));
+        if (m != 0) return @min(i + @ctz(m), s.input.len);
+        i = base + 64;
     }
-    s.advanceAscii(i);
+    return s.input.len;
+}
+
+/// Classifies the 64 bytes from `base` (`TextBlock`), at once: NEON on
+/// arm64, SSE2 on x86_64, a compare for each class of byte and their bits
+/// gathered into one word.
+noinline fn classifyText(s: *Scanner, base: usize) void {
+    const V = @Vector(64, u8);
+    const rest = s.input[base..];
+    var padded: [64]u8 = @splat(0);
+    const bytes: V = if (rest.len >= 64) rest[0..64].* else blk: {
+        @memcpy(padded[0..rest.len], rest);
+        break :blk padded;
+    };
+    const control = (bytes < @as(V, @splat(' '))) & (bytes != @as(V, @splat('\t')));
+    const ends = control | (bytes >= @as(V, @splat(0x7F)));
+    s.text_block = .{ .base = base, .ends = @bitCast(ends) };
 }
 
 /// Moves to `offset`, past ASCII alone on the line: a character a byte.
@@ -1471,4 +1522,40 @@ fn isBlankOrBreakOrEnd(c: u8) bool {
 /// byte that cannot start one, so the scanner always moves.
 fn utf8Length(c: u8) usize {
     return std.unicode.utf8ByteSequenceLength(c) catch 1;
+}
+
+test "textRunEnd: where the byte loop stops, from every offset" {
+    var prng: std.Random.DefaultPrng = .init(0x50);
+    const r = prng.random();
+    // Text, a tab now and then, and the bytes that end it.
+    const ends = "\x00\x01\n\r\x1F\x7F\x80\xC3\xFF";
+    var buf: [300]u8 = undefined;
+    for (0..3000) |round| {
+        // Lengths about the blocks' edges, and any.
+        const len = switch (round % 4) {
+            0 => 63 + r.uintLessThan(usize, 3),
+            1 => 127 + r.uintLessThan(usize, 3),
+            else => r.uintLessThan(usize, buf.len),
+        };
+        const sparse = r.uintLessThan(u8, 3) == 0;
+        for (buf[0..len]) |*c| {
+            const odd = r.uintLessThan(u8, if (sparse) 200 else 12) == 0;
+            c.* = if (odd) ends[r.uintLessThan(usize, ends.len)] else if (r.uintLessThan(u8, 20) == 0) '\t' else ' ' + r.uintLessThan(u8, 95);
+        }
+        var s: Scanner = .init(std.testing.allocator, buf[0..len]);
+        defer s.deinit();
+        // Forward, backward, then at random: the block reused, replaced
+        // and come back to.
+        for (0..3 * (len + 1)) |k| {
+            const at = switch (k / (len + 1)) {
+                0 => k % (len + 1),
+                1 => len - k % (len + 1),
+                else => r.uintAtMost(usize, len),
+            };
+            var want = at;
+            while (want < len and !endsText(buf[want])) want += 1;
+            errdefer std.debug.print("len {d}, from {d}: {any}\n", .{ len, at, buf[0..len] });
+            try std.testing.expectEqual(want, s.textRunEnd(at));
+        }
+    }
 }

@@ -1,5 +1,8 @@
 //! `zig build bench [-- records [runs]]` (karte t46): how fast each stage
 //! reads a document of typical config records, and what it allocates.
+//! `zig build bench -- text [records [runs]]`: the reading stages over a
+//! document of long text instead (`textDocument`, 4,000 records by
+//! default), where a change to how text is scanned shows (t50).
 //! `zig build bench -- rss STAGE [records]`: the memory one stage holds
 //! resident, in a process of its own.
 //! `zig build bench -- write PATH [records]`: the document, to a file.
@@ -117,6 +120,51 @@ fn document(gpa: Allocator, records: usize) ![]u8 {
     var w: Io.Writer = .fixed(text);
     for (0..records) |i| try writeRecord(&w, i);
     return text;
+}
+
+/// A document of `records` records of long text, about 4.1 MB for
+/// 4,000 (`zig build bench -- text`): a comment, a plain summary past
+/// the width, a literal script and folded notes, their words drawn by a
+/// seeded generator, so their lengths vary as prose's do and the
+/// branches that read them cannot learn one record's shape, as they do
+/// the config records'. Written once at its length, as `document` is.
+fn textDocument(gpa: Allocator, records: usize) ![]u8 {
+    var counting: Io.Writer.Discarding = .init(&.{});
+    var prng: std.Random.DefaultPrng = .init(50);
+    for (0..records) |i| try writeTextRecord(&counting.writer, prng.random(), i);
+    const text = try gpa.alloc(u8, @intCast(counting.fullCount()));
+    errdefer gpa.free(text);
+    var w: Io.Writer = .fixed(text);
+    prng = .init(50);
+    for (0..records) |i| try writeTextRecord(&w, prng.random(), i);
+    return text;
+}
+
+fn writeTextRecord(w: *Io.Writer, r: std.Random, i: usize) Io.Writer.Error!void {
+    try w.print("- name: service-{d}\n  # ", .{i});
+    try writeWords(w, r, 8, 24);
+    try w.writeAll("\n  summary: ");
+    try writeWords(w, r, 10, 30);
+    try w.writeAll("\n  script: |\n");
+    for (0..r.intRangeAtMost(usize, 2, 8)) |_| {
+        try w.writeAll("    ");
+        try writeWords(w, r, 6, 18);
+        try w.writeByte('\n');
+    }
+    try w.writeAll("  notes: >\n");
+    for (0..r.intRangeAtMost(usize, 1, 4)) |_| {
+        try w.writeAll("    ");
+        try writeWords(w, r, 6, 18);
+        try w.writeByte('\n');
+    }
+}
+
+/// From `least` to `most` words of 1 to 12 lowercase letters.
+fn writeWords(w: *Io.Writer, r: std.Random, least: usize, most: usize) Io.Writer.Error!void {
+    for (0..r.intRangeAtMost(usize, least, most)) |k| {
+        if (k > 0) try w.writeByte(' ');
+        for (0..r.intRangeAtMost(usize, 1, 12)) |_| try w.writeByte('a' + r.uintLessThan(u8, 26));
+    }
 }
 
 fn writeRecord(w: *Io.Writer, i: usize) Io.Writer.Error!void {
@@ -274,28 +322,33 @@ pub fn main(init: std.process.Init) !void {
     if (args.len > 2 and std.mem.eql(u8, args[1], "rss")) return resident(io, args);
     if (args.len > 2 and std.mem.eql(u8, args[1], "write")) return write(io, args);
     if (args.len > 4 and std.mem.eql(u8, args[1], "file")) return timeFile(io, args);
-    const records = if (args.len > 1) try std.fmt.parseInt(usize, args[1], 10) else 20_000;
-    const runs = if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 7;
+    const long = args.len > 1 and std.mem.eql(u8, args[1], "text");
+    const numbers = if (long) args[2..] else args[1..];
+    const records: usize = if (numbers.len > 0) try std.fmt.parseInt(usize, numbers[0], 10) else if (long) 4_000 else 20_000;
+    const runs = if (numbers.len > 1) try std.fmt.parseInt(usize, numbers[1], 10) else 7;
     if (runs == 0) return error.NoRuns;
 
     const base = std.heap.smp_allocator;
-    const text = try document(base, records);
+    const text = try if (long) textDocument(base, records) else document(base, records);
     defer base.free(text);
-    const typed = try yaml.parseFromSlice([]const Record, base, text, .{});
-    defer typed.deinit();
+    // The text records are not Records: their stages are the reading ones.
+    const typed: ?yaml.Parsed([]const Record) = if (long) null else try yaml.parseFromSlice([]const Record, base, text, .{});
+    defer if (typed) |t| t.deinit();
+    const stages: []const Stage = if (long) &.{ .scan, .parse, .compose, .value } else std.enums.values(Stage);
+    const built_records: []const Record = if (typed) |p| p.value else &.{};
 
     var buf: [4096]u8 = undefined;
     var stdout = Io.File.stdout().writerStreaming(io, &buf);
     const w = &stdout.interface;
-    try w.print("{d} records, {d} bytes; the median of {d} runs, ReleaseFast\n", .{ records, text.len, runs });
+    try w.print("{d} {s}records, {d} bytes; the median of {d} runs, ReleaseFast\n", .{ records, if (long) "text " else "", text.len, runs });
     try w.print("{s:<10} {s:>9} {s:>8} {s:>9} {s:>8} {s:>12} {s:>12}\n", .{ "stage", "ms", "MB/s", "allocs", "resizes", "bytes", "peak" });
     const times = try init.arena.allocator().alloc(i96, runs);
-    for (std.enums.values(Stage)) |stage| {
+    for (stages) |stage| {
         var first: Counting = .{ .child = base };
         for (times, 0..) |*t, i| {
             var counting: Counting = .{ .child = base };
             const start = Io.Clock.awake.now(io);
-            std.mem.doNotOptimizeAway(try run(stage, counting.allocator(), text, typed.value));
+            std.mem.doNotOptimizeAway(try run(stage, counting.allocator(), text, built_records));
             t.* = start.durationTo(Io.Clock.awake.now(io)).toNanoseconds();
             if (i == 0) first = counting;
         }
