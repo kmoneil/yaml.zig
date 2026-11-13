@@ -329,11 +329,6 @@ fn suiteRun(b: *std.Build, harness: *std.Build.Step.Compile, suite_data: *std.Bu
     return run;
 }
 
-/// The directory libfyaml's package unpacks into: its tarball's top one,
-/// which the build keeps (zig fetch alone strips it, and so hashes the
-/// package otherwise: the hash in build.zig.zon is the build's).
-const libfyaml_top = "libfyaml-0.9.6";
-
 /// libfyaml's library sources, under its src/, as its CMakeLists.txt
 /// lists them, BLAKE3's SIMD variants left out (tools/differential/config.h).
 const libfyaml_sources = [_][]const u8{
@@ -361,14 +356,14 @@ fn differential(b: *std.Build, step: *std.Build.Step, target: std.Build.Resolved
     const suite = suiteData(b) orelse return;
     const c = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
     c.addIncludePath(b.path("tools/differential"));
-    for ([_][]const u8{ "include", "src/lib", "src/util", "src/xxhash", "src/thread", "src/allocator", "src/blake3", "src/tool", "src/valgrind" }) |dir| c.addIncludePath(fy.path(b.fmt("{s}/{s}", .{ libfyaml_top, dir })));
+    for ([_][]const u8{ "include", "src/lib", "src/util", "src/xxhash", "src/thread", "src/allocator", "src/blake3", "src/tool", "src/valgrind" }) |dir| c.addIncludePath(fy.path(dir));
     // Its own code, as its release build compiles it: a trap from the
     // C sanitizer a Debug build adds would be libfyaml's, no disagreement.
     const flags = [_][]const u8{ "-std=gnu11", "-DHAVE_CONFIG_H", "-D_GNU_SOURCE", "-DNDEBUG", "-w", "-fno-sanitize=undefined" };
-    c.addCSourceFiles(.{ .root = fy.path(libfyaml_top ++ "/src"), .files = &libfyaml_sources, .flags = &flags });
-    c.addCSourceFiles(.{ .root = fy.path(libfyaml_top ++ "/src/blake3"), .files = &.{ "blake3_portable.c", "blake3.c" }, .flags = &(flags ++ [_][]const u8{ "-DHASHER_SUFFIX=portable", "-DSIMD_DEGREE=1" }) });
+    c.addCSourceFiles(.{ .root = fy.path("src"), .files = &libfyaml_sources, .flags = &flags });
+    c.addCSourceFiles(.{ .root = fy.path("src/blake3"), .files = &.{ "blake3_portable.c", "blake3.c" }, .flags = &(flags ++ [_][]const u8{ "-DHASHER_SUFFIX=portable", "-DSIMD_DEGREE=1" }) });
     // Its fy-tool's printer, writing to memory (redirect.h), and the shim.
-    c.addCSourceFile(.{ .file = fy.path(libfyaml_top ++ "/src/tool/fy-tool-dump.c"), .flags = &(flags ++ [_][]const u8{ "-include", "tools/differential/redirect.h" }) });
+    c.addCSourceFile(.{ .file = fy.path("src/tool/fy-tool-dump.c"), .flags = &(flags ++ [_][]const u8{ "-include", "tools/differential/redirect.h" }) });
     c.addCSourceFile(.{ .file = b.path("tools/differential/shim.c"), .flags = &flags });
     const lib = b.addLibrary(.{ .name = "fyshim", .linkage = .static, .root_module = c });
 

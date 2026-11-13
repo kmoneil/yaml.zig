@@ -18,7 +18,7 @@
         // events to its (karte t68). Fetched only with -Ddifferential.
         .libfyaml = .{
             .url = "https://github.com/pantoniou/libfyaml/releases/download/v0.9.6/libfyaml-0.9.6.tar.gz",
-            .hash = "N-V-__8AAFR0VgABFvYHUj-O93KJlbvui8tjo8zmU-Vvmusq",
+            .hash = "N-V-__8AAFR0VgDDy_n_kVH6deo8rjeww_X1D9Wy50H2X8-B",
             .lazy = true,
         },
     },
