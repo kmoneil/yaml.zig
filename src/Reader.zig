@@ -124,6 +124,10 @@ tag_directives: std.ArrayList(Scanner.Token.TagDirective) = .empty,
 /// (`Parser.max_tag_directives`): past it the reader stops, and the
 /// parser gives the error.
 max_tag_directives: usize = 64,
+/// Whether the text of the events given is reused once all are: true
+/// makes each event's text, where it is not the input's, valid only
+/// until the next call (`Parser.text_lifetime`, t53).
+reuse_text: bool = false,
 
 /// A reader over `input`, UTF-8. It allocates nothing until `next`.
 pub fn init(gpa: Allocator, input: []const u8) Reader {
@@ -167,6 +171,9 @@ const batch = 16;
 /// batch leaves their events ungiven, and the parser, taking over, gives
 /// them, as it does every event past those `next` gave.
 noinline fn refill(r: *Reader) Error!void {
+    // Every event in the queue has been given, the last of them before
+    // this call: their text may go.
+    if (r.reuse_text) r.s.reuseText();
     r.events.clearRetainingCapacity();
     r.head = 0;
     while (r.events.items.len == 0 or r.hold != null) try r.step();

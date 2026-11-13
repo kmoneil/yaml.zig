@@ -656,6 +656,9 @@ fn events(arena: Allocator, io: Io, out: *Io.Writer, args: Args) !u8 {
     };
     var parser: yaml.Parser = .init(arena, text);
     parser.scanner.max_depth = args.options.composer.max_depth;
+    // Each event is written as it comes: its text need not outlive it,
+    // and a file of any size is read in the memory of a few (t53).
+    parser.text_lifetime = .next_event;
     while (true) {
         const event = parser.next() catch |err| switch (err) {
             error.OutOfMemory => |e| return e,

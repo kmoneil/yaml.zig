@@ -219,3 +219,131 @@ test "a document may have max_tag_directives %TAG directives, and no more" {
     try testing.expectEqual(64, over.diagnostic.mark.line);
     try testing.expectEqual(0, over.diagnostic.mark.column);
 }
+
+/// `dump` with the parser set as given: each event written as it comes,
+/// which is all `.next_event` promises.
+fn dumpWith(gpa: std.mem.Allocator, input: []const u8, lifetime: Parser.TextLifetime, use_reader: bool) ![]u8 {
+    var p: Parser = .init(gpa, input);
+    defer p.deinit();
+    p.text_lifetime = lifetime;
+    p.use_reader = use_reader;
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    errdefer out.deinit();
+    while (true) {
+        const e = p.next() catch |err| switch (err) {
+            error.SyntaxError => {
+                try out.writer.print("ERROR {s}\n", .{p.diagnostic.message});
+                break;
+            },
+            else => return err,
+        };
+        try Parser.writeTestEvent(&out.writer, e);
+        if (e.data == .stream_end) break;
+    }
+    return out.toOwnedSlice();
+}
+
+test "text valid until the next event: the events as ever, the reader's and the state machine's" {
+    const folded = "- >\n  folded across\n  two lines\n";
+    const escaped = "- \"an \\x41 escape \\u263A\"\n- 'it''s'\n- \"multi\n  line\"\n";
+    // A prefix with escapes, decoded: the document's later tags resolve
+    // against it after many events' text has gone.
+    const tagged = comptime "%TAG !e! tag:ex%41mple.com,2026:\n---\n- !e!one a\n- " ++ repeat("x\n- ", 40) ++ "!e!two b\n...\n%TAG !e! tag:other%2C:\n---\n- !e!three c\n";
+    const block = "a: |\n  literal\n   kept\n\nb: >-\n  folded\n\n  para\n";
+    const inputs = [_][]const u8{ folded, escaped, tagged, block, "{a: [b, \"c\\td\"], ? e : f}\n", "- \"bad \\q escape\"\n" };
+    for (inputs) |input| {
+        // With a byte order mark the state machine reads it all.
+        for ([_][]const u8{ "", "\xEF\xBB\xBF" }) |bom| for ([_]bool{ true, false }) |use_reader| {
+            const text = try std.mem.concat(testing.allocator, u8, &.{ bom, input });
+            defer testing.allocator.free(text);
+            errdefer std.debug.print("input: {s} (reader {})\n", .{ text, use_reader });
+            const want = try dumpWith(testing.allocator, text, .parser, use_reader);
+            defer testing.allocator.free(want);
+            const got = try dumpWith(testing.allocator, text, .next_event, use_reader);
+            defer testing.allocator.free(got);
+            try testing.expectEqualStrings(want, got);
+        };
+    }
+}
+
+fn repeat(comptime text: []const u8, comptime n: usize) []const u8 {
+    var out: []const u8 = "";
+    for (0..n) |_| out = out ++ text;
+    return out;
+}
+
+/// `text` `n` times over, on the testing allocator.
+fn repeated(text: []const u8, n: usize) ![]u8 {
+    const out = try testing.allocator.alloc(u8, text.len * n);
+    for (0..n) |i| @memcpy(out[i * text.len ..][0..text.len], text);
+    return out;
+}
+
+/// Counts the most bytes held at once through it.
+const Peak = struct {
+    child: std.mem.Allocator,
+    live: usize = 0,
+    peak: usize = 0,
+
+    fn allocator(c: *Peak) std.mem.Allocator {
+        return .{ .ptr = c, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
+    }
+    fn grew(c: *Peak, old: usize, new: usize) void {
+        c.live = c.live - old + new;
+        c.peak = @max(c.peak, c.live);
+    }
+    fn alloc(ctx: *anyopaque, len: usize, a: std.mem.Alignment, ret: usize) ?[*]u8 {
+        const c: *Peak = @ptrCast(@alignCast(ctx));
+        const p = c.child.rawAlloc(len, a, ret) orelse return null;
+        c.grew(0, len);
+        return p;
+    }
+    fn resize(ctx: *anyopaque, m: []u8, a: std.mem.Alignment, len: usize, ret: usize) bool {
+        const c: *Peak = @ptrCast(@alignCast(ctx));
+        if (!c.child.rawResize(m, a, len, ret)) return false;
+        c.grew(m.len, len);
+        return true;
+    }
+    fn remap(ctx: *anyopaque, m: []u8, a: std.mem.Alignment, len: usize, ret: usize) ?[*]u8 {
+        const c: *Peak = @ptrCast(@alignCast(ctx));
+        const p = c.child.rawRemap(m, a, len, ret) orelse return null;
+        c.grew(m.len, len);
+        return p;
+    }
+    fn free(ctx: *anyopaque, m: []u8, a: std.mem.Alignment, ret: usize) void {
+        const c: *Peak = @ptrCast(@alignCast(ctx));
+        c.grew(m.len, 0);
+        c.child.rawFree(m, a, ret);
+    }
+};
+
+/// The most a parse of `input` holds, set as given.
+fn peakOf(input: []const u8, lifetime: Parser.TextLifetime, use_reader: bool) !usize {
+    var peak: Peak = .{ .child = testing.allocator };
+    var p: Parser = .init(peak.allocator(), input);
+    defer p.deinit();
+    p.text_lifetime = lifetime;
+    p.use_reader = use_reader;
+    while ((try p.next()).data != .stream_end) {}
+    return peak.peak;
+}
+
+test "text valid until the next event: memory that does not grow with the stream" {
+    // Scalars whose text is built: a folded one and an escaped one each.
+    const item = "- >\n  folded text that the scanner\n  builds from two lines\n- \"an \\t escaped one\"\n";
+    for ([_]bool{ true, false }) |use_reader| {
+        const small = try repeated(item, 100);
+        defer testing.allocator.free(small);
+        const large = try repeated(item, 5_000);
+        defer testing.allocator.free(large);
+        errdefer std.debug.print("reader {}\n", .{use_reader});
+        // Kept as long as the parser, the text grows with the stream...
+        try testing.expect(try peakOf(large, .parser, use_reader) > 200_000);
+        // ...and reused, it does not: the large stream holds what the
+        // small one does, to a few kilobytes.
+        const small_peak = try peakOf(small, .next_event, use_reader);
+        const large_peak = try peakOf(large, .next_event, use_reader);
+        try testing.expect(large_peak < small_peak + 8_192);
+        try testing.expect(large_peak < 32_768);
+    }
+}

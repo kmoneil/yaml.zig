@@ -15,7 +15,7 @@
 //! read them as garbage. A byte order mark may open the stream and each
 //! document after it. A scalar's value is a slice of the input when it is written
 //! as it reads (one line, no escapes); otherwise it is built in the
-//! scanner's arena, so it lives until `deinit`.
+//! scanner's arena, so it lives until `deinit`, or until `reuseText`.
 //!
 //! The reader (Reader.zig) reads with this file's character-level
 //! scanners (`ch`, `skip`, `skipBreak`, `skipComment`, `scanPlainLine`,
@@ -129,6 +129,11 @@ input: []const u8,
 mark: Mark = .{},
 /// Scalar values that are not slices of `input`.
 arena: std.heap.ArenaAllocator,
+/// A %TAG directive's prefix that is not a slice of `input` (it had `%`
+/// escapes): a document's tags are resolved against it while its text
+/// is reused (`reuseText`), so it lives until `deinit`. Directives are
+/// few and such prefixes fewer.
+kept: std.heap.ArenaAllocator,
 /// Tokens scanned and not yet handed out start at `head`.
 tokens: std.ArrayList(Token) = .empty,
 head: usize = 0,
@@ -183,7 +188,7 @@ text_block: TextBlock = .{},
 /// A scanner over `input`, UTF-8 (`encoding.toUtf8` for others). It
 /// allocates nothing until `next`.
 pub fn init(gpa: Allocator, input: []const u8) Scanner {
-    return .{ .gpa = gpa, .input = input, .arena = .init(gpa) };
+    return .{ .gpa = gpa, .input = input, .arena = .init(gpa), .kept = .init(gpa) };
 }
 
 /// Frees the scanner and the scalar text it built.
@@ -192,7 +197,18 @@ pub fn deinit(s: *Scanner) void {
     s.indents.deinit(s.gpa);
     s.simple_keys.deinit(s.gpa);
     s.arena.deinit();
+    s.kept.deinit();
     s.* = undefined;
+}
+
+/// Ends the text built so far, its memory kept for the next, unless a
+/// token scanned and not handed out holds some: what the caller was
+/// given is no longer valid. For text valid until the next event
+/// (`Parser.text_lifetime`), so a stream of any length is read in the
+/// memory of a few events (t53).
+pub fn reuseText(s: *Scanner) void {
+    if (s.head != s.tokens.items.len) return;
+    _ = s.arena.reset(.retain_capacity);
 }
 
 /// The next token. After `stream_end`, `stream_end` again. On an error,
@@ -493,8 +509,11 @@ fn scanTagDirective(s: *Scanner) Error!Token.TagDirective {
     // a flow indicator.
     const prefix_start = s.mark;
     if (isFlowIndicator(s.ch(0))) return s.fail(s.mark, "a %TAG prefix cannot start with a flow indicator");
-    const prefix = try s.scanUri(.uri);
-    if (prefix.len == 0) return s.fail(prefix_start, "a %TAG directive needs a prefix after its handle");
+    const uri = try s.scanUri(.uri);
+    if (uri.len == 0) return s.fail(prefix_start, "a %TAG directive needs a prefix after its handle");
+    // Decoded, it outlives the text `reuseText` ends.
+    const decoded = uri.ptr != s.input[prefix_start.offset..].ptr;
+    const prefix = if (decoded) try s.kept.allocator().dupe(u8, uri) else uri;
     return .{ .handle = handle, .prefix = prefix };
 }
 

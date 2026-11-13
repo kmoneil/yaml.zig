@@ -99,7 +99,9 @@ echo "$size bytes, the median of $runs runs; $(uname -sm), $(date -u +%Y-%m-%d)"
 echo
 echo "| Built | Library | ms | MB/s | 1st run ms | Peak MB |"
 echo "| --- | --- | ---: | ---: | ---: | ---: |"
-row events "**yaml.zig**" parse $z
+# Each event's text valid until the next (Parser.text_lifetime), as
+# libyaml's is until yaml_event_delete and saphyr-parser's (t53).
+row events "**yaml.zig**" stream $z
 [ ! -x "$b/libyaml" ] || row events "libyaml 0.2.5" events "$b/libyaml"
 [ ! -x "$b/rust" ] || row events "saphyr-parser 0.3.3" events "$b/rust"
 row "node tree" "**yaml.zig**" compose $z

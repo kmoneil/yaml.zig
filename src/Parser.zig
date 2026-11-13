@@ -46,6 +46,9 @@ pub const Diagnostic = Scanner.Diagnostic;
 /// document with more %TAG directives than `max_tag_directives`.
 pub const Error = Scanner.Error || error{TagDirectiveLimit};
 
+/// How long an event's text lives (`text_lifetime`).
+pub const TextLifetime = enum { parser, next_event };
+
 /// A step of the stream: a start or end of the stream, a document or a
 /// collection, a scalar, or an alias; with the marks of its text.
 pub const Event = struct {
@@ -136,6 +139,15 @@ after_end_marker: bool = true,
 /// parsing quadratic: 80,000 of them, 1.3 MB, took 2.6 s.
 max_tag_directives: usize = 64,
 diagnostic: Diagnostic = .{},
+/// How long the text an event points at lives, where it is not the
+/// input's own (a scalar's value built from escapes or several lines, a
+/// resolved tag, a document start's %TAG directives): `.parser`, as long
+/// as the parser; or `.next_event`, until the next call to `next`, its
+/// memory then reused, so a stream of any length is read in the memory
+/// of a few events, as libyaml's events are until yaml_event_delete
+/// (t53). Copy what is kept past the next call. Set before the first
+/// `next`.
+text_lifetime: TextLifetime = .parser,
 /// Whether events come from the reader until it stops. Set false before
 /// the first `next` to read with the state machine alone, as the
 /// reader's checks do.
@@ -193,6 +205,7 @@ pub inline fn nextInPlace(p: *Parser) Error!*const Event {
 fn setReader(p: *Parser) void {
     p.reader.setMaxDepth(p.scanner.max_depth);
     p.reader.max_tag_directives = p.max_tag_directives;
+    p.reader.reuse_text = p.text_lifetime == .next_event;
 }
 
 /// Where the reader stops, the state machine reads the stream from its
@@ -203,8 +216,14 @@ noinline fn handOver(p: *Parser) Error!void {
     for (0..p.given) |_| _ = try p.parse();
 }
 
-/// The state machine's next event.
+/// The state machine's next event, the text of the last one reused
+/// first under `.next_event`.
 fn parse(p: *Parser) Error!Event {
+    if (p.text_lifetime == .next_event) p.scanner.reuseText();
+    return p.parseState();
+}
+
+fn parseState(p: *Parser) Error!Event {
     return switch (p.state) {
         .stream_start => p.parseStreamStart(),
         .document_start => p.parseDocumentStart(),

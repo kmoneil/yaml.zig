@@ -166,13 +166,21 @@ fn fuzzParse(_: void, d: *Draw) !void {
     var alone: yaml.Parser = .init(testing.allocator, input);
     alone.use_reader = false;
     defer alone.deinit();
+    // Text valid until the next event, its memory reused: each event, as
+    // it comes, the same, so no text was reused that was still the
+    // caller's (t53).
+    var streaming: yaml.Parser = .init(testing.allocator, input);
+    streaming.text_lifetime = .next_event;
+    defer streaming.deinit();
     var depth: usize = 0;
     var count: usize = 0;
     while (count < 8 * input.len + 64) : (count += 1) {
         const want = alone.next();
+        const streamed = streaming.next();
         const event = parser.next() catch |err| switch (err) {
             error.SyntaxError, error.DepthLimit, error.TagDirectiveLimit => {
                 try testing.expectError(err, want);
+                try testing.expectError(err, streamed);
                 try testing.expectEqual(alone.diagnostic.mark, parser.diagnostic.mark);
                 try testing.expectEqualStrings(alone.diagnostic.message, parser.diagnostic.message);
                 try testing.expect(parser.diagnostic.mark.offset <= input.len);
@@ -182,6 +190,7 @@ fn fuzzParse(_: void, d: *Draw) !void {
             error.OutOfMemory => return err,
         };
         try testing.expect(yaml.Reader.same(try want, event));
+        try testing.expect(yaml.Reader.same(event, try streamed));
         try checkNesting(event, &depth, count == 0);
         if (event.data == .stream_end) return testing.expectEqual(0, depth);
     }

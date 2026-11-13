@@ -273,7 +273,9 @@ fn timeFile(io: Io, args: []const []const u8) !void {
     try stdout.interface.flush();
 }
 
-const Stage = enum { scan, parse, compose, value, typed, stringify };
+/// `stream` is `parse` with each event's text valid until the next
+/// (`Parser.text_lifetime`, t53), as libyaml's events are.
+const Stage = enum { scan, parse, stream, compose, value, typed, stringify };
 
 /// Runs `stage` over `text` once; what it returns keeps the work from
 /// being optimized away.
@@ -286,9 +288,10 @@ fn run(stage: Stage, gpa: Allocator, text: []const u8, records: []const Record) 
             while ((try s.next()).data != .stream_end) n += 1;
             return n;
         },
-        .parse => {
+        .parse, .stream => {
             var p: yaml.Parser = .init(gpa, text);
             defer p.deinit();
+            if (stage == .stream) p.text_lifetime = .next_event;
             var n: usize = 0;
             while ((try p.next()).data != .stream_end) n += 1;
             return n;
@@ -334,7 +337,7 @@ pub fn main(init: std.process.Init) !void {
     // The text records are not Records: their stages are the reading ones.
     const typed: ?yaml.Parsed([]const Record) = if (long) null else try yaml.parseFromSlice([]const Record, base, text, .{});
     defer if (typed) |t| t.deinit();
-    const stages: []const Stage = if (long) &.{ .scan, .parse, .compose, .value } else std.enums.values(Stage);
+    const stages: []const Stage = if (long) &.{ .scan, .parse, .stream, .compose, .value } else std.enums.values(Stage);
     const built_records: []const Record = if (typed) |p| p.value else &.{};
 
     var buf: [4096]u8 = undefined;
