@@ -142,6 +142,17 @@ pub fn build(b: *std.Build) void {
     const fuzz_tests = b.addTest(.{ .root_module = mod, .filters = &.{fuzz_filter}, .use_llvm = true });
     b.step("fuzz", "Replay the fuzz targets' seeded draws (--fuzz to fuzz)").dependOn(&b.addRunArtifact(fuzz_tests).step);
 
+    // `zig build differential -Ddifferential` (src/differential_test.zig,
+    // karte t68): the parser's events held to libfyaml's, the target's
+    // seeded draws and every suite input; `--fuzz` fuzzes. Only then is
+    // libfyaml fetched, so no other build needs it, or a network.
+    const differential_step = b.step("differential", "Hold the parser's events to libfyaml's (-Ddifferential; --fuzz to fuzz)");
+    if (b.option(bool, "differential", "Fetch libfyaml, for zig build differential") orelse false) {
+        differential(b, differential_step, target, optimize);
+    } else {
+        differential_step.dependOn(&b.addFail("zig build differential needs -Ddifferential, which fetches libfyaml").step);
+    }
+
     // `zig build suite` prints the yaml-test-suite's counts (addTests).
     const suite_step = b.step("suite", "Run the yaml-test-suite, print the counts (-- list [--all], -- show <case>)");
     if (harness) |h| {
@@ -316,4 +327,58 @@ fn suiteRun(b: *std.Build, harness: *std.Build.Step.Compile, suite_data: *std.Bu
     // see, so a cached pass could stand for a run that would now fail.
     run.has_side_effects = true;
     return run;
+}
+
+/// The directory libfyaml's package unpacks into: its tarball's top one,
+/// which the build keeps (zig fetch alone strips it, and so hashes the
+/// package otherwise: the hash in build.zig.zon is the build's).
+const libfyaml_top = "libfyaml-0.9.6";
+
+/// libfyaml's library sources, under its src/, as its CMakeLists.txt
+/// lists them, BLAKE3's SIMD variants left out (tools/differential/config.h).
+const libfyaml_sources = [_][]const u8{
+    "lib/fy-accel.c",                  "lib/fy-atom.c",                   "lib/fy-composer.c",
+    "lib/fy-diag.c",                   "lib/fy-doc.c",                    "lib/fy-docbuilder.c",
+    "lib/fy-docstate.c",               "lib/fy-dump.c",                   "lib/fy-emit.c",
+    "lib/fy-event.c",                  "lib/fy-input.c",                  "lib/fy-parse.c",
+    "lib/fy-path.c",                   "lib/fy-token.c",                  "lib/fy-types.c",
+    "lib/fy-walk.c",                   "util/fy-blob.c",                  "util/fy-ctype.c",
+    "util/fy-utf8.c",                  "util/fy-utils.c",                 "xxhash/xxhash.c",
+    "thread/fy-thread.c",              "allocator/fy-allocator.c",        "allocator/fy-allocator-linear.c",
+    "allocator/fy-allocator-malloc.c", "allocator/fy-allocator-mremap.c", "allocator/fy-allocator-dedup.c",
+    "allocator/fy-allocator-auto.c",   "blake3/blake3_host_state.c",      "blake3/blake3_backend.c",
+    "blake3/blake3_be_cpusimd.c",      "blake3/fy-blake3.c",              "lib/fy-composer-diag.c",
+    "lib/fy-doc-diag.c",               "lib/fy-docbuilder-diag.c",        "lib/fy-input-diag.c",
+    "lib/fy-parse-diag.c",
+};
+
+/// `zig build differential`'s work (t68): libfyaml and the shim compiled
+/// into one library, linked into the fuzz target and into the check of
+/// every suite input, which takes the suite's directory as the suite
+/// harness does. Nothing while a dependency is fetched.
+fn differential(b: *std.Build, step: *std.Build.Step, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+    const fy = b.lazyDependency("libfyaml", .{}) orelse return;
+    const suite = suiteData(b) orelse return;
+    const c = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    c.addIncludePath(b.path("tools/differential"));
+    for ([_][]const u8{ "include", "src/lib", "src/util", "src/xxhash", "src/thread", "src/allocator", "src/blake3", "src/tool", "src/valgrind" }) |dir| c.addIncludePath(fy.path(b.fmt("{s}/{s}", .{ libfyaml_top, dir })));
+    // Its own code, as its release build compiles it: a trap from the
+    // C sanitizer a Debug build adds would be libfyaml's, no disagreement.
+    const flags = [_][]const u8{ "-std=gnu11", "-DHAVE_CONFIG_H", "-D_GNU_SOURCE", "-DNDEBUG", "-w", "-fno-sanitize=undefined" };
+    c.addCSourceFiles(.{ .root = fy.path(libfyaml_top ++ "/src"), .files = &libfyaml_sources, .flags = &flags });
+    c.addCSourceFiles(.{ .root = fy.path(libfyaml_top ++ "/src/blake3"), .files = &.{ "blake3_portable.c", "blake3.c" }, .flags = &(flags ++ [_][]const u8{ "-DHASHER_SUFFIX=portable", "-DSIMD_DEGREE=1" }) });
+    // Its fy-tool's printer, writing to memory (redirect.h), and the shim.
+    c.addCSourceFile(.{ .file = fy.path(libfyaml_top ++ "/src/tool/fy-tool-dump.c"), .flags = &(flags ++ [_][]const u8{ "-include", "tools/differential/redirect.h" }) });
+    c.addCSourceFile(.{ .file = b.path("tools/differential/shim.c"), .flags = &flags });
+    const lib = b.addLibrary(.{ .name = "fyshim", .linkage = .static, .root_module = c });
+
+    const tests_mod = b.createModule(.{ .root_source_file = b.path("src/differential_test.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    tests_mod.linkLibrary(lib);
+    step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = tests_mod, .use_llvm = true })).step);
+
+    const check_mod = b.createModule(.{ .root_source_file = b.path("src/differential_test.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    check_mod.linkLibrary(lib);
+    const check = b.addRunArtifact(b.addExecutable(.{ .name = "differential-suite", .root_module = check_mod }));
+    check.addDirectoryArg(suite.path("."));
+    step.dependOn(&check.step);
 }

@@ -13,6 +13,14 @@
             .hash = "N-V-__8AANRsAQDW5NhaTJne--X37O2KNP_maPss14w82QAh",
             .lazy = true,
         },
+        // libfyaml 0.9.6 (MIT), another reader that passes the whole
+        // yaml-test-suite: the differential fuzz target holds yaml.zig's
+        // events to its (karte t68). Fetched only with -Ddifferential.
+        .libfyaml = .{
+            .url = "https://github.com/pantoniou/libfyaml/releases/download/v0.9.6/libfyaml-0.9.6.tar.gz",
+            .hash = "N-V-__8AAFR0VgABFvYHUj-O93KJlbvui8tjo8zmU-Vvmusq",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",
