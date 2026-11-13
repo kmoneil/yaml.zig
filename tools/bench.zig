@@ -3,6 +3,9 @@
 //! `zig build bench -- text [records [runs]]`: the reading stages over a
 //! document of long text instead (`textDocument`, 4,000 records by
 //! default), where a change to how text is scanned shows (t50).
+//! `zig build bench -- documents [records [runs]]`: the records as a
+//! stream of one-record documents, read in order and side by side on 1
+//! to 16 threads (t77).
 //! `zig build bench -- rss STAGE [records]`: the memory one stage holds
 //! resident, in a process of its own.
 //! `zig build bench -- write PATH [records]`: the document, to a file.
@@ -251,6 +254,77 @@ fn write(io: Io, args: []const []const u8) !void {
 /// smp_allocator, which gives large blocks back to the system, each run
 /// had fresh pages to fault in, about 3,500 for compose (2026-11-07,
 /// t56), a cost the others pay on their first run only.
+/// The records as a stream of one-record documents, about 4.4 MB for
+/// 20,000 (`zig build bench -- documents [records [runs]]`, t77).
+fn documentStream(gpa: Allocator, records: usize) ![]u8 {
+    var counting: Io.Writer.Discarding = .init(&.{});
+    for (0..records) |i| try writeDocument(&counting.writer, i);
+    const text = try gpa.alloc(u8, @intCast(counting.fullCount()));
+    errdefer gpa.free(text);
+    var w: Io.Writer = .fixed(text);
+    for (0..records) |i| try writeDocument(&w, i);
+    return text;
+}
+
+/// A record as `writeRecord` writes it, a document of its own.
+fn writeDocument(w: *Io.Writer, i: usize) Io.Writer.Error!void {
+    var buf: [512]u8 = undefined;
+    var item: Io.Writer = .fixed(&buf);
+    try writeRecord(&item, i);
+    try w.writeAll("---\n");
+    var lines = std.mem.splitScalar(u8, item.buffered(), '\n');
+    while (lines.next()) |line| {
+        if (line.len < 2) continue;
+        try w.writeAll(line[2..]);
+        try w.writeByte('\n');
+    }
+}
+
+/// The document stream read into Records, in order with parseDocuments
+/// and side by side with parseDocumentsConcurrently on 1, 2, 4, 8 and 16
+/// threads: the median ms of `runs` each.
+fn timeDocuments(io: Io, args: []const []const u8) !void {
+    const records = if (args.len > 0) try std.fmt.parseInt(usize, args[0], 10) else 20_000;
+    const runs = if (args.len > 1) try std.fmt.parseInt(usize, args[1], 10) else 7;
+    if (runs == 0 or runs > 64) return error.Usage;
+    const gpa = std.heap.smp_allocator;
+    const text = try documentStream(gpa, records);
+    defer gpa.free(text);
+    var buf: [1024]u8 = undefined;
+    var stdout = Io.File.stdout().writerStreaming(io, &buf);
+    const w = &stdout.interface;
+    try w.print("{d} one-record documents, {d} bytes; the median of {d} runs, ReleaseFast\n", .{ records, text.len, runs });
+    var times: [64]i96 = undefined;
+    for (times[0..runs]) |*t| {
+        const start = Io.Clock.awake.now(io);
+        const parsed = try yaml.parseDocuments(Record, gpa, text, .{});
+        defer parsed.deinit();
+        t.* = start.durationTo(Io.Clock.awake.now(io)).toNanoseconds();
+        if (parsed.value.len != records) return error.WrongCount;
+    }
+    const in_order = median(times[0..runs]);
+    try w.print("{s:<22} {d:>7.1} ms\n", .{ "in order", in_order });
+    for ([_]usize{ 1, 2, 4, 8, 16 }) |threads| {
+        var threaded: Io.Threaded = .init(gpa, .{ .async_limit = .limited(threads - 1) });
+        defer threaded.deinit();
+        for (times[0..runs]) |*t| {
+            const start = Io.Clock.awake.now(io);
+            const parsed = try yaml.parseDocumentsConcurrently(Record, threaded.io(), gpa, text, .{});
+            defer parsed.deinit();
+            t.* = start.durationTo(Io.Clock.awake.now(io)).toNanoseconds();
+            if (parsed.value.len != records) return error.WrongCount;
+        }
+        const ms = median(times[0..runs]);
+        try w.print("{d:>2} thread{s:<12} {d:>7.1} ms  {d:.1}x\n", .{ threads, if (threads == 1) " " else "s", ms, in_order / ms });
+    }
+    try w.flush();
+}
+
+fn median(times: []i96) f64 {
+    std.mem.sort(i96, times, {}, std.sort.asc(i96));
+    return @as(f64, @floatFromInt(times[times.len / 2])) / 1e6;
+}
+
 fn timeFile(io: Io, args: []const []const u8) !void {
     const gpa = std.heap.c_allocator;
     const runs = try std.fmt.parseInt(usize, args[3], 10);
@@ -323,6 +397,7 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len > 2 and std.mem.eql(u8, args[1], "rss")) return resident(io, args);
+    if (args.len > 1 and std.mem.eql(u8, args[1], "documents")) return timeDocuments(io, args[2..]);
     if (args.len > 2 and std.mem.eql(u8, args[1], "write")) return write(io, args);
     if (args.len > 4 and std.mem.eql(u8, args[1], "file")) return timeFile(io, args);
     const long = args.len > 1 and std.mem.eql(u8, args[1], "text");

@@ -150,6 +150,8 @@ key_sets: usize = 0,
 anchors: std.HashMapUnmanaged([]const u8, *Node, SeededStrings, std.hash_map.default_max_load_percentage) = .empty,
 /// The seed of every hash map, once `hashSeed` has hashed the input.
 seed: ?u64 = null,
+/// Where the composer began reading (`initAt`).
+begin: usize = 0,
 /// The error `next` failed with, which every later call gives again.
 failed: ?Error = null,
 diagnostic: Diagnostic = .{},
@@ -176,6 +178,16 @@ pub fn init(gpa: Allocator, input: []const u8, options: Options) Composer {
     };
 }
 
+/// A composer over `input` from `start`, where a document's text begins
+/// (`Parser.startAt`): for reading a stream's documents in pieces, side
+/// by side (t77). Its hash maps' seed is its piece's, not the input's.
+pub fn initAt(gpa: Allocator, input: []const u8, start: Mark, options: Options) Composer {
+    var c: Composer = .init(gpa, input, options);
+    c.parser.startAt(start);
+    c.begin = start.offset;
+    return c;
+}
+
 /// The seed of every hash map keyed by the input's text (anchors, a large
 /// mapping's keys, a map construction builds): a hash of the whole input,
 /// so keys built to collide under a seed known before the input exists
@@ -185,7 +197,7 @@ pub fn init(gpa: Allocator, input: []const u8, options: Options) Composer {
 pub fn hashSeed(c: *Composer) u64 {
     if (c.seed) |s| return s;
     var digest: [8]u8 = undefined;
-    std.crypto.hash.Blake3.hash(c.parser.scanner.input, &digest, .{});
+    std.crypto.hash.Blake3.hash(c.parser.scanner.input[c.begin..], &digest, .{});
     const s = std.mem.readInt(u64, &digest, .little);
     c.seed = s;
     return s;

@@ -32,6 +32,7 @@ const Allocator = std.mem.Allocator;
 const Composer = @import("Composer.zig");
 const chars = @import("chars.zig");
 const encoding = @import("encoding.zig");
+const documents = @import("documents.zig");
 const merge = @import("merge.zig");
 const schema = @import("schema.zig");
 const Node = Composer.Node;
@@ -123,6 +124,162 @@ pub fn parseFromSlice(comptime T: type, gpa: Allocator, input: []const u8, optio
 /// which should be an arena: nothing is freed piece by piece.
 pub fn parseFromSliceLeaky(comptime T: type, allocator: Allocator, input: []const u8, options: ParseOptions) ParseError!T {
     return build(T, allocator, allocator, input, options);
+}
+
+/// Reads every document in `input`, UTF-8, UTF-16 or UTF-32, into a `T`
+/// each, in order: an empty stream, or one of comments, has none. The
+/// limits hold for the whole stream, `max_alias_nodes` counting across
+/// its documents. Free the result with `deinit`.
+pub fn parseDocuments(comptime T: type, gpa: Allocator, input: []const u8, options: ParseOptions) ParseError!Parsed([]T) {
+    const text = try encoding.toUtf8(gpa, input, options.diagnostic);
+    defer if (text.ptr != input.ptr) gpa.free(text);
+    return documentsOf(T, gpa, text, options);
+}
+
+/// `parseDocuments` of `text`, UTF-8 already. Decoded again, text can
+/// read as another encoding: a NUL first is UTF-16's to the detection
+/// (found by the documents fuzz target).
+fn documentsOf(comptime T: type, gpa: Allocator, text: []const u8, options: ParseOptions) ParseError!Parsed([]T) {
+    const arena = try gpa.create(std.heap.ArenaAllocator);
+    errdefer gpa.destroy(arena);
+    arena.* = .init(gpa);
+    errdefer arena.deinit();
+    return .{ .arena = arena, .value = try buildDocuments(T, arena.allocator(), gpa, text, .{}, options, null) };
+}
+
+/// `parseDocuments`, the documents read side by side on `io`'s threads
+/// (an `std.Io.Threaded`'s): the stream is cut between documents, where
+/// a `---` or `...` line stands (no scalar may hold one), into pieces of
+/// at least 64 KiB, each read by a task of its own into an arena of its
+/// own. The result is `parseDocuments`'s, value for value, its marks too
+/// (as a type's `yamlParse` sees them), and so are its errors: on any
+/// error but running out of memory the stream is read again in order,
+/// and that read's error, and diagnostic, are given. `gpa` must be
+/// threadsafe (smp_allocator, c_allocator, an ArenaAllocator on one). A
+/// stream under 128 KiB is read in order (t77).
+pub fn parseDocumentsConcurrently(comptime T: type, io: std.Io, gpa: Allocator, input: []const u8, options: ParseOptions) (ParseError || std.Io.Cancelable)!Parsed([]T) {
+    return parseDocumentsInPieces(T, io, gpa, input, options, least_piece);
+}
+
+/// `parseDocumentsConcurrently` with pieces of at least `least` bytes,
+/// so a test can cut a small stream. Not part of the package's API.
+pub fn parseDocumentsInPieces(comptime T: type, io: std.Io, gpa: Allocator, input: []const u8, options: ParseOptions, least: usize) (ParseError || std.Io.Cancelable)!Parsed([]T) {
+    const text = try encoding.toUtf8(gpa, input, options.diagnostic);
+    defer if (text.ptr != input.ptr) gpa.free(text);
+    const starts = try documents.pieces(gpa, text, max_pieces, least);
+    defer gpa.free(starts);
+    if (starts.len < 2) return documentsOf(T, gpa, text, options);
+    return try readPieces(T, io, gpa, text, starts, options) orelse documentsOf(T, gpa, text, options);
+}
+
+/// The pieces of `text` from `starts` read side by side, or null if one
+/// failed but for memory, its error for the read in order to give.
+fn readPieces(comptime T: type, io: std.Io, gpa: Allocator, text: []const u8, starts: []const Composer.Mark, options: ParseOptions) (Allocator.Error || std.Io.Cancelable)!?Parsed([]T) {
+    const arena = try gpa.create(std.heap.ArenaAllocator);
+    errdefer gpa.destroy(arena);
+    arena.* = .init(gpa);
+    errdefer arena.deinit();
+    const tasks = try gpa.alloc(Piece(T), starts.len);
+    defer gpa.free(tasks);
+    var shared: Shared = .{};
+    // A piece's errors go nowhere: the read in order gives the caller's.
+    var quiet = options;
+    quiet.diagnostic = null;
+    var group: std.Io.Group = .init;
+    for (tasks, starts, 0..) |*task, start, i| {
+        const end = if (i + 1 < starts.len) starts[i + 1].offset else text.len;
+        task.* = .{ .input = text[0..end], .start = start, .arena = .init(arena.allocator()), .scratch = gpa, .options = quiet, .shared = &shared };
+        group.async(io, Piece(T).read, .{task});
+    }
+    // Every task has run when this returns, canceled or not.
+    try group.await(io);
+    // Together the pieces built past the limit, though none alone did:
+    // the read in order fails where it is passed.
+    if (shared.alias_nodes.load(.monotonic) > options.max_alias_nodes) {
+        arena.deinit();
+        gpa.destroy(arena);
+        return null;
+    }
+    var count: usize = 0;
+    for (tasks) |task| {
+        const values = task.result catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            arena.deinit();
+            gpa.destroy(arena);
+            return null;
+        };
+        count += values.len;
+    }
+    const all = try arena.allocator().alloc(T, count);
+    var at: usize = 0;
+    for (tasks) |task| {
+        const values = task.result catch unreachable;
+        @memcpy(all[at..][0..values.len], values);
+        at += values.len;
+    }
+    return .{ .arena = arena, .value = all };
+}
+
+/// At most this many pieces, each at least `least_piece` bytes: enough
+/// to keep every thread busy to the end, few enough that setting each up
+/// costs nothing beside reading it.
+const max_pieces = 64;
+const least_piece = 64 * 1024;
+
+/// How many nodes built through aliases a piece counts before it adds
+/// them to the stream's (`Builder.countShared`).
+const shared_batch = 1024;
+
+/// What the pieces of a stream share as they are read: the nodes built
+/// through aliases so far, `max_alias_nodes` the stream's.
+const Shared = struct {
+    alias_nodes: std.atomic.Value(usize) = .init(0),
+};
+
+/// A piece of a stream and what reading it gave.
+fn Piece(comptime T: type) type {
+    return struct {
+        const Self = @This();
+        /// The stream to the piece's end; the piece begins at `start`.
+        input: []const u8,
+        start: Composer.Mark,
+        arena: std.heap.ArenaAllocator,
+        scratch: Allocator,
+        options: ParseOptions,
+        shared: *Shared,
+        result: ParseError![]T = &.{},
+
+        fn read(p: *Self) void {
+            p.result = buildDocuments(T, p.arena.allocator(), p.scratch, p.input, p.start, p.options, p.shared);
+        }
+    };
+}
+
+/// Every document in `input` from `start` into a `T` each, built in
+/// `result`.
+fn buildDocuments(comptime T: type, result: Allocator, scratch: Allocator, input: []const u8, start: Composer.Mark, options: ParseOptions, shared: ?*Shared) ParseError![]T {
+    var composer: Composer = .initAt(scratch, input, start, .{
+        .schema = options.schema,
+        .duplicate_keys = options.duplicate_keys,
+        .max_depth = options.max_depth,
+        .max_tag_directives = options.max_tag_directives,
+    });
+    defer composer.deinit();
+    var builder: Builder = .{ .allocator = result, .scratch = scratch, .options = options, .composer = &composer, .shared = shared };
+    defer builder.visiting.deinit(scratch);
+    defer builder.path.deinit(scratch);
+    defer builder.stack.deinit(scratch);
+    defer builder.slots.deinit(scratch);
+    var values: std.ArrayList(T) = .empty;
+    defer values.deinit(scratch);
+    while (try builder.beginDocument() != null) {
+        var root: Node = undefined;
+        try values.append(scratch, try builder.build(T, (try builder.step(&root)).?, 0));
+        composer.endDocument() catch |err| return builder.composerFailed(err);
+    }
+    // What is left of the last batch.
+    if (shared) |s| _ = s.alias_nodes.fetchAdd(builder.alias_nodes % shared_batch, .monotonic);
+    return result.dupe(T, values.items);
 }
 
 fn build(comptime T: type, result: Allocator, scratch: Allocator, bytes: []const u8, options: ParseOptions) ParseError!T {
@@ -261,6 +418,9 @@ const Builder = struct {
     alias_depth: usize = 0,
     /// Nodes built through aliases so far.
     alias_nodes: usize = 0,
+    /// The count of a stream's pieces read side by side, which
+    /// `alias_nodes` adds to a batch at a time (`countShared`).
+    shared: ?*Shared = null,
 
     /// Where construction is in the document, from its root.
     path: std.ArrayList(Segment) = .empty,
@@ -447,6 +607,17 @@ const Builder = struct {
         if (b.alias_depth == 0) return;
         b.alias_nodes += 1;
         if (b.alias_nodes > b.options.max_alias_nodes) return b.fail(node, error.AliasLimit, "aliases would build more than max_alias_nodes nodes");
+        if (b.shared != null and b.alias_nodes % shared_batch == 0) try b.countShared(node);
+    }
+
+    /// Adds a batch of the nodes built through aliases to what the
+    /// stream's other pieces have, and holds the sum to the limit (t77).
+    /// Counted a batch at a time, the pieces seldom write one word, and
+    /// the stream builds no more than a batch a piece past the limit
+    /// before it fails.
+    fn countShared(b: *Builder, node: *const Node) ParseError!void {
+        const sum = b.shared.?.alias_nodes.fetchAdd(shared_batch, .monotonic) + shared_batch;
+        if (sum > b.options.max_alias_nodes) return b.fail(node, error.AliasLimit, "aliases would build more than max_alias_nodes nodes");
     }
 
     /// A union's field with no value, as in `{off: }`.

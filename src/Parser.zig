@@ -165,6 +165,18 @@ pub fn init(gpa: Allocator, input: []const u8) Parser {
     return .{ .scanner = .init(gpa, input), .reader = .init(gpa, input) };
 }
 
+/// Begins reading at `start` (`init` reads from the input's start): a
+/// place a document's text begins, at a line's start, the marks of
+/// everything read counted from the input's start. For reading a
+/// stream's documents in pieces, side by side (t77). Before the first
+/// `next`.
+pub fn startAt(p: *Parser, start: Mark) void {
+    p.scanner.mark = start;
+    p.scanner.line_start = start.offset;
+    p.reader.s.mark = start;
+    p.reader.s.line_start = start.offset;
+}
+
 /// Frees the parser and the text its events point at.
 pub fn deinit(p: *Parser) void {
     p.states.deinit(p.scanner.gpa);

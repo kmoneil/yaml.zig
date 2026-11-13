@@ -48,6 +48,12 @@ const construct = @import("construct.zig");
 pub const parseFromSlice = construct.parseFromSlice;
 /// `parseFromSlice` into an allocator freed as a whole, as an arena is.
 pub const parseFromSliceLeaky = construct.parseFromSliceLeaky;
+/// Every document in a stream, into a `T` each, in order.
+pub const parseDocuments = construct.parseDocuments;
+/// `parseDocuments`, the documents read side by side on an `std.Io`'s
+/// threads: the same values and errors, in a fraction of the time for a
+/// stream of many documents.
+pub const parseDocumentsConcurrently = construct.parseDocumentsConcurrently;
 /// A value `parseFromSlice` read, and the arena it lives in.
 pub const Parsed = construct.Parsed;
 /// How `parseFromSlice` reads: schema, duplicate keys, limits, diagnostic.
@@ -98,4 +104,5 @@ test {
     _ = @import("stringify_test.zig");
     _ = @import("fuzz_test.zig");
     _ = @import("map_test.zig");
+    _ = @import("documents.zig");
 }

@@ -23,6 +23,7 @@
 
 const std = @import("std");
 const yaml = @import("root.zig");
+const construct = @import("construct.zig");
 const fuzzing = @import("testing/fuzzing.zig");
 const Draw = fuzzing.Draw;
 const testing = std.testing;
@@ -45,6 +46,50 @@ test "fuzz: emit: what parses, emitted, reads back the same" {
 
 test "fuzz: reader: its events are the parser's, as far as it reads" {
     try fuzzing.run({}, fuzzReader, 400);
+}
+
+test "fuzz: documents: a stream read in pieces side by side reads as in order" {
+    try fuzzing.run({}, fuzzDocuments, 200);
+}
+
+/// Inputs joined by document markers and directives, read in order and
+/// in pieces cut at every place they can be, on two threads: the same
+/// values, or the same error and diagnostic (t77).
+fn fuzzDocuments(_: void, d: *Draw) !void {
+    var arena_state: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const joins = [_][]const u8{ "", "---\n", "...\n", "--- ", "...\n---\n", "\n---\n", "...\n%YAML 1.2\n---\n", "...\n%TAG !e! a%41\n--- !e!b " };
+    var stream: std.ArrayList(u8) = .empty;
+    for (0..d.atMost(u8, 1, 6)) |_| {
+        try stream.appendSlice(arena, d.pick([]const u8, &joins));
+        try stream.appendSlice(arena, try drawInput(d, arena));
+    }
+    const input = stream.items;
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{ .async_limit = .limited(2) });
+    defer threaded.deinit();
+    var want_d: yaml.Diagnostic = .{};
+    var got_d: yaml.Diagnostic = .{};
+    const options: yaml.ParseOptions = .{ .max_alias_nodes = 2_000, .duplicate_keys = if (d.boolean()) .refuse else .keep };
+    var want_o = options;
+    want_o.diagnostic = &want_d;
+    var got_o = options;
+    got_o.diagnostic = &got_d;
+    const want = yaml.parseDocuments(yaml.Value, testing.allocator, input, want_o);
+    defer if (want) |p| p.deinit() else |_| {};
+    const got = construct.parseDocumentsInPieces(yaml.Value, threaded.io(), testing.allocator, input, got_o, 1);
+    defer if (got) |p| p.deinit() else |_| {};
+    errdefer std.debug.print("input:\n{s}\n", .{input});
+    if (want) |w| {
+        const a = try yaml.stringifyAlloc(arena, w.value, .{});
+        const b = try yaml.stringifyAlloc(arena, (try got).value, .{});
+        try testing.expectEqualStrings(a, b);
+    } else |err| {
+        if (err == error.OutOfMemory) return err;
+        try testing.expectError(err, got);
+        try testing.expectEqual(want_d.mark, got_d.mark);
+        try testing.expectEqualStrings(want_d.message, got_d.message);
+    }
 }
 
 fn fuzzReader(_: void, d: *Draw) !void {

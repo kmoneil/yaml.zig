@@ -10,5 +10,6 @@ test {
     _ = @import("merge_keys.zig");
     _ = @import("hook.zig");
     _ = @import("documents.zig");
+    _ = @import("streams.zig");
     _ = @import("events.zig");
 }

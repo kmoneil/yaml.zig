@@ -469,3 +469,134 @@ test "diagnostics: an enum's names, and errors before construction print plainly
         \\1:8: found the end of the input inside a quoted scalar
     );
 }
+
+const construct = @import("construct.zig");
+
+test "parseDocuments: every document in order, none in an empty stream" {
+    const parsed = try yaml.parseDocuments(yaml.Value, testing.allocator, "--- 1\n--- [a, b]\n...\n# a comment\n--- {k: v}\n", .{});
+    defer parsed.deinit();
+    try testing.expectEqual(3, parsed.value.len);
+    try testing.expectEqual(1, parsed.value[0].integer);
+    try testing.expectEqual(2, parsed.value[1].sequence.len);
+    try testing.expectEqualStrings("v", parsed.value[2].get("k").?.string);
+    for ([_][]const u8{ "", "# only a comment\n", "...\n" }) |empty| {
+        const none = try yaml.parseDocuments(yaml.Value, testing.allocator, empty, .{});
+        defer none.deinit();
+        try testing.expectEqual(0, none.value.len);
+    }
+    const Point = struct { x: i32, y: i32 };
+    const points = try yaml.parseDocuments(Point, testing.allocator, "x: 1\ny: 2\n---\nx: 3\ny: 4\n", .{});
+    defer points.deinit();
+    try testing.expectEqual(4, points.value[1].y);
+}
+
+/// A stream of documents of every kind the pieces must read as the
+/// whole does: directives and %TAG with escapes, anchors and aliases,
+/// block and flow, folded and escaped scalars, explicit ends, comments
+/// between, empty documents, a bare one first.
+fn mixedStream(gpa: std.mem.Allocator, count: usize) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    errdefer out.deinit();
+    const w = &out.writer;
+    try w.writeAll("bare: first\n");
+    for (0..count) |i| switch (i % 6) {
+        0 => try w.print("--- &a{d}\nname: n{d}\nlist: [x, y, *a{d}]\n", .{ i, i, i }),
+        1 => try w.print("%TAG !e! tag:ex%41mple,{d}:\n--- !e!map\nk: !e!v \"\\t{d}\"\n...\n", .{ i, i }),
+        2 => try w.print("# between\n--- >\n  folded {d}\n  text\n", .{i}),
+        3 => try w.writeAll("---\n...\n"),
+        4 => try w.print("%YAML 1.2\n---\n- {{a: {d}}}\n- |\n  lit\n#  not a comment\n", .{i}),
+        else => try w.print("--- &r [1, &s {d}, *s]\n...\n", .{i}),
+    };
+    return out.toOwnedSlice();
+}
+
+fn expectReadAlike(io: std.Io, input: []const u8, options: yaml.ParseOptions, least: usize) !void {
+    var want_d: yaml.Diagnostic = .{};
+    var got_d: yaml.Diagnostic = .{};
+    var want_o = options;
+    want_o.diagnostic = &want_d;
+    var got_o = options;
+    got_o.diagnostic = &got_d;
+    const want = yaml.parseDocuments(yaml.Value, testing.allocator, input, want_o);
+    defer if (want) |p| p.deinit() else |_| {};
+    const got = construct.parseDocumentsInPieces(yaml.Value, io, testing.allocator, input, got_o, least);
+    defer if (got) |p| p.deinit() else |_| {};
+    if (want) |w| {
+        const g = try got;
+        const a = try yaml.stringifyAlloc(testing.allocator, w.value, .{});
+        defer testing.allocator.free(a);
+        const b = try yaml.stringifyAlloc(testing.allocator, g.value, .{});
+        defer testing.allocator.free(b);
+        try testing.expectEqualStrings(a, b);
+    } else |err| {
+        try testing.expectError(err, got);
+        try testing.expectEqual(want_d.mark, got_d.mark);
+        try testing.expectEqualStrings(want_d.message, got_d.message);
+    }
+}
+
+test "parseDocumentsInPieces: what parseDocuments reads, value for value, error for error" {
+    for ([_]usize{ 1, 3, 8 }) |threads| {
+        var threaded: std.Io.Threaded = .init(testing.allocator, .{ .async_limit = .limited(threads) });
+        defer threaded.deinit();
+        const io = threaded.io();
+        const input = try mixedStream(testing.allocator, 300);
+        defer testing.allocator.free(input);
+        // Cut at every place it can be, and at pieces of a few documents.
+        for ([_]usize{ 1, 200, 4096 }) |least| try expectReadAlike(io, input, .{}, least);
+        // An error in a piece far in: the read in order gives it.
+        const broken = try std.mem.concat(testing.allocator, u8, &.{ input, "--- [unclosed\n", input });
+        defer testing.allocator.free(broken);
+        try expectReadAlike(io, broken, .{}, 1);
+        // A duplicate key, refused or kept.
+        const dup = try std.mem.concat(testing.allocator, u8, &.{ input, "--- {a: 1, a: 2}\n", input });
+        defer testing.allocator.free(dup);
+        try expectReadAlike(io, dup, .{}, 1);
+        try expectReadAlike(io, dup, .{ .duplicate_keys = .keep }, 1);
+    }
+}
+
+test "parseDocumentsInPieces: max_alias_nodes counts across the stream's pieces" {
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{ .async_limit = .limited(4) });
+    defer threaded.deinit();
+    const io = threaded.io();
+    // Each document builds 3 x 300 nodes through its aliases: 40 of them
+    // pass 20,000 together, though no one does, nor a piece's few.
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    for (0..40) |_| {
+        try out.writer.writeAll("--- {a: &a [");
+        for (0..300) |k| try out.writer.print("{s}{d}", .{ if (k == 0) "" else ", ", k });
+        try out.writer.writeAll("], b: *a, c: *a, d: *a}\n");
+    }
+    const input = out.written();
+    try expectReadAlike(io, input, .{ .max_alias_nodes = 20_000 }, 1);
+    try testing.expectError(error.AliasLimit, construct.parseDocumentsInPieces(yaml.Value, io, testing.allocator, input, .{ .max_alias_nodes = 20_000 }, 1));
+    try expectReadAlike(io, input, .{ .max_alias_nodes = 1_000_000 }, 1);
+}
+
+test "parseDocumentsInPieces: UTF-16 decoded once, so its text is not read as UTF-16 again" {
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{ .async_limit = .limited(2) });
+    defer threaded.deinit();
+    const io = threaded.io();
+    // Found by the documents fuzz target: `00 xx` is UTF-16BE to the
+    // detection, and its text, decoded, begins with a NUL, which read
+    // again as UTF-16 ended with half a code unit.
+    try expectReadAlike(io, "\x00\x00&x [*x]\n", .{}, 1);
+    // A stream of documents in UTF-16LE, cut after decoding.
+    const utf8 = "--- a\n--- [b, c]\n...\n--- {d: e}\n";
+    var utf16: [2 + 2 * utf8.len]u8 = undefined;
+    utf16[0..2].* = .{ 0xFF, 0xFE };
+    for (utf8, 0..) |c, i| utf16[2 + 2 * i ..][0..2].* = .{ c, 0 };
+    try expectReadAlike(io, &utf16, .{}, 1);
+}
+
+test "parseDocumentsInPieces: no cut after a `...` with a document after it on its line" {
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{ .async_limit = .limited(2) });
+    defer threaded.deinit();
+    // Found by the documents fuzz target: in order `c` runs on to the
+    // next line and the `:` there fails; cut after the `...` line, each
+    // piece read.
+    try expectReadAlike(threaded.io(), "... c\n{d: e}: f\n", .{}, 1);
+    try expectReadAlike(threaded.io(), "--- a\n... c\n--- b\n", .{}, 1);
+}
