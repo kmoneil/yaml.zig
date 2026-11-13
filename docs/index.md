@@ -16,7 +16,9 @@ check files from the command line. For Python, a drop-in for PyYAML.**
 
 - **Complete.** All of YAML 1.2.2. It passes the whole
   [yaml-test-suite](https://github.com/yaml/yaml-test-suite): every
-  valid file read correctly, every invalid file refused.
+  valid file read correctly, every invalid file refused. Beyond the
+  suite, it is fuzzed against libfyaml, another reader, with the YAML
+  reference parser settling wherever the two differ.
 - **Fast.** A little faster than rapidyaml (C++) at building a document
   tree, and three to four times faster than serde_yaml, saphyr and
   js-yaml at reading into values. [The numbers](speed.md).
