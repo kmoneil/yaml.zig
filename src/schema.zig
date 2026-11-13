@@ -158,12 +158,42 @@ pub fn tagOf(c: Core) []const u8 {
 /// everything the yaml11 schema types, and more forms other 1.1 readers
 /// take: `y` and `n`, and looser numbers and dates.
 pub fn yaml11Typed(text: []const u8) bool {
+    // Each form begins with one of a few characters, as in resolveYaml11:
+    // text beginning with any other is a string, known without comparing
+    // it to the forms one by one, which was a tenth of stringify's time
+    // (t75). The empty text is null.
+    if (text.len > 0 and !yaml11_first[text[0]]) return false;
+    return yaml11Forms(text);
+}
+
+/// The first bytes of what `yaml11Forms` types: of `<<` and `=`, the
+/// booleans, numbers, dates and what resolveYaml11 types.
+const yaml11_first: [256]bool = blk: {
+    var first: [256]bool = @splat(false);
+    for ("<=~nNyYtTfFoO0123456789+-.") |c| first[c] = true;
+    break :blk first;
+};
+
+fn yaml11Forms(text: []const u8) bool {
     if (std.mem.eql(u8, text, "<<") or std.mem.eql(u8, text, "=")) return true;
     for (yaml11_booleans) |word| {
         if (std.mem.eql(u8, text, word)) return true;
     }
     if (yaml11Number(text) or yaml11Date(text)) return true;
     return resolveYaml11(text).ptr != tag.str.ptr;
+}
+
+test "yaml11Typed: what yaml11_first leaves out, no form types" {
+    // Every first byte, before tails that make each form.
+    const tails = [_][]const u8{ "", "<", "es", "ES", "rue", "alse", "n", "ff", "FF", "ull", "0", "1", "b1", "x1F", "o17", ":20", "_000", ".5", ".5e3", "inf", "nan", "001-12-14", "-12-14", "2-14", " 21:59:43" };
+    for (0..256) |c| for (tails) |tail| {
+        var buf: [16]u8 = undefined;
+        buf[0] = @intCast(c);
+        @memcpy(buf[1..][0..tail.len], tail);
+        const text = buf[0 .. 1 + tail.len];
+        try std.testing.expectEqual(yaml11Forms(text), yaml11Typed(text));
+    };
+    try std.testing.expect(yaml11Typed(""));
 }
 
 const yaml11_booleans = [_][]const u8{

@@ -112,6 +112,8 @@ indention: bool = true,
 /// The last document ended without `...`, so one with directives must
 /// write it first.
 open_ended: bool = false,
+/// The scalar being written is ASCII, so its columns are its bytes.
+text_ascii: bool = false,
 
 /// An emitter writing to `writer`; `gpa` holds its stacks and the events
 /// it waits on.
@@ -131,6 +133,10 @@ pub fn deinit(e: *Emitter) void {
 /// event naming what YAML cannot write is refused before it is held.
 pub fn emit(e: *Emitter, event: Event) Error!void {
     try checkNames(event);
+    // An event that waits for none after it, with none waiting before
+    // it, as most scalars come, is written as it comes: not copied into
+    // the queue and looked past (t75).
+    if (e.head == e.events.items.len and !waitsForMore(event)) return e.step(event);
     try e.events.append(e.gpa, event);
     while (!e.needMoreEvents()) {
         const next_event = e.events.items[e.head];
@@ -191,12 +197,8 @@ fn isTagHandle(handle: []const u8) bool {
 fn needMoreEvents(e: *const Emitter) bool {
     const queued = e.events.items[e.head..];
     if (queued.len == 0) return true;
-    const wanted: usize = switch (queued[0].data) {
-        .document_start => 1,
-        .sequence_start => 2,
-        .mapping_start => 3,
-        else => return false,
-    };
+    const wanted = eventsWanted(queued[0]);
+    if (wanted == 0) return false;
     if (queued.len > wanted) return false;
     var level: isize = 0;
     for (queued) |event| {
@@ -208,6 +210,22 @@ fn needMoreEvents(e: *const Emitter) bool {
         if (level == 0) return false;
     }
     return true;
+}
+
+/// How many events after `event` it waits for, at most: a document
+/// start to see whether its document is empty, a collection's start
+/// whether it is, or a key's whether it fits on a line.
+fn eventsWanted(event: Event) usize {
+    return switch (event.data) {
+        .document_start => 1,
+        .sequence_start => 2,
+        .mapping_start => 3,
+        else => 0,
+    };
+}
+
+fn waitsForMore(event: Event) bool {
+    return eventsWanted(event) > 0;
 }
 
 fn step(e: *Emitter, event: Event) Error!void {
@@ -352,11 +370,12 @@ fn writeProperties(e: *Emitter, properties: Event.Properties) Error!void {
 
 /// Whether the node at the head can be a key on one line, `key: value`:
 /// an alias, a scalar of one short line, or an empty collection.
-fn checkSimpleKey(e: *const Emitter) bool {
-    const event = e.events.items[e.head];
+/// (`event`, the key, is the queue's head when it is a collection's
+/// start, which waits there for the events after it.)
+fn checkSimpleKey(e: *const Emitter, event: Event) bool {
     const length: usize = switch (event.data) {
         .alias => |name| name.len,
-        .scalar => |s| if (std.mem.findAny(u8, s.value, "\r\n") != null) return false else propertiesLength(s.properties) + s.value.len,
+        .scalar => |s| if (chars.findAnyOf(s.value, 0, "\r\n") < s.value.len) return false else propertiesLength(s.properties) + s.value.len,
         .sequence_start => |c| if (!e.nextEnds(.sequence_end)) return false else propertiesLength(c.properties),
         .mapping_start => |c| if (!e.nextEnds(.mapping_end)) return false else propertiesLength(c.properties),
         else => return false,
@@ -423,7 +442,7 @@ fn emitFlowMappingKey(e: *Emitter, event: Event, first: bool) Error!void {
     }
     if (!first) try e.writeIndicator(",", .{});
     if (e.column > e.options.width) try e.writeIndent();
-    if (e.checkSimpleKey()) {
+    if (e.checkSimpleKey(event)) {
         try e.push(.flow_mapping_simple_value);
         return e.emitNode(event, .{ .mapping = true, .simple_key = true });
     }
@@ -459,7 +478,7 @@ fn emitBlockMappingKey(e: *Emitter, event: Event, first: bool) Error!void {
         return e.pop();
     }
     try e.writeIndent();
-    if (e.checkSimpleKey()) {
+    if (e.checkSimpleKey(event)) {
         try e.push(.block_mapping_simple_value);
         return e.emitNode(event, .{ .mapping = true, .simple_key = true });
     }
@@ -492,6 +511,59 @@ fn writeText(e: *Emitter, text: []const u8) Error!void {
     try e.writer.writeAll(text);
     // Validated just above.
     e.column += std.unicode.utf8CountCodepoints(text) catch unreachable;
+}
+
+/// Writes `bytes` into the writer's buffer when they fit, as nearly all
+/// do, with no call. Through the writer, each write of a few bytes (an
+/// indicator, a word) was a call and a memcpy call (t75).
+inline fn put(e: *Emitter, bytes: []const u8) Error!void {
+    const free = e.writer.unusedCapacitySlice();
+    if (bytes.len > free.len) return e.putPast(bytes, null);
+    @memcpy(free[0..bytes.len], bytes);
+    e.writer.advance(bytes.len);
+}
+
+/// Writes `count` spaces, as `put` writes.
+fn putSpaces(e: *Emitter, count: usize) Error!void {
+    const free = e.writer.unusedCapacitySlice();
+    if (count > free.len) return e.putPast(&.{}, count);
+    @memset(free[0..count], ' ');
+    e.writer.advance(count);
+}
+
+/// Writes `bytes`, or `spaces` spaces, past the buffer's end: the buffer
+/// filled, then a byte through the writer, which drains it, and again.
+/// A writer that grows its buffer for room (Io.Writer.Allocating) grows
+/// it the least, as it did when the emitter wrote a byte at a time;
+/// asked for room for the whole rest, it grew by that more each time,
+/// and held 2 to 5% more at the end (t75).
+noinline fn putPast(e: *Emitter, bytes: []const u8, spaces: ?usize) Error!void {
+    var left = spaces orelse bytes.len;
+    while (left > 0) {
+        const free = e.writer.unusedCapacitySlice();
+        const n = @min(left, free.len);
+        const done = (spaces orelse bytes.len) - left;
+        if (spaces == null) @memcpy(free[0..n], bytes[done..][0..n]) else @memset(free[0..n], ' ');
+        e.writer.advance(n);
+        left -= n;
+        if (left == 0) return;
+        try e.writer.writeByte(if (spaces == null) bytes[done + n] else ' ');
+        left -= 1;
+    }
+}
+
+/// Writes ASCII with no line break, as every indicator is.
+fn writeAscii(e: *Emitter, text: []const u8) Error!void {
+    try e.put(text);
+    e.column += text.len;
+}
+
+/// Writes a run of a scalar's text with no line break in one write, its
+/// UTF-8 checked already. A character at a time, each a write and a
+/// memcpy call, was about a fifth of stringify's time (t75).
+fn writeRun(e: *Emitter, run: []const u8) Error!void {
+    try e.put(run);
+    e.column += if (e.text_ascii) run.len else chars.pointCount(run);
 }
 
 fn writeBreak(e: *Emitter) Error!void {
@@ -538,7 +610,10 @@ const isFlowIndicator = chars.isFlowIndicator;
 fn writeIndent(e: *Emitter) Error!void {
     const indent: usize = @intCast(@max(e.indent, 0));
     if (!e.indention or e.column > indent or (e.column == indent and !e.whitespace)) try e.writeBreak();
-    while (e.column < indent) try e.writeByte(' ');
+    if (e.column < indent) {
+        try e.putSpaces(indent - e.column);
+        e.column = indent;
+    }
     e.whitespace = true;
     e.indention = true;
 }
@@ -553,9 +628,11 @@ const Spacing = struct {
     is_indention: bool = false,
 };
 
+/// Writes an indicator: ASCII, as each is, a tag's handle included
+/// (checkNames holds a %TAG handle to `!`, letters, digits and `-`).
 fn writeIndicator(e: *Emitter, indicator: []const u8, spacing: Spacing) Error!void {
     if (spacing.space_before and !e.whitespace) try e.writeByte(' ');
-    try e.writeText(indicator);
+    try e.writeAscii(indicator);
     e.whitespace = spacing.is_whitespace;
     e.indention = e.indention and spacing.is_indention;
 }
@@ -563,15 +640,15 @@ fn writeIndicator(e: *Emitter, indicator: []const u8, spacing: Spacing) Error!vo
 // Scalars
 
 fn emitScalar(e: *Emitter, s: Event.Scalar) Error!void {
-    if (!std.unicode.utf8ValidateSlice(s.value)) return error.InvalidUtf8;
-    const analysis = analyze(s.value);
+    const analysis = try analyze(s.value);
+    e.text_ascii = analysis.ascii;
     const style = e.chooseStyle(s, analysis);
     var properties = s.properties;
     // A reader resolves an untagged plain scalar by its text, and a
     // quoted one as a string: one that cannot stay plain keeps its tag.
     if (properties.tag == null and s.style == .plain and style != .plain) {
         const resolved = schema.resolvePlain(.core, s.value) orelse schema.tag.str;
-        if (!std.mem.eql(u8, resolved, schema.tag.str)) properties.tag = resolved;
+        if (resolved.ptr != schema.tag.str.ptr) properties.tag = resolved;
     }
     try e.writeProperties(properties);
     // `&a:` and `!!null:` would take the `:` into the name.
@@ -620,6 +697,8 @@ const Analysis = struct {
     single_quoted: bool = true,
     /// Literal or folded.
     block: bool = true,
+    /// Not a style: the text is ASCII.
+    ascii: bool = true,
 };
 
 /// What `analyze` notes as it reads the text.
@@ -640,27 +719,136 @@ const Notes = struct {
     space_break: bool = false,
     previous_space: bool = false,
     previous_break: bool = false,
+    non_ascii: bool = false,
 };
 
-fn analyze(value: []const u8) Analysis {
-    var n: Notes = .{};
-    if (startsWithMarker(value)) {
-        n.flow_indicators = true;
-        n.block_indicators = true;
+/// Which styles can write `value`, refusing text that is not UTF-8.
+fn analyze(value: []const u8) Error!Analysis {
+    if (isQuiet(value)) return .{};
+    if (!std.unicode.utf8ValidateSlice(value)) return error.InvalidUtf8;
+    return analyzeLoud(value);
+}
+
+/// Whether `value` is text in which `analyzeEach` notes nothing, so that
+/// any style can write it: its first byte `quiet_first`, its last no
+/// space, every other `quiet_inside`. Most scalars are such words and
+/// numbers, read here 16 bytes at a time past the first, with no notes
+/// taken and no UTF-8 to check: it is ASCII (t75).
+fn isQuiet(value: []const u8) bool {
+    if (value.len == 0) return true;
+    if (!quiet_first[value[0]] or value[value.len - 1] == ' ') return false;
+    var i: usize = 1;
+    while (i + 16 <= value.len) : (i += 16) {
+        const block: chars.Block = value[i..][0..16].*;
+        if (@reduce(.Or, isLoudBlock(block))) return false;
     }
+    while (i < value.len) : (i += 1) {
+        if (!quiet_inside[value[i]]) return false;
+    }
+    return true;
+}
+
+/// `quiet_inside`'s opposite, 16 bytes at once: `[` and `{`, `]` and
+/// `}` each found in one compare, their bytes but the one bit apart.
+fn isLoudBlock(block: chars.Block) @Vector(16, bool) {
+    const V = chars.Block;
+    const folded = block | @as(V, @splat(0x20));
+    return (block < @as(V, @splat(' '))) | (block > @as(V, @splat('~'))) |
+        (block == @as(V, @splat(','))) | (block == @as(V, @splat('?'))) |
+        (block == @as(V, @splat(':'))) | (block == @as(V, @splat('#'))) |
+        (folded == @as(V, @splat('{'))) | (folded == @as(V, @splat('}')));
+}
+
+/// The bytes that change nothing `analyzeEach` notes inside a scalar's
+/// text: printable ASCII and the space, but the flow indicators, `?`,
+/// `:` and `#`, which make an indicator or a comment where they sit. A
+/// space inside is noted only beside a break, which is not here.
+const quiet_inside: [256]bool = blk: {
+    var t: [256]bool = @splat(false);
+    for (' '..'~' + 1) |c| t[c] = true;
+    for (",?[]{}:#") |c| t[c] = false;
+    break :blk t;
+};
+
+/// The same, for a scalar's first byte: no blank, none of the
+/// indicators a plain scalar cannot begin with, and no `-` or `.`, which
+/// begin a document marker.
+const quiet_first: [256]bool = blk: {
+    var t = quiet_inside;
+    for (" &*!|>'\"%@`-.") |c| t[c] = false;
+    break :blk t;
+};
+
+/// Notes `value` a character at a time, as libyaml's analysis does.
+/// What `analyze` is held to: every character noted.
+fn analyzeEach(value: []const u8) Analysis {
+    var n: Notes = .{};
+    noteMarker(&n, value);
     var preceded_by_whitespace = true;
     var i: usize = 0;
     while (i < value.len) {
-        const len = std.unicode.utf8ByteSequenceLength(value[i]) catch 1;
-        const end = i + len;
-        const followed_by_whitespace = end >= value.len or isBlankOrBreak(value[end]);
-        noteIndicator(&n, value[i], i == 0, preceded_by_whitespace, followed_by_whitespace);
-        if (value[i] == '\r' or !chars.isPrintable(value, i)) n.special = true;
-        noteSpacing(&n, value[i], i == 0, end >= value.len);
-        preceded_by_whitespace = isBlankOrBreak(value[i]);
-        i = end;
+        const c = value[i];
+        i = noteCharacter(&n, value, i, preceded_by_whitespace);
+        preceded_by_whitespace = isBlankOrBreak(c);
     }
     return allowed(n);
+}
+
+/// What `analyzeEach` gives, valid UTF-8 `value` read a character at a
+/// time only at the bytes `quiet_inside` leaves out, found 16 at once,
+/// and at its first character. A space among the bytes passed counts
+/// only beside a break, noted at the break, or last (t75).
+fn analyzeLoud(value: []const u8) Analysis {
+    if (value.len == 0) return .{};
+    var n: Notes = .{};
+    noteMarker(&n, value);
+    var i = noteCharacter(&n, value, 0, true);
+    noteSpaceAfter(&n, value, 0, i);
+    while (true) {
+        i = chars.findOutsideAscii(value, i, ",?[]{}:#");
+        if (i >= value.len) break;
+        i = noteInside(&n, value, i);
+    }
+    // A last space after the first character.
+    if (value.len > 1 and value[value.len - 1] == ' ') n.trailing_space = true;
+    return allowed(n);
+}
+
+/// Notes the character at `value[i]`, past the first, the search having
+/// passed the ones before it: what they leave noted is read from the
+/// byte before, and a space after a break from the byte after.
+fn noteInside(n: *Notes, value: []const u8, i: usize) usize {
+    const before = value[i - 1];
+    n.previous_space = isBlank(before);
+    n.previous_break = before == '\n';
+    const end = noteCharacter(n, value, i, isBlankOrBreak(before));
+    noteSpaceAfter(n, value, i, end);
+    return end;
+}
+
+/// Notes a space after the character at `value[i]`, ending at `end`, if
+/// it is a break: the search passes the space.
+fn noteSpaceAfter(n: *Notes, value: []const u8, i: usize, end: usize) void {
+    if (value[i] == '\n' and end < value.len and value[end] == ' ') n.break_space = true;
+}
+
+fn noteMarker(n: *Notes, value: []const u8) void {
+    if (!startsWithMarker(value)) return;
+    n.flow_indicators = true;
+    n.block_indicators = true;
+}
+
+/// Notes the character at `value[i]`, as libyaml's analysis does, and
+/// returns where the next begins.
+fn noteCharacter(n: *Notes, value: []const u8, i: usize, preceded_by_whitespace: bool) usize {
+    const c = value[i];
+    const end = i + (std.unicode.utf8ByteSequenceLength(c) catch 1);
+    const followed_by_whitespace = end >= value.len or isBlankOrBreak(value[end]);
+    noteIndicator(n, c, i == 0, preceded_by_whitespace, followed_by_whitespace);
+    if (c == '\r' or !chars.isPrintable(value, i)) n.special = true;
+    if (c >= 0x80) n.non_ascii = true;
+    noteSpacing(n, c, i == 0, end >= value.len);
+    return end;
 }
 
 /// Whether `value` begins as a document marker would.
@@ -740,6 +928,7 @@ fn allowed(n: Notes) Analysis {
     if (n.space_break or n.special) a = .{ .flow_plain = false, .block_plain = false, .single_quoted = false, .block = false };
     if (n.flow_indicators) a.flow_plain = false;
     if (n.block_indicators) a.block_plain = false;
+    a.ascii = !n.non_ascii;
     return a;
 }
 
@@ -770,7 +959,10 @@ fn writePlain(e: *Emitter, value: []const u8, allow_breaks: bool) Error!void {
             if (fold) try e.writeIndent() else try e.writeByte(' ');
             i += 1;
         } else {
-            i += try e.writeCharacter(value, i);
+            // A space is the only place a plain scalar's line breaks.
+            const end = std.mem.findScalarPos(u8, value, i, ' ') orelse value.len;
+            try e.writeRun(value[i..end]);
+            i = end;
             // No indicator comes before a plain scalar to end the
             // indentation, so its first character does: else folding at
             // a space would take the line for indentation and pad it to
@@ -797,7 +989,8 @@ fn writeSingleQuoted(e: *Emitter, value: []const u8, allow_breaks: bool) Error!v
             try e.writeQuotedBreak(breaks);
             i += 1;
         } else {
-            i += try e.writeQuotedCharacter(value, i, breaks);
+            if (breaks) try e.writeIndent();
+            i = try e.writeSingleQuotedText(value, i);
         }
         breaks = c == '\n';
     }
@@ -807,14 +1000,18 @@ fn writeSingleQuoted(e: *Emitter, value: []const u8, allow_breaks: bool) Error!v
     e.indention = false;
 }
 
-/// Writes the character at `value[i]` of a single-quoted scalar, a quote
-/// doubled, its line's indentation first if it begins one.
-fn writeQuotedCharacter(e: *Emitter, value: []const u8, i: usize, after_break: bool) Error!usize {
-    if (after_break) try e.writeIndent();
-    if (value[i] == '\'') try e.writeText("'");
-    const len = try e.writeCharacter(value, i);
+/// Writes the text of a single-quoted scalar from `value[i]`, which is
+/// no space or break, and returns where it stopped: a quote doubled, any
+/// other run up to a space, a break or a quote in one write.
+fn writeSingleQuotedText(e: *Emitter, value: []const u8, i: usize) Error!usize {
     e.indention = false;
-    return len;
+    if (value[i] == '\'') {
+        try e.writeAscii("''");
+        return i + 1;
+    }
+    const end = chars.findAnyOf(value, i, " \n'");
+    try e.writeRun(value[i..end]);
+    return end;
 }
 
 /// Writes a line feed of a single-quoted scalar: one line break reads
@@ -829,14 +1026,21 @@ fn writeDoubleQuoted(e: *Emitter, value: []const u8) Error!void {
     try e.writeIndicator("\"", .{ .space_before = true });
     var i: usize = 0;
     while (i < value.len) {
+        // A run of printable ASCII but `"` and `\` is written as it is.
+        const end = chars.findOutsideAscii(value, i, "\"\\");
+        if (end > i) {
+            try e.writeAscii(value[i..end]);
+            i = end;
+            continue;
+        }
         const len = std.unicode.utf8ByteSequenceLength(value[i]) catch 1;
         // emitScalar validated the value as UTF-8.
         const point = std.unicode.utf8Decode(value[i..][0..len]) catch unreachable;
         if (escapeOf(point)) |escape| {
-            try e.writeText(escape);
+            try e.writeAscii(escape);
         } else if (!chars.isPrintable(value, i)) {
             var buf: [10]u8 = undefined;
-            try e.writeText(hexEscape(&buf, point));
+            try e.writeAscii(hexEscape(&buf, point));
         } else {
             _ = try e.writeCharacter(value, i);
         }
@@ -911,7 +1115,10 @@ fn writeLiteral(e: *Emitter, value: []const u8, parent: isize) Error!void {
             i += 1;
         } else {
             if (breaks) try e.writeIndent();
-            i += try e.writeCharacter(value, i);
+            // The line's text, in one write.
+            const end = std.mem.findScalarPos(u8, value, i, '\n') orelse value.len;
+            try e.writeRun(value[i..end]);
+            i = end;
             e.indention = false;
             breaks = false;
         }
@@ -938,19 +1145,27 @@ fn writeFolded(e: *Emitter, value: []const u8, parent: isize) Error!void {
         }
         if (breaks) {
             try e.writeIndent();
-            leading_spaces = value[i] == ' ' or value[i] == '\t';
+            leading_spaces = isBlank(value[i]);
         }
         // A more-indented line is not folded when read: it is not broken.
-        const fold = !breaks and !leading_spaces and value[i] == ' ' and e.foldsAt(value, i);
-        if (fold) {
-            try e.writeIndent();
-            i += 1;
-        } else {
-            i += try e.writeCharacter(value, i);
-        }
+        i = try e.writeFoldedText(value, i, !breaks and !leading_spaces);
         e.indention = false;
         breaks = false;
     }
+}
+
+/// Writes the text of a folded scalar from `value[i]`, which is no
+/// break, and returns where it stopped: a space, where the line breaks
+/// past the width if it `may_fold`, or a run up to a space or a break in
+/// one write.
+fn writeFoldedText(e: *Emitter, value: []const u8, i: usize, may_fold: bool) Error!usize {
+    if (value[i] == ' ') {
+        if (may_fold and e.foldsAt(value, i)) try e.writeIndent() else try e.writeByte(' ');
+        return i + 1;
+    }
+    const end = chars.findAnyOf(value, i, " \n");
+    try e.writeRun(value[i..end]);
+    return end;
 }
 
 /// Whether the line breaks at `value[i]` need one more when written
@@ -1017,4 +1232,69 @@ fn writeUri(e: *Emitter, text: []const u8, kind: UriKind) Error!void {
 fn writeEscapedByte(e: *Emitter, c: u8) Error!void {
     try e.writer.print("%{X:0>2}", .{c});
     e.column += 3;
+}
+
+/// Holds `analyze`'s two fast paths to `analyzeEach` for `text`: what
+/// `isQuiet` passes is UTF-8 in which every style is open, and
+/// `analyzeLoud` notes what it does.
+fn expectAnalyzedAlike(text: []const u8) !void {
+    errdefer std.debug.print("text: {any}\n", .{text});
+    if (!std.unicode.utf8ValidateSlice(text)) return std.testing.expect(!isQuiet(text));
+    const each = analyzeEach(text);
+    if (isQuiet(text)) try std.testing.expectEqual(Analysis{}, each);
+    try std.testing.expectEqual(each, analyzeLoud(text));
+}
+
+test "analyze: its fast paths note what analyzeEach does" {
+    // Every text of one and two bytes.
+    var buf: [48]u8 = undefined;
+    for (0..256) |a| {
+        buf[0] = @intCast(a);
+        try expectAnalyzedAlike(buf[0..1]);
+        for (0..256) |b| {
+            buf[1] = @intCast(b);
+            try expectAnalyzedAlike(buf[0..2]);
+        }
+    }
+    // Every text of three of the bytes that turn the notes, and some
+    // that do not.
+    const turns = " \t\n\r-.:#,?[]{}!&*|>'\"%@`~a0\x00\x7F\xC3\xA9";
+    for (turns) |a| for (turns) |b| for (turns) |c| {
+        try expectAnalyzedAlike(&.{ a, b, c });
+    };
+    // Longer ones, past the 16 bytes a block reads: mostly letters, with
+    // those bytes and whole characters past ASCII among them.
+    var prng: std.Random.DefaultPrng = .init(0x75);
+    const r = prng.random();
+    const wide = [_][]const u8{ "é", "€", "😀", "\u{85}", "\u{2028}", "\u{FEFF}", "\u{9F}" };
+    var quiet: usize = 0;
+    for (0..300_000) |_| {
+        const len = r.uintLessThan(usize, buf.len - 4);
+        var i: usize = 0;
+        while (i < len) {
+            switch (r.uintLessThan(u8, 24)) {
+                0 => {
+                    const w = wide[r.uintLessThan(usize, wide.len)];
+                    @memcpy(buf[i..][0..w.len], w);
+                    i += w.len;
+                },
+                1, 2 => {
+                    buf[i] = turns[r.uintLessThan(usize, turns.len - 2)];
+                    i += 1;
+                },
+                3, 4 => {
+                    buf[i] = ' ';
+                    i += 1;
+                },
+                else => {
+                    buf[i] = 'a' + r.uintLessThan(u8, 26);
+                    i += 1;
+                },
+            }
+        }
+        const text = buf[0..i];
+        if (isQuiet(text)) quiet += 1;
+        try expectAnalyzedAlike(text);
+    }
+    try std.testing.expect(quiet > 10_000);
 }

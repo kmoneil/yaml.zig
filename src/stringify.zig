@@ -106,9 +106,21 @@ const Stringifier = struct {
     /// (`yes`, `on`, `1:20`, `2001-12-14`): a 1.1 reader such as PyYAML
     /// reads a file written here too often to write those plain.
     fn string(s: *Stringifier, text: []const u8) StringifyError!void {
-        const as_plain = schema.resolvePlain(.core, text) orelse schema.tag.str;
-        const plain = std.mem.eql(u8, as_plain, schema.tag.str) and !schema.yaml11Typed(text);
+        try s.scalar(text, if (readsAsString(text)) .plain else .single_quoted);
+    }
+
+    /// `string` for text known at compile time, a field's name or a
+    /// tag's, resolved then: half of a struct's scalars (t75).
+    fn knownString(s: *Stringifier, comptime text: []const u8) StringifyError!void {
+        const plain = comptime readsAsString(text);
         try s.scalar(text, if (plain) .plain else .single_quoted);
+    }
+
+    /// Whether plain `text` reads back as a string, to YAML 1.2 and 1.1.
+    fn readsAsString(text: []const u8) bool {
+        @setEvalBranchQuota(100_000);
+        const as_plain = schema.resolvePlain(.core, text) orelse schema.tag.str;
+        return as_plain.ptr == schema.tag.str.ptr and !schema.yaml11Typed(text);
     }
 
     fn format(s: *Stringifier, comptime fmt: []const u8, args: anytype) StringifyError!void {
@@ -127,7 +139,7 @@ const Stringifier = struct {
             .optional => if (value) |v| try s.write(v) else try s.scalar("null", .plain),
             // @tagName of a value with no name is a panic, or undefined.
             .@"enum" => if (std.enums.tagName(T, value)) |name| try s.string(name) else try s.format("{d}", .{@backingInt(value)}),
-            .enum_literal => try s.string(@tagName(value)),
+            .enum_literal => try s.knownString(@tagName(value)),
             .@"struct" => try s.writeStruct(value),
             .@"union" => try s.writeUnion(value),
             .array => try s.writeSlice(&value),
@@ -186,7 +198,7 @@ const Stringifier = struct {
             const field = @field(value, name);
             const skip = @typeInfo(Field) == .optional and field == null and !s.options.emit_null_optional_fields;
             if (!skip) {
-                try s.string(name);
+                try s.knownString(name);
                 try s.write(field);
             }
         }
@@ -211,9 +223,9 @@ const Stringifier = struct {
         if (@typeInfo(T).@"union".tag_type == null) @compileError("yaml cannot stringify the untagged union " ++ @typeName(T));
         switch (value) {
             inline else => |payload, tag| {
-                if (@TypeOf(payload) == void) return s.string(@tagName(tag));
+                if (@TypeOf(payload) == void) return s.knownString(@tagName(tag));
                 try s.emit(.{ .mapping_start = .{ .flow = s.flow() } });
-                try s.string(@tagName(tag));
+                try s.knownString(@tagName(tag));
                 try s.write(payload);
                 try s.emit(.mapping_end);
             },
