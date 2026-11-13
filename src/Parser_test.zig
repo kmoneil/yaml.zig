@@ -347,3 +347,62 @@ test "text valid until the next event: memory that does not grow with the stream
         try testing.expect(large_peak < 32_768);
     }
 }
+
+test "a flow node's properties: whitespace before a collection, a closer at once (t68)" {
+    // Found by the differential fuzz target, held to the YAML reference
+    // parser: content needs separation after its properties (7.3).
+    try expectEvents("[!{a: b}]", "+STR\n+DOC\n+SEQ []\nERROR 1:3 an anchor, alias or tag must be followed by whitespace");
+    try expectEvents("[&x{a: b}]", "+STR\n+DOC\n+SEQ []\nERROR 1:4 an anchor, alias or tag must be followed by whitespace");
+    try expectEvents("{!!str{a: b}: c}", "+STR\n+DOC\n+MAP {}\nERROR 1:7 an anchor, alias or tag must be followed by whitespace");
+    // An empty node ends at once, and whitespace before content is fine.
+    try expectEvents("[!a, ! {b: c}]", "+STR\n+DOC\n+SEQ []\n=VAL <!a> :\n+MAP {} <!>\n=VAL :b\n=VAL :c\n-MAP\n-SEQ\n-DOC\n-STR");
+    try expectEvents("{&x : y}", "+STR\n+DOC\n+MAP {}\n=VAL &x :\n=VAL :y\n-MAP\n-DOC\n-STR");
+}
+
+test "a block scalar is a node of its block only past the block's column (t68)" {
+    // Found by the differential fuzz target, held to the YAML reference
+    // parser: s-separate(n+1) before it (8.1), which a block sequence's
+    // indentless form does not need.
+    try expectEvents("k:\n|\n x\n", "+STR\n+DOC\n+MAP\n=VAL :k\nERROR 2:1 a block scalar must be indented past the block it is in");
+    try expectEvents("-\n|\n x\n", "+STR\n+DOC\n+SEQ\nERROR 2:1 a block scalar must be indented past the block it is in");
+    try expectEvents("k:\n!t |\n x\n", "+STR\n+DOC\n+MAP\n=VAL :k\nERROR 2:4 a block scalar must be indented past the block it is in");
+    try expectEvents("k:\n |\n x\n", "+STR\n+DOC\n+MAP\n=VAL :k\n=VAL |x\\n\n-MAP\n-DOC\n-STR");
+    try expectEvents("!t\n|\n x\n", "+STR\n+DOC\n=VAL <!t> |x\\n\n-DOC\n-STR");
+    try expectEvents("k:\n- |\n x\n", "+STR\n+DOC\n+MAP\n=VAL :k\n+SEQ\n=VAL |x\\n\n-SEQ\n-MAP\n-DOC\n-STR");
+}
+
+test "the suite's notation escapes what the reference parser does (t68)" {
+    try expectEvents("\"\\0\\a\\b\\t\\n\\v\\f\\r\\e\\N\\_\\L\\P\\\\\"", "+STR\n+DOC\n=VAL \"\\0\\a\\b\\t\\n\\v\\f\\r\\e\\N\\_\\L\\P\\\\\n-DOC\n-STR");
+}
+
+test "an empty implicit key's value holds no block collection on its line (t68)" {
+    // Found by the differential fuzz target, held to the YAML reference
+    // parser: only an explicit key's value may (s-l+block-indented, 8.2.2).
+    try expectEvents(": - a\n", "+STR\n+DOC\n+MAP\n=VAL :\nERROR 1:3 a block sequence entry is not allowed here");
+    try expectEvents(": ? a\n", "+STR\n+DOC\n+MAP\n=VAL :\nERROR 1:3 a mapping key is not allowed here");
+    try expectEvents("? a\n: b\n: ? c\n", "+STR\n+DOC\n+MAP\n=VAL :a\n=VAL :b\n=VAL :\nERROR 3:3 a mapping key is not allowed here");
+    try expectEvents("? a\n: - b\n", "+STR\n+DOC\n+MAP\n=VAL :a\n+SEQ\n=VAL :b\n-SEQ\n-MAP\n-DOC\n-STR");
+    try expectEvents(":\n  - a\n", "+STR\n+DOC\n+MAP\n=VAL :\n+SEQ\n=VAL :a\n-SEQ\n-MAP\n-DOC\n-STR");
+}
+
+test "nothing may follow a '...' on its line, with no document open too (t68)" {
+    try expectEvents("... a\n", "+STR\nERROR 1:5 nothing may follow '...' on its line but a comment");
+    try expectEvents("...\n... x\n", "+STR\nERROR 2:5 nothing may follow '...' on its line but a comment");
+    try expectEvents("... # c\nb\n", "+STR\n+DOC\n=VAL :b\n-DOC\n-STR");
+}
+
+test "a flow collection's '?' takes whitespace after it (t68)" {
+    try expectEvents("[?]", "+STR\n+DOC\n+SEQ []\nERROR 1:2 a '?' in a flow collection must be followed by whitespace");
+    try expectEvents("[?{a: b}]", "+STR\n+DOC\n+SEQ []\nERROR 1:2 a '?' in a flow collection must be followed by whitespace");
+    try expectEvents("[? , ?a]", "+STR\n+DOC\n+SEQ []\n+MAP {}\n=VAL :\n=VAL :\n-MAP\n=VAL :?a\n-SEQ\n-DOC\n-STR");
+    try expectEvents("{?: a}", "+STR\n+DOC\n+MAP {}\n=VAL :?\n=VAL :a\n-MAP\n-DOC\n-STR");
+}
+
+test "a reserved directive is a directive: past a '...' after a document, and a '---' after it (t68)" {
+    try expectEvents("%FOO bar\n--- x\n", "+STR\n+DOC ---\n=VAL :x\n-DOC\n-STR");
+    try expectEvents("%FOO\n", "+STR\nERROR 2:1 directives must be followed by '---'");
+    try expectEvents("%FOO\nx\n", "+STR\nERROR 2:1 directives must be followed by '---'");
+    try expectEvents("{a: b}\n%x\n", "+STR\n+DOC\n+MAP {}\n=VAL :a\n=VAL :b\n-MAP\n-DOC\nERROR 2:1 a directive after a document must follow a '...' that ends it");
+    // A `%` line inside a plain scalar is its text.
+    try expectEvents("a\n%FOO\n--- b\n", "+STR\n+DOC\n=VAL :a %FOO\n-DOC\n+DOC ---\n=VAL :b\n-DOC\n-STR");
+}

@@ -107,7 +107,9 @@ test "explicit keys, and values with no key" {
     try expectWhole("?\n- a\n- b\n:\n- c\n");
     try expectWhole("- ? : x\n- ? k\n  : v\n");
     try expectWhole("? a: b\n  c: d\n: e\n? x\n");
-    try expectWhole(": a\n: - b\n  - c\n");
+    // A block collection on a value's line only after an explicit key:
+    // an empty implicit one's `: - b` is no YAML (t68).
+    try expectWhole(": a\n? x\n: - b\n  - c\n");
     try expectWhole("&m\n? &k k\n: &v\n");
     try expectWhole("?\n");
 }
@@ -134,9 +136,11 @@ test "flow collections as keys, pairs in flow sequences, keys in flow mappings" 
     try expectWhole("&m\n&k [x, y]: z\n[p]: q\n");
     try expectWhole("- {a: b}: c\n  [d] : e\n- ? []: x\n");
     try expectWhole("a:\n[b]: c\n");
-    try expectWhole("[a: b, &k c: d, *x : e, \"j\":f, [g]: h, {i: j}: k, : l, ? m : n, ?, ? o, p]\n");
+    // A flow collection's `?` takes whitespace after it: `?,` is no YAML
+    // (t68).
+    try expectWhole("[a: b, &k c: d, *x : e, \"j\":f, [g]: h, {i: j}: k, : l, ? m : n, ? , ? o, p]\n");
     try expectWhole("[\n? foo\n bar : baz\n]\n");
-    try expectWhole("{&a k: v, ? x: y, ?, : z, !!str : w, [s]: t, {u: v}: w, *a : x, q}\n");
+    try expectWhole("{&a k: v, ? x: y, ? , : z, !!str : w, [s]: t, {u: v}: w, *a : x, q}\n");
     try expectWhole("{a\n: b, &p\n c: d}\n");
     try expectWhole("[a, [b, [[c]: d]]: e]\n");
     try expectWhole("[&a\n b, !t\n [c]]\n");

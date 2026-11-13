@@ -80,13 +80,41 @@ fn ours(arena: std.mem.Allocator, input: []const u8) !Outcome {
 /// A disagreement read against the spec and found libfyaml's (t68):
 /// yaml.zig refuses where libfyaml reads, as the spec says, known by
 /// yaml.zig's message and the byte its mark is at, and why.
-const Lenient = struct { message: []const u8, at: u8, why: []const u8 };
+const Lenient = struct {
+    message: []const u8,
+    /// The byte yaml.zig's mark is at, or any.
+    at: ?u8,
+    /// And what else must hold, if anything.
+    when: ?*const fn (input: []const u8, at: usize) bool = null,
+    why: []const u8,
+};
+
+/// Whether a reserved directive's line (a `%` name but YAML or TAG)
+/// comes before `at`.
+fn reservedBefore(input: []const u8, at: usize) bool {
+    var lines = std.mem.splitScalar(u8, input[0..at], '\n');
+    while (lines.next()) |line| {
+        if (line.len > 1 and line[0] == '%' and !std.mem.startsWith(u8, line, "%YAML") and !std.mem.startsWith(u8, line, "%TAG")) return true;
+    }
+    return false;
+}
 
 const libfyaml_lenient = [_]Lenient{
     .{
         .message = "an anchor, alias or tag must be followed by whitespace",
         .at = '!',
         .why = "a shorthand tag's suffix holds no `!` (ns-tag-char, 6.8.2.2): libfyaml reads `!*a!b` as a local tag",
+    },
+    .{
+        .message = "directives must be followed by '---'",
+        .at = null,
+        .when = reservedBefore,
+        .why = "a reserved directive is a directive (l-directive-document, 9.2): libfyaml reads one with no `---` after it",
+    },
+    .{
+        .message = "a directive after a document must follow a '...' that ends it",
+        .at = '%',
+        .why = "a reserved directive after a document needs a `...` before it (9.2): libfyaml reads one without",
     },
 };
 
@@ -95,7 +123,10 @@ const libfyaml_lenient = [_]Lenient{
 fn known(input: []const u8, a: Outcome, b: Outcome) ?Lenient {
     if (!a.refused or b.refused or a.at >= input.len) return null;
     for (libfyaml_lenient) |k| {
-        if (std.mem.eql(u8, a.message, k.message) and input[a.at] == k.at) return k;
+        if (!std.mem.eql(u8, a.message, k.message)) continue;
+        if (k.at) |byte| if (input[a.at] != byte) continue;
+        if (k.when) |holds| if (!holds(input, a.at)) continue;
+        return k;
     }
     return null;
 }
@@ -151,14 +182,57 @@ fn fuzzDifferential(_: void, d: *Draw) !void {
     const arena = arena_state.allocator();
     const input = try inputs.draw(d, arena);
     if (!compared(input)) return;
-    try expectAgree(arena, input);
+    const dir = std.c.getenv("YAML_DIFFERENTIAL_DIR") orelse return expectAgree(arena, input);
+    try recordDisagreement(arena, std.mem.span(dir), input);
+}
+
+/// Examples recorded of each kind of disagreement, by the kind's hash:
+/// approximate, but bounded, and safe from any thread.
+var recorded: [4096]std.atomic.Value(u8) = @splat(.init(0));
+
+/// A campaign's way (`YAML_DIFFERENTIAL_DIR`, t68): a disagreement not
+/// known is written to the directory as `dump` writes one, at most five
+/// of each kind, and the target goes on, for the YAML reference parser
+/// to sort after (_tmp/review/t68/arbitrate.sh). Unset, the target fails
+/// on one, so its seeded draws are a test.
+fn recordDisagreement(arena: std.mem.Allocator, path: []const u8, input: []const u8) !void {
+    const a = try ours(arena, input);
+    const b = try theirs(arena, input);
+    if (agree(a, b) or known(input, a, b) != null) return;
+    const kind = try std.fmt.allocPrint(arena, "{}{s}{}{s}", .{ a.refused, a.message, b.refused, b.message });
+    const kind_hash = std.hash.Wyhash.hash(0, kind);
+    if (recorded[kind_hash % recorded.len].fetchAdd(1, .monotonic) >= 5) return;
+    const io = testing.io;
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, path, .{});
+    defer dir.close(io);
+    const dp: Dump = .{ .io = io, .dir = dir };
+    const stem = try std.fmt.allocPrint(arena, "{x:0>16}-{x:0>16}", .{ kind_hash, std.hash.Wyhash.hash(0, input) });
+    try dir.writeFile(io, .{ .sub_path = try std.fmt.allocPrint(arena, "{s}.yaml", .{stem}), .data = input });
+    try writeReading(dp, try std.fmt.allocPrint(arena, "{s}.ours", .{stem}), a);
+    try writeReading(dp, try std.fmt.allocPrint(arena, "{s}.theirs", .{stem}), b);
+}
+
+/// Where `dump` writes each disagreement: SEED.yaml its input, SEED.ours
+/// and SEED.theirs each reader's word (`read`, or `refused: ` and why) on
+/// a line and its events.
+const Dump = struct { io: std.Io, dir: std.Io.Dir };
+
+fn writeReading(d: Dump, name: []const u8, o: Outcome) !void {
+    var buf: [4096]u8 = undefined;
+    var file = try d.dir.createFile(d.io, name, .{});
+    defer file.close(d.io);
+    var w = file.writer(d.io, &buf);
+    try w.interface.print("{s}{s}\n{s}", .{ if (o.refused) "refused: " else "read", o.message, o.events });
+    try w.interface.flush();
 }
 
 /// `differential-suite triage N`: the target's first N seeded draws, each
 /// kind of disagreement not yet known (yaml.zig's message, or that it
 /// read, and libfyaml's word) printed once with its first input, and
 /// how many each had: what is left to sort against the spec.
-fn triage(gpa: std.mem.Allocator, n: usize) !void {
+/// `differential-suite dump N DIR` writes every one to DIR as well, for
+/// a third reader to sort (`Dump`).
+fn triage(gpa: std.mem.Allocator, n: usize, dump: ?Dump) !void {
     var kinds: std.StringArrayHashMapUnmanaged(usize) = .empty;
     defer kinds.deinit(gpa);
     var keys: std.heap.ArenaAllocator = .init(gpa);
@@ -176,6 +250,12 @@ fn triage(gpa: std.mem.Allocator, n: usize) !void {
         const b = try theirs(arena, input);
         if (agree(a, b) or known(input, a, b) != null) continue;
         const key = try std.fmt.allocPrint(keys.allocator(), "yaml.zig {s}{s}; libfyaml {s}{s}", .{ if (a.refused) "refused: " else "read", a.message, if (b.refused) "refused: " else "read", b.message });
+        if (dump) |dp| {
+            var name: [32]u8 = undefined;
+            try dp.dir.writeFile(dp.io, .{ .sub_path = try std.fmt.bufPrint(&name, "{d}.yaml", .{seed}), .data = input });
+            try writeReading(dp, try std.fmt.bufPrint(&name, "{d}.ours", .{seed}), a);
+            try writeReading(dp, try std.fmt.bufPrint(&name, "{d}.theirs", .{seed}), b);
+        }
         const entry = try kinds.getOrPut(gpa, key);
         if (!entry.found_existing) {
             entry.value_ptr.* = 0;
@@ -194,7 +274,12 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const arena = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);
-    if (std.mem.eql(u8, args[1], "triage")) return triage(init.gpa, try std.fmt.parseInt(usize, args[2], 10));
+    if (std.mem.eql(u8, args[1], "triage")) return triage(init.gpa, try std.fmt.parseInt(usize, args[2], 10), null);
+    if (std.mem.eql(u8, args[1], "dump")) {
+        var out = try std.Io.Dir.cwd().createDirPathOpen(io, args[3], .{});
+        defer out.close(io);
+        return triage(init.gpa, try std.fmt.parseInt(usize, args[2], 10), .{ .io = io, .dir = out });
+    }
     var dir = try std.Io.Dir.cwd().openDir(io, args[1], .{ .iterate = true });
     defer dir.close(io);
     var walker = try dir.walk(init.gpa);

@@ -150,6 +150,13 @@ stream: enum { before_start, scanning, end_fetched, end_given } = .before_start,
 /// the first one.
 indent: isize = -1,
 indents: std.ArrayList(isize) = .empty,
+/// Where the scanner skipped a reserved directive (a `%` name it does not
+/// know), if it has since the parser last took one: a directive all the
+/// same, which the parser holds to what it holds the others to (t68).
+reserved_directive: ?Mark = null,
+/// For each block collection open, as `indents`, whether its last key was
+/// explicit and has no value yet (`fetchValue`).
+explicit_keys: std.ArrayList(bool) = .empty,
 /// Whether a simple key may begin where the next token does.
 simple_key_allowed: bool = false,
 /// One for the block context and one for each flow collection open.
@@ -176,6 +183,12 @@ after_json_node: bool = false,
 line_start: usize = 0,
 /// A token has been fetched on the current line.
 line_has_token: bool = false,
+/// Every token on the line so far is a property, an anchor or a tag:
+/// a block scalar next begins the line, at `line_first_column`
+/// (`fetchBlockScalar`).
+line_props_only: bool = true,
+/// The column the line's first token began at.
+line_first_column: usize = 0,
 /// The error `next` failed with, which every later call gives again.
 failed: ?Error = null,
 /// An error found looking past tokens not yet given, given once those
@@ -195,6 +208,7 @@ pub fn init(gpa: Allocator, input: []const u8) Scanner {
 pub fn deinit(s: *Scanner) void {
     s.tokens.deinit(s.gpa);
     s.indents.deinit(s.gpa);
+    s.explicit_keys.deinit(s.gpa);
     s.simple_keys.deinit(s.gpa);
     s.arena.deinit();
     s.kept.deinit();
@@ -312,12 +326,19 @@ fn fetchNextToken(s: *Scanner) Error!void {
     if (s.mark.offset >= s.input.len) return s.fetchStreamEnd();
     if (!s.line_has_token) {
         s.line_has_token = true;
+        s.line_props_only = true;
+        s.line_first_column = s.mark.column;
         if (s.flow_level > 0) try s.checkFlowLineIndent();
     }
-    if (s.mark.column == 0 and try s.fetchLineStartToken()) return;
+    if (s.mark.column == 0 and try s.fetchLineStartToken()) {
+        s.line_props_only = false;
+        return;
+    }
     const after_json_node = s.after_json_node;
     s.after_json_node = false;
-    return s.fetchByFirstCharacter(s.ch(0), after_json_node);
+    const c = s.ch(0);
+    try s.fetchByFirstCharacter(c, after_json_node);
+    if (c != '&' and c != '!') s.line_props_only = false;
 }
 
 /// A line that begins in a flow collection must be indented past the
@@ -367,6 +388,9 @@ fn fetchByFirstCharacter(s: *Scanner, c: u8, after_json_node: bool) Error!void {
 /// `-`, `?` or `:` alone is an indicator; with more after it, the start
 /// of a plain scalar.
 fn fetchIndicatorOrPlain(s: *Scanner, c: u8) Error!void {
+    // Nor can a flow indicator after it begin a plain scalar there
+    // (ns-plain-first needs ns-plain-safe after the `?`).
+    if (c == '?' and s.flow_level > 0 and isFlowIndicator(s.ch(1))) return s.fail(s.mark, "a '?' in a flow collection must be followed by whitespace");
     if (!s.indicatorEnds()) return s.fetchPlainScalar();
     return switch (c) {
         '-' => s.fetchBlockEntry(),
@@ -382,6 +406,11 @@ fn fetchPlainOrInvalid(s: *Scanner) Error!void {
 
 fn fetchBlockScalar(s: *Scanner) Error!void {
     if (s.flow_level > 0) return s.fail(s.mark, "found a character that cannot start any token");
+    // One beginning its line, alone or after its properties, is a node of
+    // the block only past the block's column (s-separate(n+1), 8.1): at
+    // the column, as a mapping's value, it is no node of it (found by the
+    // differential fuzz target, t68).
+    if (s.line_props_only and @as(isize, @intCast(s.line_first_column)) <= s.indent) return s.fail(s.mark, "a block scalar must be indented past the block it is in");
     try s.removeSimpleKey();
     s.simple_key_allowed = true;
     const token = try s.scanBlockScalar(if (s.ch(0) == '|') .literal else .folded);
@@ -393,6 +422,10 @@ fn fetchBlockScalar(s: *Scanner) Error!void {
 /// indicator does. Otherwise `-`, `?` and `:` start a plain scalar.
 pub fn indicatorEnds(s: *const Scanner) bool {
     const c = s.ch(1);
+    // A flow collection's `?` is one only with whitespace after it
+    // ("?" s-separate, 7.4): `[?]` and `{?{a: b}}` are no YAML (found by
+    // the differential fuzz target, t68).
+    if (s.ch(0) == '?' and s.flow_level > 0) return isBlankOrBreakOrEnd(c);
     return isBlankOrBreakOrEnd(c) or (s.flow_level > 0 and isFlowIndicator(c));
 }
 
@@ -460,6 +493,7 @@ pub fn scanDirective(s: *Scanner) Error!?Token {
         .{ .tag_directive = try s.scanTagDirective() }
     else {
         while (!isBreakOrEnd(s.ch(0))) try s.skipPrintable();
+        if (s.reserved_directive == null) s.reserved_directive = start;
         return null;
     };
     const end = s.mark;
@@ -573,6 +607,7 @@ fn fetchKey(s: *Scanner) Error!void {
     if (s.flow_level == 0) {
         if (!s.simple_key_allowed) return s.fail(s.mark, "a mapping key is not allowed here");
         try s.rollIndent(s.mark.column, null, .block_mapping_start, s.mark, s.tab_before);
+        s.setExplicitKey(true);
     }
     try s.removeSimpleKey();
     s.simple_key_allowed = s.flow_level == 0;
@@ -588,13 +623,21 @@ fn fetchValue(s: *Scanner) Error!void {
         try s.rollIndent(key.mark.column, key.token_number, .block_mapping_start, key.mark, key.after_tab);
         key.possible = false;
         s.simple_key_allowed = false;
+        if (s.flow_level == 0) s.setExplicitKey(false);
     } else {
         // A value with no key before it, as after `? a` on the line above.
+        var explicit = false;
         if (s.flow_level == 0) {
             if (!s.simple_key_allowed) return s.fail(s.mark, "a mapping value is not allowed here");
             try s.rollIndent(s.mark.column, null, .block_mapping_start, s.mark, s.tab_before);
+            explicit = s.explicitKey();
+            s.setExplicitKey(false);
         }
-        s.simple_key_allowed = s.flow_level == 0;
+        // An explicit key's value may begin a block collection on its
+        // line (s-l+block-indented, 8.2.2: `? a` then `: - b`), an empty
+        // implicit key's may not (c-l-block-map-implicit-value: `: - a`
+        // is no YAML; found by the differential fuzz target, t68).
+        s.simple_key_allowed = s.flow_level == 0 and explicit;
     }
     try s.appendIndicator(.value);
 }
@@ -636,7 +679,11 @@ pub fn atAnchorCharacter(s: *const Scanner) bool {
 /// line break or the end, or in a flow collection a flow indicator.
 pub fn expectPropertyEnd(s: *Scanner) Error!void {
     const c = s.ch(0);
-    if (isBlankOrBreakOrEnd(c) or (s.flow_level > 0 and isFlowIndicator(c))) return;
+    // In a flow collection what ends a node may follow at once, the node
+    // then empty (`[!a]`, `{&b , c}`), but not a collection's start: a
+    // node's content needs whitespace after its properties (c-ns-properties
+    // s-separate, 7.3; found by the differential fuzz target, t68).
+    if (isBlankOrBreakOrEnd(c) or (s.flow_level > 0 and (c == ',' or c == ']' or c == '}'))) return;
     return s.fail(s.mark, "an anchor, alias or tag must be followed by whitespace");
 }
 
@@ -791,6 +838,7 @@ fn rollIndent(s: *Scanner, column: usize, number: ?usize, data: Token.Data, mark
     if (after_tab) return s.fail(mark, "a tab character cannot indent a block collection");
     try s.checkDepth(mark);
     try s.indents.append(s.gpa, s.indent);
+    try s.explicit_keys.append(s.gpa, false);
     s.indent = col;
     const token: Token = .{ .start = mark, .end = mark, .data = data };
     if (number) |n| {
@@ -806,7 +854,20 @@ fn unrollIndent(s: *Scanner, column: isize) Error!void {
     while (s.indent > column) {
         try s.append(.block_end, s.mark, s.mark);
         s.indent = s.indents.pop() orelse -1;
+        _ = s.explicit_keys.pop();
     }
+}
+
+/// Whether the innermost block mapping's last key was explicit (`?`)
+/// and has no value yet.
+fn explicitKey(s: *const Scanner) bool {
+    const keys = s.explicit_keys.items;
+    return keys.len > 0 and keys[keys.len - 1];
+}
+
+fn setExplicitKey(s: *Scanner, open: bool) void {
+    const keys = s.explicit_keys.items;
+    if (keys.len > 0) keys[keys.len - 1] = open;
 }
 
 // Simple keys

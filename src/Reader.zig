@@ -530,8 +530,10 @@ fn blockMappingStart(r: *Reader, place: Place, outer: ?Props, props: ?Props) Err
     const start = r.s.mark;
     try r.openMapping(place, start, outer);
     if (r.s.ch(0) == '?') return r.explicitKey();
+    // A `:` with no key: the key is empty, and implicit (t68), as
+    // `firstKey` leaves one.
     try r.emitEmpty(start);
-    r.state = .block_mapping_explicit_value;
+    r.state = .block_mapping_value;
 }
 
 /// An alias in a block, or the first key of a block mapping. An alias
@@ -630,6 +632,10 @@ fn openMapping(r: *Reader, place: Place, start: Mark, outer: ?Props) Error!void 
 }
 
 fn blockScalar(r: *Reader, props: ?Props) Error!void {
+    // At its block's column, or its properties there on its line, it is
+    // no node of the block (s-separate(n+1), 8.1): the parser says so.
+    if (r.column() <= r.indent()) return error.Unsupported;
+    if (props) |p| if (p.start.line == r.s.mark.line and @as(isize, @intCast(p.start.column)) <= r.indent()) return error.Unsupported;
     const token = r.s.scanBlockScalar(if (r.s.ch(0) == '|') .literal else .folded) catch |err| return unsupported(err);
     try r.emitScalarWith(token, props);
     r.pop();
@@ -782,10 +788,10 @@ fn blockMappingKey(r: *Reader) Error!void {
     if (r.column() > r.indent()) return error.Unsupported;
     if (r.atIndicator('?')) return r.explicitKey();
     if (r.atIndicator(':')) {
-        // A value with no key: the key is empty.
+        // A value with no key: the key is empty, and implicit, so no
+        // block collection may begin on the value's line (t68).
         try r.emitEmpty(r.s.mark);
-        r.state = .block_mapping_explicit_value;
-        return;
+        return r.blockMappingValue(false);
     }
     const start = r.s.mark;
     const props = try r.scanProps();
@@ -836,8 +842,10 @@ fn blockMappingExplicitValue(r: *Reader) Error!void {
     return r.emitEmpty(r.s.mark);
 }
 
-/// The value after the `:` at the cursor. `explicit`: the `:` follows no
-/// implicit key, so a block collection may begin on its line.
+/// The value after the `:` at the cursor. `explicit`: the `:` is an
+/// explicit key's (`?`), so a block collection may begin on its line
+/// (s-l+block-indented, 8.2.2), as it may not after an implicit key's,
+/// an empty one's too.
 fn blockMappingValue(r: *Reader, explicit: bool) Error!void {
     // After a flow collection as a key, held for it, blanks may come
     // before the `:`.
@@ -985,7 +993,9 @@ fn atPlainStart(r: *const Reader) bool {
     const c = r.s.ch(0);
     if (r.atEnd() or chars.isBlankOrBreak(c)) return false;
     return switch (c) {
-        '-', '?', ':' => !r.s.indicatorEnds(),
+        // A flow collection's `?` before a flow indicator begins nothing.
+        '?' => !r.s.indicatorEnds() and !(r.s.flow_level > 0 and chars.isFlowIndicator(r.s.ch(1))),
+        '-', ':' => !r.s.indicatorEnds(),
         ',', '[', ']', '{', '}', '#', '&', '*', '!', '|', '>', '\'', '"', '%', '@', '`' => false,
         else => c >= 0x20,
     };

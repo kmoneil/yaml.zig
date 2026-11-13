@@ -316,8 +316,13 @@ fn parseDocumentStart(p: *Parser) Error!Event {
     while (token.data == .document_end) {
         p.skip();
         p.after_end_marker = true;
+        const line = token.start.line;
         token = try p.peek();
+        // As after a document (`parseDocumentEnd`, l-document-suffix,
+        // 9.1.1; found by the differential fuzz target, t68).
+        if (token.start.line == line and token.data != .stream_end) return p.fail(token.start, "nothing may follow '...' on its line but a comment");
     }
+    try p.checkReservedDirective(token);
     switch (token.data) {
         .stream_end => {
             p.skip();
@@ -334,6 +339,21 @@ fn parseDocumentStart(p: *Parser) Error!Event {
     return event(token.start, token.start, .{ .document_start = .{ .explicit = false } });
 }
 
+/// A reserved directive, which the scanner skips, is a directive all the
+/// same (l-directive-document, 9.2): after a document only past a `...`,
+/// and a `---` after it (found by the differential fuzz target, held to
+/// the YAML reference parser, t68). `token` is the next after any; one
+/// the scanner skipped looking ahead, past it, is a later document's.
+fn checkReservedDirective(p: *Parser, token: *const Token) Error!void {
+    const m = p.scanner.reserved_directive orelse return;
+    if (m.offset >= token.start.offset) return;
+    if (!p.after_end_marker) return p.fail(m, "a directive after a document must follow a '...' that ends it");
+    switch (token.data) {
+        .document_start, .version_directive, .tag_directive => {},
+        else => return p.fail(token.start, "directives must be followed by '---'"),
+    }
+}
+
 fn parseExplicitDocumentStart(p: *Parser) Error!Event {
     const start = (try p.peek()).start;
     p.tag_directives.clearRetainingCapacity();
@@ -341,6 +361,9 @@ fn parseExplicitDocumentStart(p: *Parser) Error!Event {
     const token = try p.peek();
     if (token.data != .document_start) return p.fail(token.start, "directives must be followed by '---'");
     p.skip();
+    if (p.scanner.reserved_directive) |m| if (m.offset < token.start.offset) {
+        p.scanner.reserved_directive = null;
+    };
     try p.push(.document_end);
     p.state = .document_content;
     const tags = try p.scanner.arena.allocator().dupe(Token.TagDirective, p.tag_directives.items);
@@ -748,7 +771,7 @@ pub fn writeTestEvent(w: *std.Io.Writer, e: Event) std.Io.Writer.Error!void {
             try w.writeAll("=VAL");
             try writeTestProperties(w, s.properties);
             try w.writeAll(styleSigil(s.style));
-            for (s.value) |c| try w.writeAll(escapedForTest(&c));
+            try writeTestText(w, s.value);
         },
     }
     try w.writeByte('\n');
@@ -773,15 +796,33 @@ fn styleSigil(style: ScalarStyle) []const u8 {
     };
 }
 
-/// The byte at `c` as the suite's notation writes it in a value.
-fn escapedForTest(c: *const u8) []const u8 {
-    return switch (c.*) {
+/// A value as the suite's notation writes it: the escapes the YAML
+/// reference parser, which made the suite's events, writes (`\0`, `\a`,
+/// `\e`, `\N`, `\_`, `\L` and `\P` among them, found missing by the
+/// differential fuzz target, t68), every other byte as it is.
+fn writeTestText(w: *std.Io.Writer, text: []const u8) std.Io.Writer.Error!void {
+    var i: usize = 0;
+    while (i < text.len) {
+        const rest = text[i..];
+        const escape: ?[]const u8, const len: usize = if (std.mem.startsWith(u8, rest, "\u{85}")) .{ "\\N", 2 } else if (std.mem.startsWith(u8, rest, "\u{A0}")) .{ "\\_", 2 } else if (std.mem.startsWith(u8, rest, "\u{2028}")) .{ "\\L", 3 } else if (std.mem.startsWith(u8, rest, "\u{2029}")) .{ "\\P", 3 } else .{ escapedByte(rest[0]), 1 };
+        if (escape) |e| try w.writeAll(e) else try w.writeAll(rest[0..len]);
+        i += len;
+    }
+}
+
+fn escapedByte(c: u8) ?[]const u8 {
+    return switch (c) {
         '\\' => "\\\\",
+        0 => "\\0",
+        0x07 => "\\a",
         0x08 => "\\b",
         '\t' => "\\t",
         '\n' => "\\n",
+        0x0B => "\\v",
+        0x0C => "\\f",
         '\r' => "\\r",
-        else => c[0..1],
+        0x1B => "\\e",
+        else => null,
     };
 }
 
