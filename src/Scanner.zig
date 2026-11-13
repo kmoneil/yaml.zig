@@ -395,8 +395,18 @@ fn fetchIndicatorOrPlain(s: *Scanner, c: u8) Error!void {
     return switch (c) {
         '-' => s.fetchBlockEntry(),
         '?' => s.fetchKey(),
-        else => s.fetchValue(),
+        else => s.fetchSeparateValue(),
     };
+}
+
+/// A value's `:` after a key that is not JSON-like (a plain scalar, an
+/// alias, properties alone, or none): in a flow collection the value
+/// needs whitespace before it (c-ns-flow-map-separate-value, 7.4.2), so
+/// `[a:[b]]` is no YAML where `["a":[b]]` is; with none it is empty, as
+/// in `[a:]`. Found by the differential campaign (t68).
+fn fetchSeparateValue(s: *Scanner) Error!void {
+    if (s.flow_level > 0 and (s.ch(1) == '[' or s.ch(1) == '{')) return s.fail(s.mark, "a ':' must be followed by whitespace before its value, unless its key is quoted or a flow collection");
+    return s.fetchValue();
 }
 
 fn fetchPlainOrInvalid(s: *Scanner) Error!void {
@@ -931,7 +941,10 @@ fn scanToNextToken(s: *Scanner) Error!void {
 /// Skips spaces and tabs, noting a tab in `tab_before`. A tab separates
 /// tokens anywhere, but in a block it cannot stand in a line's
 /// indentation: before the spaces reach past the current block's column,
-/// a tab may lead only a line that holds nothing but a comment.
+/// a tab may lead only a line that holds nothing but a comment. A flow
+/// collection is no exception: in a block it needs s-indent(n+1) before
+/// it, spaces, as `c:\n\t[a]` lacks (found by the differential campaign,
+/// t68); at the top level no space is needed, so `\t[a]` reads.
 fn skipSeparation(s: *Scanner) Error!void {
     const line_start = s.mark.column == 0;
     s.tab_before = false;
@@ -943,8 +956,6 @@ fn skipSeparation(s: *Scanner) Error!void {
     if (!line_start or s.flow_level > 0 or spaces > s.indent) return;
     const c = s.ch(0);
     if (isBreakOrEnd(c) or c == '#') return;
-    // A flow collection may follow: it opens no block.
-    if (c == '[' or c == '{') return;
     return s.fail(s.mark, "a tab character cannot indent a block");
 }
 
@@ -1373,13 +1384,49 @@ fn scanBlockBreaks(s: *Scanner, block: *BlockScalar) Error!void {
 
 /// Skips a block scalar line's indentation: its spaces up to the
 /// content's column, or all of them while that is not known. A tab may
-/// follow the indentation, as content, but not stand in it.
+/// follow the indentation, as content, but not stand in it, except where
+/// the document ends: a line of blanks or a comment that only such lines
+/// follow, to the end or a document marker, ends the scalar, a comment of
+/// the stream's (l-comment, 9.2), as in `foo: |\n  x\n\t# c` (found by
+/// the differential campaign, t68). With a node after it, as in the
+/// suite's Y79Y/000, the tab stands in a block's indentation.
 fn skipBlockIndentation(s: *Scanner, block: *const BlockScalar) Error!void {
     while (s.ch(0) == ' ' and s.inBlockIndentation(block)) s.skip();
     if (s.ch(0) != '\t' or !s.inBlockIndentation(block)) return;
     // With the column not known, a tab past the block's starts content.
     if (block.indent == null and s.pastBlock()) return;
+    if (onlyCommentsToDocumentEnd(s.input, s.mark.offset)) return;
     return s.fail(s.mark, "a tab character cannot indent a block scalar");
+}
+
+/// Whether from `at`, in a line's blanks, to the input's end or a line
+/// that begins with a document marker, every line holds only blanks and
+/// a comment.
+fn onlyCommentsToDocumentEnd(input: []const u8, at: usize) bool {
+    var i = at;
+    while (true) {
+        i = pastCommentLine(input, i) orelse return false;
+        if (i >= input.len or documentMarkerAt(input, i)) return true;
+    }
+}
+
+/// Past the line break of the line `at` is on, in its blanks, if from
+/// there it holds only blanks and a comment; the end if it has no break.
+fn pastCommentLine(input: []const u8, at: usize) ?usize {
+    var i = at;
+    while (i < input.len and isBlank(input[i])) i += 1;
+    if (i < input.len and input[i] == '#') i = chars.findAnyOf(input, i, "\n\r");
+    if (i >= input.len) return i;
+    if (!isBreak(input[i])) return null;
+    return if (input[i] == '\r' and i + 1 < input.len and input[i + 1] == '\n') i + 2 else i + 1;
+}
+
+/// Whether `---` or `...` begins at `i`, a blank, a line break or the end
+/// after it.
+fn documentMarkerAt(input: []const u8, i: usize) bool {
+    const rest = input[i..];
+    if (!std.mem.startsWith(u8, rest, "---") and !std.mem.startsWith(u8, rest, "...")) return false;
+    return rest.len == 3 or isBlankOrBreak(rest[3]);
 }
 
 fn inBlockIndentation(s: *const Scanner, block: *const BlockScalar) bool {

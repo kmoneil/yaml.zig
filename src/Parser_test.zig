@@ -406,3 +406,53 @@ test "a reserved directive is a directive: past a '...' after a document, and a 
     // A `%` line inside a plain scalar is its text.
     try expectEvents("a\n%FOO\n--- b\n", "+STR\n+DOC\n=VAL :a %FOO\n-DOC\n+DOC ---\n=VAL :b\n-DOC\n-STR");
 }
+
+test "a flow value at once after its ':' only after a JSON-like key (t68)" {
+    // Found by the differential campaign, held to the YAML reference
+    // parser: after a plain scalar, an alias, properties alone or no key,
+    // the value needs whitespace before it (c-ns-flow-map-separate-value,
+    // 7.4.2); after a quoted scalar or a flow collection it may follow at
+    // once (c-ns-flow-map-adjacent-value).
+    const message = "a ':' must be followed by whitespace before its value, unless its key is quoted or a flow collection";
+    try expectEvents("[a:[b]]", "+STR\n+DOC\n+SEQ []\n=VAL :a\nERROR 1:3 " ++ message);
+    try expectEvents("{a:{b: c}}", "+STR\n+DOC\n+MAP {}\n=VAL :a\nERROR 1:3 " ++ message);
+    try expectEvents("[:{a}]", "+STR\n+DOC\n+SEQ []\nERROR 1:2 " ++ message);
+    try expectEvents("{:[b]}", "+STR\n+DOC\n+MAP {}\nERROR 1:2 " ++ message);
+    try expectEvents("[*a :[b]]", "+STR\n+DOC\n+SEQ []\n=ALI *a\nERROR 1:5 " ++ message);
+    try expectEvents("{&x :[b]}", "+STR\n+DOC\n+MAP {}\nERROR 1:5 " ++ message);
+    try expectEvents("{? ::[2]}", "+STR\n+DOC\n+MAP {}\n=VAL ::\nERROR 1:5 " ++ message);
+    try expectEvents("[\"a\":[b]]", "+STR\n+DOC\n+SEQ []\n+MAP {}\n=VAL \"a\n+SEQ []\n=VAL :b\n-SEQ\n-MAP\n-SEQ\n-DOC\n-STR");
+    try expectEvents("{'a':{b: c}}", "+STR\n+DOC\n+MAP {}\n=VAL 'a\n+MAP {}\n=VAL :b\n=VAL :c\n-MAP\n-MAP\n-DOC\n-STR");
+    try expectEvents("{[a]:[b]}", "+STR\n+DOC\n+MAP {}\n+SEQ []\n=VAL :a\n-SEQ\n+SEQ []\n=VAL :b\n-SEQ\n-MAP\n-DOC\n-STR");
+    try expectEvents("[a:]", "+STR\n+DOC\n+SEQ []\n+MAP {}\n=VAL :a\n=VAL :\n-MAP\n-SEQ\n-DOC\n-STR");
+    try expectEvents("[a: [b]]", "+STR\n+DOC\n+SEQ []\n+MAP {}\n=VAL :a\n+SEQ []\n=VAL :b\n-SEQ\n-MAP\n-SEQ\n-DOC\n-STR");
+    // `:` with a plain-safe character after it is a plain scalar's.
+    try expectEvents("{a:\"b\"}", "+STR\n+DOC\n+MAP {}\n=VAL :a:\"b\"\n=VAL :\n-MAP\n-DOC\n-STR");
+}
+
+test "a tab-led comment after a block scalar, where the document ends (t68)" {
+    // Found by the differential campaign, held to the YAML reference
+    // parser: with only comments and blank lines after it, to the end or
+    // a document marker, the line is a comment of the stream's
+    // (l-comment, 9.2); with a node after it, the tab stands in a block's
+    // indentation (the suite's Y79Y/000).
+    try expectEvents("foo: |\n  x\n\t# c\n", "+STR\n+DOC\n+MAP\n=VAL :foo\n=VAL |x\\n\n-MAP\n-DOC\n-STR");
+    try expectEvents("foo: |\n\t\n", "+STR\n+DOC\n+MAP\n=VAL :foo\n=VAL |\n-MAP\n-DOC\n-STR");
+    try expectEvents("foo: |+\n  x\n\n\t# c\n", "+STR\n+DOC\n+MAP\n=VAL :foo\n=VAL |x\\n\\n\n-MAP\n-DOC\n-STR");
+    try expectEvents("a:\n  b: |\n    x\n\t# c\n", "+STR\n+DOC\n+MAP\n=VAL :a\n+MAP\n=VAL :b\n=VAL |x\\n\n-MAP\n-MAP\n-DOC\n-STR");
+    try expectEvents("foo: |\n  x\n\t# c\n# d\n--- e\n", "+STR\n+DOC\n+MAP\n=VAL :foo\n=VAL |x\\n\n-MAP\n-DOC\n+DOC ---\n=VAL :e\n-DOC\n-STR");
+    try expectEvents("foo: |\n  x\n\t# c\nbar: 1\n", "+STR\n+DOC\n+MAP\n=VAL :foo\nERROR 3:1 a tab character cannot indent a block scalar");
+    try expectEvents("- |\n  x\n\t# c\n- y\n", "+STR\n+DOC\n+SEQ\nERROR 3:1 a tab character cannot indent a block scalar");
+}
+
+test "a tab cannot indent a flow collection in a block (t68)" {
+    // Found by the differential campaign, held to the YAML reference
+    // parser: a flow node in a block needs s-indent(n+1), spaces, before
+    // it on its line; at the top level none is needed.
+    try expectEvents("c:\n\t{a: b}\n", "+STR\n+DOC\n+MAP\n=VAL :c\nERROR 2:2 a tab character cannot indent a block");
+    try expectEvents("c:\n\t[a]\n", "+STR\n+DOC\n+MAP\n=VAL :c\nERROR 2:2 a tab character cannot indent a block");
+    try expectEvents("-\n\t{a: b}\n", "+STR\n+DOC\n+SEQ\nERROR 2:2 a tab character cannot indent a block");
+    try expectEvents("c:\n \t[a]\n", "+STR\n+DOC\n+MAP\n=VAL :c\n+SEQ []\n=VAL :a\n-SEQ\n-MAP\n-DOC\n-STR");
+    try expectEvents("\t[a]\n", "+STR\n+DOC\n+SEQ []\n=VAL :a\n-SEQ\n-DOC\n-STR");
+    try expectEvents("- \t{a: b}\n", "+STR\n+DOC\n+SEQ\n+MAP {}\n=VAL :a\n=VAL :b\n-MAP\n-SEQ\n-DOC\n-STR");
+}

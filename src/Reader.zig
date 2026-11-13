@@ -1183,7 +1183,7 @@ fn flowSequenceEntry(r: *Reader, first: bool) Error!void {
     }
     if (r.s.ch(0) == ']') return r.flowEnd(.sequence_end);
     try r.push(.flow_sequence_entry);
-    if (r.atIndicator('?') or r.atIndicator(':')) return r.flowPairStart();
+    if (r.atIndicator('?') or try r.atFlowValue(false)) return r.flowPairStart();
     try r.flowEntry();
 }
 
@@ -1196,7 +1196,7 @@ fn flowEntry(r: *Reader) Error!void {
     if (props) |p| {
         try r.skipFlowSpace();
         if (r.atFlowNodeEnd()) return r.emitEmptyWith(p);
-        if (r.atIndicator(':')) return r.flowPair(start, emptyEvent(p));
+        if (try r.atFlowValue(false)) return r.flowPair(start, emptyEvent(p));
     }
     switch (r.s.ch(0)) {
         '*' => return if (props == null) r.flowEntryAlias(start) else error.Unsupported,
@@ -1205,7 +1205,7 @@ fn flowEntry(r: *Reader) Error!void {
     }
     const token = try r.flowScalar();
     r.skipBlanks();
-    if (r.atFlowValue(token.data.scalar.style != .plain)) return r.flowPair(start, scalarEvent(token, props));
+    if (try r.atFlowValue(token.data.scalar.style != .plain)) return r.flowPair(start, scalarEvent(token, props));
     try r.skipFlowSpace();
     if (!r.atFlowNodeEnd()) return error.Unsupported;
     try r.emitScalarWith(token, props);
@@ -1217,7 +1217,7 @@ fn flowEntryAlias(r: *Reader, start: Mark) Error!void {
     const name = try r.scanName();
     const alias: Event = .{ .start = start, .end = r.s.mark, .data = .{ .alias = name } };
     r.skipBlanks();
-    if (r.atIndicator(':')) return r.flowPair(start, alias);
+    if (try r.atFlowValue(false)) return r.flowPair(start, alias);
     try r.skipFlowSpace();
     if (!r.atFlowNodeEnd()) return error.Unsupported;
     try r.emit(alias.start, alias.end, alias.data);
@@ -1276,7 +1276,7 @@ fn flowPairStart(r: *Reader) Error!void {
 /// in.
 fn flowExplicitKey(r: *Reader, close: u8, then: State) Error!void {
     try r.skipFlowSpace();
-    if (r.atIndicator(':') or r.s.ch(0) == ',' or r.s.ch(0) == close) {
+    if (try r.atFlowValue(false) or r.s.ch(0) == ',' or r.s.ch(0) == close) {
         try r.emitEmpty(r.s.mark);
         r.state = then;
         return;
@@ -1334,7 +1334,7 @@ fn flowMappingKey(r: *Reader, first: bool) Error!void {
         r.s.skip();
         return r.flowExplicitKey('}', .flow_mapping_value);
     }
-    if (r.atIndicator(':')) {
+    if (try r.atFlowValue(false)) {
         // A value with no key: the key is empty.
         try r.emitEmpty(r.s.mark);
         r.state = .flow_mapping_value;
@@ -1368,7 +1368,7 @@ fn flowNode(r: *Reader, key: bool) Error!void {
     const props = try r.scanProps();
     if (props) |p| {
         try r.skipFlowSpace();
-        if (r.atFlowNodeEnd() or key and r.atIndicator(':')) return r.emitEmptyWith(p);
+        if (r.atFlowNodeEnd() or key and try r.atFlowValue(false)) return r.emitEmptyWith(p);
     }
     switch (r.s.ch(0)) {
         '*' => return if (props == null) r.flowAlias(start, key) else error.Unsupported,
@@ -1377,7 +1377,7 @@ fn flowNode(r: *Reader, key: bool) Error!void {
     }
     const token = try r.flowScalar();
     try r.skipFlowSpace();
-    if (!r.atFlowNodeEnd() and !(key and r.atFlowValue(token.data.scalar.style != .plain))) return error.Unsupported;
+    if (!r.atFlowNodeEnd() and !(key and try r.atFlowValue(token.data.scalar.style != .plain))) return error.Unsupported;
     try r.emitScalarWith(token, props);
     r.pop();
 }
@@ -1387,17 +1387,25 @@ fn flowAlias(r: *Reader, start: Mark, key: bool) Error!void {
     const name = try r.scanName();
     const end = r.s.mark;
     try r.skipFlowSpace();
-    if (!r.atFlowNodeEnd() and !(key and r.atIndicator(':'))) return error.Unsupported;
+    if (!r.atFlowNodeEnd() and !(key and try r.atFlowValue(false))) return error.Unsupported;
     try r.emit(start, end, .{ .alias = name });
     r.pop();
 }
 
 /// Whether the `:` of a value is at the cursor after a node: after a
 /// JSON-like one (a quoted scalar or a flow collection, `json`) any `:`,
-/// after another one with a blank, a line break or a flow indicator
-/// after it, as the scanner's `after_json_node`.
-fn atFlowValue(r: *const Reader, json: bool) bool {
-    return r.s.ch(0) == ':' and (json or r.s.indicatorEnds());
+/// after another one (a plain scalar, an alias, properties alone, or no
+/// key at all) with a blank, a line break or a flow indicator after it,
+/// as the scanner's `after_json_node`. After another one the value needs
+/// whitespace before it (c-ns-flow-map-separate-value, 7.4.2), so a `[`
+/// or `{` at once after the `:`, as in `[a:[b]]`, is the scanner's to
+/// refuse (found by the differential campaign, t68).
+fn atFlowValue(r: *const Reader, json: bool) Error!bool {
+    if (r.s.ch(0) != ':') return false;
+    if (json) return true;
+    if (!r.s.indicatorEnds()) return false;
+    if (r.s.ch(1) == '[' or r.s.ch(1) == '{') return error.Unsupported;
+    return true;
 }
 
 /// Whether a `:` follows a flow collection in a flow collection, ending
@@ -1449,7 +1457,7 @@ fn skipToToken(r: *Reader) Error!void {
 /// Moves past spaces and tabs, as the scanner's skipSeparation: a tab
 /// separates tokens anywhere, but where it would indent a block (at a
 /// line's start, before the spaces reach past the block's column) only
-/// an empty line, a comment or a flow collection may follow it.
+/// an empty line or a comment may follow it.
 fn skipSeparation(r: *Reader) Error!void {
     const line_start = r.s.mark.column == 0;
     r.tab_before = false;
@@ -1460,7 +1468,7 @@ fn skipSeparation(r: *Reader) Error!void {
     r.skipBlanks();
     if (!line_start or r.s.flow_level > 0 or spaces > r.indent()) return;
     const c = r.s.ch(0);
-    if (c == 0 or chars.isBreak(c) or c == '#' or c == '[' or c == '{') return;
+    if (c == 0 or chars.isBreak(c) or c == '#') return;
     return error.Unsupported;
 }
 
