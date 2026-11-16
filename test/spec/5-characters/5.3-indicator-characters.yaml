@@ -1,0 +1,212 @@
+---
+- name: Block structure indicators (Example 5.3)
+  spec:
+    productions: [4, 5, 6]
+    quotes:
+    - "[4] c-sequence-entry ::= '-'"
+    - "[5] c-mapping-key ::= '?'"
+    - "[6] c-mapping-value ::= ':'"
+  yaml: |
+    sequence:
+    - one
+    - two
+    mapping:
+      ? sky
+      : blue
+      sea : green
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :sequence
+       +SEQ
+        =VAL :one
+        =VAL :two
+       -SEQ
+       =VAL :mapping
+       +MAP
+        =VAL :sky
+        =VAL :blue
+        =VAL :sea
+        =VAL :green
+       -MAP
+      -MAP
+     -DOC
+    -STR
+
+- name: Flow collection indicators (Example 5.4)
+  spec:
+    productions: [7, 8, 9, 10, 11, 23]
+    quotes:
+    - "5.3: The “[”, “]”, “{”, “}” and “,” indicators denote structure in flow collections."
+    - "[7] c-collect-entry ::= ','"
+    - "[8] c-sequence-start ::= '['"
+    - "[9] c-sequence-end ::= ']'"
+    - "[10] c-mapping-start ::= '{'"
+    - "[11] c-mapping-end ::= '}'"
+    - "[23] c-flow-indicator"
+  yaml: |
+    sequence: [ one, two, ]
+    mapping: { sky: blue, sea: green }
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :sequence
+       +SEQ []
+        =VAL :one
+        =VAL :two
+       -SEQ
+       =VAL :mapping
+       +MAP {}
+        =VAL :sky
+        =VAL :blue
+        =VAL :sea
+        =VAL :green
+       -MAP
+      -MAP
+     -DOC
+    -STR
+
+- name: The comment indicator (Example 5.5)
+  spec:
+    productions: [12]
+    quotes:
+    - "[12] c-comment ::= '#'"
+  yaml: |
+    # Comment only.
+  tree: |
+    +STR
+    -STR
+
+- name: Node property indicators (Example 5.6)
+  spec:
+    productions: [13, 14, 15]
+    quotes:
+    - "[13] c-anchor ::= '&'"
+    - "[14] c-alias ::= '*'"
+    - "[15] c-tag ::= '!'"
+  yaml: |
+    anchored: !local &anchor value
+    alias: *anchor
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :anchored
+       =VAL &anchor <!local> :value
+       =VAL :alias
+       =ALI *anchor
+      -MAP
+     -DOC
+    -STR
+
+- name: Block scalar indicators (Example 5.7)
+  spec:
+    productions: [16, 17]
+    quotes:
+    - "[16] c-literal ::= '|'"
+    - "[17] c-folded ::= '>'"
+  yaml: |
+    literal: |
+      some
+      text
+    folded: >
+      some
+      text
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :literal
+       =VAL |some\ntext\n
+       =VAL :folded
+       =VAL >some text\n
+      -MAP
+     -DOC
+    -STR
+
+- name: Quoted scalar indicators (Example 5.8)
+  spec:
+    productions: [18, 19]
+    quotes:
+    - "[18] c-single-quote ::= \"'\""
+    - "[19] c-double-quote ::= '\"'"
+  yaml: |
+    single: 'text'
+    double: "text"
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :single
+       =VAL 'text
+       =VAL :double
+       =VAL "text
+      -MAP
+     -DOC
+    -STR
+
+- name: The directive indicator (Example 5.9)
+  spec:
+    productions: [20]
+    quotes:
+    - "[20] c-directive ::= '%'"
+  yaml: |
+    %YAML 1.2
+    --- text
+  tree: |
+    +STR
+     +DOC ---
+      =VAL :text
+     -DOC
+    -STR
+
+- name: Reserved indicators beginning a plain scalar (Example 5.10)
+  spec:
+    productions: [21, 22]
+    quotes:
+    - "5.3: (x60, grave accent) are reserved for future use."
+    - "[21] c-reserved ::= '@' | '`'"
+    - "[22] c-indicator"
+  fail: true
+  yaml: |
+    commercial-at: @text
+    grave-accent: `text
+
+- name: A ',' beginning a plain scalar, outside a flow collection too
+  spec:
+    productions: [22, 126]
+    quotes:
+    - "[22] c-indicator ::= c-sequence-entry # '-' | c-mapping-key # '?' | c-mapping-value # ':' | c-collect-entry # ','"
+    - "[126] ns-plain-first(c) ::= ( ns-char - c-indicator )"
+  fail: true
+  yaml: |
+    - ,a
+
+- name: A '%' beginning a plain scalar
+  spec:
+    productions: [22, 126]
+    quotes:
+    - "[22] | c-directive # '%' | c-reserved # '@' '`'"
+    - "[126] ns-plain-first(c) ::= ( ns-char - c-indicator )"
+  fail: true
+  yaml: |
+    - %a
+
+- name: Every indicator inside a plain scalar
+  spec:
+    productions: [22, 130]
+    quotes:
+    - "[22] c-indicator"
+    - "[130] ns-plain-char(c) ::= ( ns-plain-safe(c) - c-mapping-value # ':' - c-comment # '#' )"
+  yaml: |
+    - a-b?c:d,e[f]g{h}i#j&k*l!m|n>o'p"q%r@s`t
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       =VAL :a-b?c:d,e[f]g{h}i#j&k*l!m|n>o'p"q%r@s`t
+      -SEQ
+     -DOC
+    -STR

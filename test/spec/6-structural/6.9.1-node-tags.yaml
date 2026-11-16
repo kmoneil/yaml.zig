@@ -56,6 +56,16 @@
     quotes:
     - "6.9.1: If the suffix needs to specify any of the above restricted characters, they must be escaped using the “%” character."
     - "[99] c-ns-shorthand-tag ::= c-tag-handle ns-tag-char+"
+    - "5.6: The YAML processor must not expand such escaped characters."
+  note: >-
+    The spec conflicts with itself here. 5.6 says a processor must not
+    expand a tag's %-escapes, its characters "preserved and compared
+    exactly as presented"; this example's own result is the tag
+    "tag:example.com,2000:app/tag!", the %21 expanded. yaml.zig follows
+    the yaml-test-suite, which expands it (6CK3, built from this example),
+    as the YAML reference parser and libfyaml do too. Kevin's rule,
+    2026-11-16: where the spec is at odds with itself, the yaml-test-suite
+    decides (karte t92).
   yaml: |
     %TAG !e! tag:example.com,2000:app/
     ---

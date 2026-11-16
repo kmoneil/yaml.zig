@@ -35,3 +35,89 @@
       =VAL :a b
      -DOC
     -STR
+
+- name: Line breaks of each kind in a literal scalar, each a line feed (Example 5.11)
+  spec:
+    productions: [24, 25, 26, 28, 29]
+    quotes:
+    - "5.4: Line breaks inside scalar content must be normalized by the YAML processor. Each such line break must be parsed into a single line feed character."
+    - "[24] b-line-feed ::= x0A"
+    - "[25] b-carriage-return ::= x0D"
+    - "[26] b-char ::= b-line-feed # x0A | b-carriage-return # X0D"
+    - "[28] b-break"
+    - "[29] b-as-line-feed ::= b-break"
+  yaml: |
+    |
+      Line break (no glyph)←
+      Line break (CR alone)←∎
+  tree: |
+    +STR
+     +DOC
+      =VAL |Line break (no glyph)\nLine break (CR alone)\n
+     -DOC
+    -STR
+
+- name: Any line break ends a line outside scalar content
+  spec:
+    productions: [30]
+    quotes:
+    - "5.4: Outside scalar content, YAML allows any line break to be used to terminate lines."
+    - "[30] b-non-content ::= b-break"
+  yaml: |
+    a: 1←
+    b: 2
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :a
+       =VAL :1
+       =VAL :b
+       =VAL :2
+      -MAP
+     -DOC
+    -STR
+
+- name: Next line, line separator and paragraph separator are no line breaks
+  spec:
+    productions: [27]
+    quotes:
+    - "5.4: Note that these include the non-ASCII line breaks: next line (x85), line separator (x2028) and paragraph separator (x2029)."
+    - "[27] nb-char ::= c-printable - b-char - c-byte-order-mark"
+  yaml: "- a\u0085b\n- a\u2028b\n- a\u2029b\n"
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       =VAL :a\Nb
+       =VAL :a\Lb
+       =VAL :a\Pb
+      -SEQ
+     -DOC
+    -STR
+
+- name: In a version 1.1 document too, a next line is no line break
+  spec:
+    productions: [27]
+    quotes:
+    - "5.4: YAML 1.2 processors parsing a version 1.1 document should therefore treat these line breaks as non-break characters, with an appropriate warning."
+    - "[27] nb-char"
+  note: libfyaml folds it, as YAML 1.1 did.
+  yaml: "%YAML 1.1\n--- a\u0085b\n"
+  tree: |
+    +STR
+     +DOC ---
+      =VAL :a\Nb
+     -DOC
+    -STR
+
+- name: A form feed is no line break, and not printable
+  spec:
+    productions: [27, 1]
+    quotes:
+    - "5.4: All other characters, including the form feed (x0C), are considered to be non-break characters."
+    - "[27] nb-char ::= c-printable - b-char - c-byte-order-mark"
+    - "[1] c-printable"
+  note: libfyaml reads it.
+  fail: true
+  yaml: "a\fb\n"

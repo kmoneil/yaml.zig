@@ -62,6 +62,11 @@ holds a list of cases in the yaml-test-suite's own source format, with a
   which node an alias refers to. A key that is no string has no JSON.
 - `compose_fail: true`: the events read, to `tree`, but compose no
   representation, such as an alias to no anchor before it.
+- `encoding`: `utf16le`, `utf16be`, `utf32le` or `utf32be` writes the
+  input in that encoding (5.2), which the library must tell and decode.
+- A character the block text cannot hold, a control or one past the
+  printable set, goes in a double-quoted `yaml` (and `tree`) as its
+  escape: `yaml: "a\x7Fb\n"`.
 - A plain `name` or `note` must not hold ` #` (the rest would be a
   comment) or `: `: quote it.
 - `note`: what else is worth knowing: what the YAML reference parser or

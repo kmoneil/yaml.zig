@@ -1,0 +1,86 @@
+---
+- name: A stream of a bare, an explicit and a directives document (Example 9.6)
+  spec:
+    productions: [210, 211]
+    quotes:
+    - "9.2: A YAML stream consists of zero or more documents."
+    - "[210] l-any-document ::= l-directive-document | l-explicit-document | l-bare-document"
+    - "[211] l-yaml-stream"
+  yaml: |
+    Document
+    ---
+    # Empty
+    ...
+    %YAML 1.2
+    ---
+    matches %: 20
+  tree: |
+    +STR
+     +DOC
+      =VAL :Document
+     -DOC
+     +DOC ---
+      =VAL :
+     -DOC ...
+     +DOC ---
+      +MAP
+       =VAL :matches %
+       =VAL :20
+      -MAP
+     -DOC
+    -STR
+  json: |
+    "Document"
+    null
+    {"matches %": 20}
+
+- name: An empty stream
+  spec:
+    productions: [211]
+    quotes:
+    - "9.2: A YAML stream consists of zero or more documents."
+    - "[211] l-yaml-stream"
+  yaml: "∎"
+  tree: |
+    +STR
+    -STR
+
+- name: A document not ended by '...', then a directive
+  spec:
+    productions: [211]
+    quotes:
+    - "9.2: If a document is not terminated by a document end marker line, then the following document must begin with a directives end marker line."
+    - "[211] l-yaml-stream"
+  fail: true
+  yaml: |
+    a # c
+    %YAML 1.2
+    ---
+    b
+
+- name: Suffixes, comments and explicit documents between documents
+  spec:
+    productions: [211, 205]
+    quotes:
+    - "[211] l-yaml-stream ::= l-document-prefix* l-any-document? ( ( l-document-suffix+ l-document-prefix* l-any-document? ) | c-byte-order-mark | l-comment | l-explicit-document )*"
+    - "[205] l-document-suffix"
+  yaml: |
+    a
+    ...
+    ...
+    # c
+    b
+    # d
+    --- c
+  tree: |
+    +STR
+     +DOC
+      =VAL :a
+     -DOC ...
+     +DOC
+      =VAL :b
+     -DOC
+     +DOC ---
+      =VAL :c
+     -DOC
+    -STR

@@ -1,0 +1,76 @@
+---
+- name: Printable characters at the edges of the set
+  spec:
+    productions: [1]
+    quotes:
+    - "5.1: On input, a YAML processor must accept all characters in this printable subset."
+    - "[1] c-printable ::= # 8 bit x09 # Tab (\\t) | x0A # Line feed (LF \\n) | x0D # Carriage Return (CR \\r) | [x20-x7E] # Printable ASCII # 16 bit | x85 # Next Line (NEL) | [xA0-xD7FF] # Basic Multilingual Plane (BMP) | [xE000-xFFFD] # Additional Unicode Areas | [x010000-x10FFFF] # 32 bit"
+  yaml: "- a~b\n- a\u0085b\n- a\u00A0b\n- a\uD7FFb\n- a\uE000b\n- a\uFFFDb\n- a\U00010000b\n- a\U0010FFFFb\n"
+  tree: "+STR\n +DOC\n  +SEQ\n   =VAL :a~b\n   =VAL :a\\Nb\n   =VAL :a\\_b\n   =VAL :a\uD7FFb\n   =VAL :a\uE000b\n   =VAL :a\uFFFDb\n   =VAL :a\U00010000b\n   =VAL :a\U0010FFFFb\n  -SEQ\n -DOC\n-STR\n"
+
+- name: DEL is not printable
+  spec:
+    productions: [1]
+    quotes:
+    - "5.1: To ensure readability, YAML streams use only the printable subset of the Unicode character set."
+    - "[1] | [x20-x7E] # Printable ASCII"
+  note: libfyaml reads it.
+  fail: true
+  yaml: "a\x7Fb\n"
+
+- name: The first of the C1 controls is not printable
+  spec:
+    productions: [1]
+    quotes:
+    - "[1] | x85 # Next Line (NEL) | [xA0-xD7FF] # Basic Multilingual Plane (BMP)"
+  note: libfyaml reads it.
+  fail: true
+  yaml: "a\x80b\n"
+
+- name: The last of the C1 controls is not printable
+  spec:
+    productions: [1]
+    quotes:
+    - "[1] | x85 # Next Line (NEL) | [xA0-xD7FF] # Basic Multilingual Plane (BMP)"
+  note: libfyaml reads it.
+  fail: true
+  yaml: "a\u009Fb\n"
+
+- name: U+FFFE is not printable
+  spec:
+    productions: [1]
+    quotes:
+    - "[1] | [xE000-xFFFD] # Additional Unicode Areas"
+  note: libfyaml reads it.
+  fail: true
+  yaml: "a\uFFFEb\n"
+
+- name: A C0 control in a comment
+  spec:
+    productions: [1, 27]
+    quotes:
+    - "5.1: To ensure readability, YAML streams use only the printable subset of the Unicode character set."
+    - "[27] nb-char ::= c-printable - b-char - c-byte-order-mark"
+    - "[1] c-printable"
+  note: libfyaml reads it.
+  fail: true
+  yaml: "# c\x01\nb\n"
+
+- name: Inside quotes, any character but the C0 controls
+  spec:
+    productions: [2]
+    quotes:
+    - "5.1: To ensure JSON compatibility, YAML processors must allow all non-C0 characters inside quoted scalars."
+    - "[2] nb-json ::= x09 # Tab character | [x20-x10FFFF] # Non-C0-control characters"
+  yaml: "- \"a\x7Fb\"\n- 'a\x80b'\n- \"a\u009Fb\"\n- \"a\uFFFEb\"\n"
+  tree: "+STR\n +DOC\n  +SEQ\n   =VAL \"a\x7Fb\n   =VAL 'a\x80b\n   =VAL \"a\u009Fb\n   =VAL \"a\uFFFEb\n  -SEQ\n -DOC\n-STR\n"
+  json: |
+    ["a\u007fb", "a\u0080b", "a\u009fb", "a\uFFFEb"]
+
+- name: Inside quotes, a C0 control
+  spec:
+    productions: [2]
+    quotes:
+    - "[2] nb-json ::= x09 # Tab character | [x20-x10FFFF] # Non-C0-control characters"
+  fail: true
+  yaml: "\"a\x01b\"\n"

@@ -1,0 +1,39 @@
+---
+- name: Tabs and spaces (Example 5.12)
+  spec:
+    productions: [31, 32, 33]
+    quotes:
+    - "5.5: YAML recognizes two white space characters: space and tab."
+    - "[31] s-space ::= x20"
+    - "[32] s-tab ::= x09"
+    - "[33] s-white ::= s-space | s-tab"
+  yaml: |
+    # Tabs and spaces
+    quoted: "Quoted —»"
+    block:—»|
+      void main() {
+      —»printf("Hello, world!\n");
+      }
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :quoted
+       =VAL "Quoted \t
+       =VAL :block
+       =VAL |void main() {\n\tprintf("Hello, world!\\n");\n}\n
+      -MAP
+     -DOC
+    -STR
+  json: |
+    {"quoted": "Quoted \t", "block": "void main() {\n\tprintf(\"Hello, world!\\n\");\n}\n"}
+
+- name: Other space characters are no white space, and a plain scalar keeps them
+  spec:
+    productions: [34, 33]
+    quotes:
+    - "5.5: The rest of the (printable) non-break characters are considered to be non-space characters."
+    - "[34] ns-char ::= nb-char - s-white"
+    - "[33] s-white ::= s-space | s-tab"
+  yaml: "- \u00A0a\u00A0\n- \u3000b\u3000\n"
+  tree: "+STR\n +DOC\n  +SEQ\n   =VAL :\\_a\\_\n   =VAL :\u3000b\u3000\n  -SEQ\n -DOC\n-STR\n"

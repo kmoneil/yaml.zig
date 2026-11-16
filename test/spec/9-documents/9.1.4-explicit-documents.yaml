@@ -1,0 +1,49 @@
+---
+- name: Explicit documents, one completely empty (Example 9.4)
+  spec:
+    productions: [208]
+    quotes:
+    - "9.1.4: Since the existence of the document is indicated by this marker, the document itself may be completely empty."
+    - "[208] l-explicit-document ::= c-directives-end ( l-bare-document | ( e-node # \"\" s-l-comments ) )"
+  yaml: |
+    ---
+    { matches
+    % : 20 }
+    ...
+    ---
+    # Empty
+    ...
+  tree: |
+    +STR
+     +DOC ---
+      +MAP {}
+       =VAL :matches %
+       =VAL :20
+      -MAP
+     -DOC ...
+     +DOC ---
+      =VAL :
+     -DOC ...
+    -STR
+  json: |
+    {"matches %": 20}
+    null
+
+- name: A '---' alone, then another
+  spec:
+    productions: [208]
+    quotes:
+    - "9.1.4: An explicit document begins with an explicit directives end marker line but no directives."
+    - "[208] l-explicit-document"
+  yaml: |
+    ---
+    --- a
+  tree: |
+    +STR
+     +DOC ---
+      =VAL :
+     -DOC
+     +DOC ---
+      =VAL :a
+     -DOC
+    -STR

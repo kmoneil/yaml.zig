@@ -1,0 +1,39 @@
+---
+- name: Directives documents (Example 9.5)
+  spec:
+    productions: [209]
+    quotes:
+    - "9.1.5: A directives document begins with some directives followed by an explicit directives end marker line."
+    - "[209] l-directive-document ::= l-directive+ l-explicit-document"
+  yaml: |
+    %YAML 1.2
+    --- |
+    %!PS-Adobe-2.0
+    ...
+    %YAML 1.2
+    ---
+    # Empty
+    ...
+  tree: |
+    +STR
+     +DOC ---
+      =VAL |%!PS-Adobe-2.0\n
+     -DOC ...
+     +DOC ---
+      =VAL :
+     -DOC ...
+    -STR
+  json: |
+    "%!PS-Adobe-2.0\n"
+    null
+
+- name: Directives and no '---' after them
+  spec:
+    productions: [209]
+    quotes:
+    - "[209] l-directive-document ::= l-directive+ l-explicit-document"
+  fail: true
+  yaml: |
+    a
+    ...
+    %YAML 1.2

@@ -1,0 +1,164 @@
+---
+- name: A byte order mark, and comments only (Example 5.1)
+  spec:
+    productions: [3]
+    quotes:
+    - "5.2: If a character stream begins with a byte order mark, the character encoding will be taken to be as indicated by the byte order mark."
+    - "[3] c-byte-order-mark ::= xFEFF"
+  note: The YAML reference parser refuses it.
+  yaml: |
+    ⇔# Comment only.
+  tree: |
+    +STR
+    -STR
+
+- name: A byte order mark inside a document (Example 5.2)
+  spec:
+    productions: [3, 27]
+    quotes:
+    - "5.2: Byte order marks may appear at the start of any document, however all documents in the same stream must use the same character encoding."
+    - "[27] nb-char ::= c-printable - b-char - c-byte-order-mark"
+    - "[3] c-byte-order-mark"
+  fail: true
+  yaml: |
+    - Invalid use of BOM
+    ⇔
+    - Inside a document.
+
+- name: A byte order mark inside a plain scalar
+  spec:
+    productions: [27]
+    quotes:
+    - "[27] nb-char ::= c-printable - b-char - c-byte-order-mark"
+  note: libfyaml reads it.
+  fail: true
+  yaml: |
+    a⇔b
+
+- name: A byte order mark inside a quoted scalar is content
+  spec:
+    productions: [3]
+    quotes:
+    - "5.2: To allow for JSON compatibility, byte order marks are also allowed inside quoted scalars."
+    - "[3] c-byte-order-mark"
+  yaml: |
+    "a⇔b"
+  tree: |
+    +STR
+     +DOC
+      =VAL "a⇔b
+     -DOC
+    -STR
+
+- name: A byte order mark at the start of each document
+  spec:
+    productions: [3, 202]
+    quotes:
+    - "5.2: Byte order marks may appear at the start of any document, however all documents in the same stream must use the same character encoding."
+    - "[202] l-document-prefix ::= c-byte-order-mark? l-comment*"
+    - "[3] c-byte-order-mark"
+  note: >-
+    The YAML reference parser refuses it; libfyaml reads the second byte
+    order mark as content.
+  yaml: |
+    ⇔a
+    ...
+    ⇔b
+  tree: |
+    +STR
+     +DOC
+      =VAL :a
+     -DOC ...
+     +DOC
+      =VAL :b
+     -DOC
+    -STR
+
+- name: UTF-16LE, with a byte order mark
+  spec:
+    productions: [3]
+    quotes:
+    - "5.2: On input, a YAML processor must support the UTF-8 and UTF-16 character encodings."
+    - "[3] c-byte-order-mark"
+  encoding: utf16le
+  yaml: |
+    ⇔a: é
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :a
+       =VAL :é
+      -MAP
+     -DOC
+    -STR
+
+- name: UTF-16BE, with no byte order mark, and a character past U+FFFF
+  spec:
+    productions: [3]
+    quotes:
+    - "5.2: Otherwise, the stream must begin with an ASCII character. This allows the encoding to be deduced by the pattern of null (x00) characters."
+    - "5.2: Note that in UTF-16, characters above xFFFF are written as four bytes, using a surrogate pair."
+    - "[3] c-byte-order-mark"
+  encoding: utf16be
+  yaml: |
+    a: 😀
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :a
+       =VAL :😀
+      -MAP
+     -DOC
+    -STR
+
+- name: UTF-16LE, with no byte order mark and a first character not ASCII
+  spec:
+    productions: [3]
+    quotes:
+    - "5.2: Otherwise, the stream must begin with an ASCII character."
+    - "[3] c-byte-order-mark"
+  fail: true
+  encoding: utf16le
+  yaml: |
+    日: b
+
+- name: UTF-32LE, with no byte order mark
+  spec:
+    productions: [3]
+    quotes:
+    - "5.2: For JSON compatibility, the UTF-32 encodings must also be supported."
+    - "[3] c-byte-order-mark"
+  encoding: utf32le
+  yaml: |
+    - a
+    - é
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       =VAL :a
+       =VAL :é
+      -SEQ
+     -DOC
+    -STR
+
+- name: UTF-32BE, with a byte order mark
+  spec:
+    productions: [3]
+    quotes:
+    - "5.2: For JSON compatibility, the UTF-32 encodings must also be supported."
+    - "[3] c-byte-order-mark"
+  encoding: utf32be
+  yaml: |
+    ⇔{a: 😀}
+  tree: |
+    +STR
+     +DOC
+      +MAP {}
+       =VAL :a
+       =VAL :😀
+      -MAP
+     -DOC
+    -STR

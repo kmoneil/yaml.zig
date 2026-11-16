@@ -25,3 +25,162 @@
       =VAL :b
      -DOC
     -STR
+
+- name: Document markers, and a suffix with a comment (Example 9.2)
+  spec:
+    productions: [203, 204, 205]
+    quotes:
+    - "9.1.2: The (possibly empty) list of directives is terminated by a directives end marker line."
+    - "[203] c-directives-end ::= \"---\""
+    - "[204] c-document-end ::= \"...\" # (not followed by non-ws char)"
+    - "[205] l-document-suffix ::= c-document-end s-l-comments"
+  yaml: |
+    %YAML 1.2
+    ---
+    Document
+    ... # Suffix
+  tree: |
+    +STR
+     +DOC ---
+      =VAL :Document
+     -DOC ...
+    -STR
+
+- name: A '%' first on a plain scalar's next line
+  spec:
+    productions: [206]
+    quotes:
+    - "9.1.2: It is valid to have a “%” character at the start of a line (e.g. as the first character of the second line of a plain scalar)."
+    - "[206] c-forbidden"
+  yaml: |
+    a
+    %b
+  tree: |
+    +STR
+     +DOC
+      =VAL :a %b
+     -DOC
+    -STR
+
+- name: A line like a directive, inside a document, then a document
+  spec:
+    productions: [206, 207]
+    quotes:
+    - "9.1.2: At the start of a document, lines beginning with a “%” character are assumed to be directives."
+    - "9.1.2: It is valid to have a “%” character at the start of a line (e.g. as the first character of the second line of a plain scalar)."
+    - "[206] c-forbidden"
+    - "[207] l-bare-document"
+  yaml: |
+    a
+    %YAML 1.2
+    ---
+    b
+  tree: |
+    +STR
+     +DOC
+      =VAL :a %YAML 1.2
+     -DOC
+     +DOC ---
+      =VAL :b
+     -DOC
+    -STR
+
+- name: A '---' or '...' on a line of a quoted scalar
+  spec:
+    productions: [206, 207]
+    quotes:
+    - "9.1.2: Obviously, the actual content lines are therefore forbidden to begin with either of these markers."
+    - "[206] c-forbidden ::= <start-of-line> ( c-directives-end | c-document-end ) ( b-char | s-white | <end-of-input> )"
+    - "[207] l-bare-document ::= s-l+block-node(-1,BLOCK-IN) /* Excluding c-forbidden content */"
+  fail: true
+  yaml: |
+    "a
+    --- b"
+
+- name: A '...' on a line of a quoted scalar in a flow mapping
+  spec:
+    productions: [206]
+    quotes:
+    - "9.1.2: Obviously, the actual content lines are therefore forbidden to begin with either of these markers."
+    - "[206] c-forbidden ::= <start-of-line> ( c-directives-end | c-document-end ) ( b-char | s-white | <end-of-input> )"
+  fail: true
+  yaml: |
+    {a: "b
+    ...
+    "}
+
+- name: A '---' on a line inside a flow sequence
+  spec:
+    productions: [206]
+    quotes:
+    - "[206] c-forbidden ::= <start-of-line> ( c-directives-end | c-document-end ) ( b-char | s-white | <end-of-input> )"
+  fail: true
+  yaml: |
+    [a,
+    ---
+    ]
+
+- name: A '---' or '...' before a non-space character is content
+  spec:
+    productions: [206, 204]
+    quotes:
+    - "[206] c-forbidden ::= <start-of-line> ( c-directives-end | c-document-end ) ( b-char | s-white | <end-of-input> )"
+    - "[204] c-document-end ::= \"...\" # (not followed by non-ws char)"
+  yaml: |
+    - "a
+      ---x"
+    - b
+      ...x
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       =VAL "a ---x
+       =VAL :b ...x
+      -SEQ
+     -DOC
+    -STR
+
+- name: A '---' and a '...' before a non-space character begin plain scalars
+  spec:
+    productions: [203, 204, 206]
+    quotes:
+    - "[203] c-directives-end"
+    - "[204] c-document-end ::= \"...\" # (not followed by non-ws char)"
+    - "[206] c-forbidden"
+  yaml: |
+    ---a
+    ...
+    ...a
+  tree: |
+    +STR
+     +DOC
+      =VAL :---a
+     -DOC ...
+     +DOC
+      =VAL :...a
+     -DOC
+    -STR
+
+- name: A '---' ends a block scalar and its document
+  spec:
+    productions: [206]
+    quotes:
+    - "9.1.2: Obviously, the actual content lines are therefore forbidden to begin with either of these markers."
+    - "[206] c-forbidden"
+  yaml: |
+    - |
+      a
+    ---
+    b
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       =VAL |a\n
+      -SEQ
+     -DOC
+     +DOC ---
+      =VAL :b
+     -DOC
+    -STR

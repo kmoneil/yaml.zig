@@ -1,0 +1,32 @@
+---
+- name: A document prefix, a byte order mark and comments (Example 9.1)
+  spec:
+    productions: [202]
+    quotes:
+    - "9.1.1: A document may be preceded by a prefix specifying the character encoding and optional comment lines."
+    - "[202] l-document-prefix ::= c-byte-order-mark? l-comment*"
+  note: The YAML reference parser refuses it.
+  yaml: |
+    ⇔# Comment
+    # lines
+    Document
+  tree: |
+    +STR
+     +DOC
+      =VAL :Document
+     -DOC
+    -STR
+
+- name: A prefix and no document
+  spec:
+    productions: [202, 211]
+    quotes:
+    - "9.1.1: The existence of the optional prefix does not necessarily indicate the existence of an actual document."
+    - "[202] l-document-prefix"
+    - "[211] l-yaml-stream ::= l-document-prefix* l-any-document?"
+  yaml: |
+    # Comment
+    # lines
+  tree: |
+    +STR
+    -STR

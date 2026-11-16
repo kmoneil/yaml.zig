@@ -13,7 +13,9 @@
 //! numbers of those the case exercises, and `quotes`, the text that
 //! decides it, word for word as the published spec has it, each
 //! `[N] ...` from production N or `S.S.S: ...` from that section's prose.
-//! `compose_fail` marks events that read but compose no representation.
+//! `compose_fail` marks events that read but compose no representation;
+//! `encoding` writes the input in UTF-16 or UTF-32, for the library to
+//! tell and decode.
 //! `note` says what else is worth knowing, such as what other readers do.
 //!
 //! `check` holds every case's citation to spec.md (yaml/yaml-spec's
@@ -45,6 +47,9 @@ const Case = struct {
     /// The events read, to `tree`, but compose no representation, such as
     /// an alias to no anchor before it.
     compose_fail: bool = false,
+    /// The encoding the input is given in (5.2): `yaml` is written in it,
+    /// and the library must tell it and decode it.
+    encoding: yaml.encoding.Encoding = .utf8,
     note: ?[]const u8 = null,
 };
 
@@ -159,7 +164,11 @@ fn lessThan(_: void, a: []const u8, b: []const u8) bool {
 /// A case run against this library: why it does not read as it says, or
 /// null.
 fn run(arena: Allocator, case: Case) !?[]const u8 {
-    const input = try decodeMarkers(arena, case.yaml);
+    const bytes = try encode(arena, try decodeMarkers(arena, case.yaml), case.encoding);
+    const input = yaml.encoding.toUtf8(arena, bytes, null) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        error.InvalidEncoding => return if (case.fail) null else "its bytes do not decode",
+    };
     var got: Io.Writer.Allocating = .init(arena);
     const parsed = try check.parse(input, &got.writer);
     if (parsed.problem()) |problem| return problem;
@@ -176,6 +185,46 @@ fn run(arena: Allocator, case: Case) !?[]const u8 {
     const compared = try yaml.Reader.compare(safe.allocator(), arena, input);
     if (safe.deinit() > 0) return "the reader leaked memory (the allocator printed where it was allocated)";
     return compared.problem;
+}
+
+/// `text`, UTF-8, written in `encoding`: a character past U+FFFF in
+/// UTF-16 as its surrogate pair.
+fn encode(arena: Allocator, text: []const u8, encoding: yaml.encoding.Encoding) ![]const u8 {
+    const endian: std.builtin.Endian = switch (encoding) {
+        .utf8 => return text,
+        .utf16le, .utf32le => .little,
+        .utf16be, .utf32be => .big,
+    };
+    var out: std.ArrayList(u8) = .empty;
+    var it = (try std.unicode.Utf8View.init(text)).iterator();
+    while (it.nextCodepoint()) |point| {
+        if (encoding == .utf32le or encoding == .utf32be) {
+            try appendUnit(u32, arena, &out, point, endian);
+        } else if (point < 0x10000) {
+            try appendUnit(u16, arena, &out, @intCast(point), endian);
+        } else {
+            const v = point - 0x10000;
+            try appendUnit(u16, arena, &out, @intCast(0xD800 + (v >> 10)), endian);
+            try appendUnit(u16, arena, &out, @intCast(0xDC00 + (v & 0x3FF)), endian);
+        }
+    }
+    return out.items;
+}
+
+fn appendUnit(comptime T: type, arena: Allocator, out: *std.ArrayList(u8), unit: T, endian: std.builtin.Endian) !void {
+    var buf: [@sizeOf(T)]u8 = undefined;
+    std.mem.writeInt(T, &buf, unit, endian);
+    try out.appendSlice(arena, &buf);
+}
+
+test "a case's input written in another encoding" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    try std.testing.expectEqualSlices(u8, "a\x00\xe9\x00", try encode(arena, "aé", .utf16le));
+    try std.testing.expectEqualSlices(u8, "\xd8\x3c\xdf\x09", try encode(arena, "\u{1F309}", .utf16be));
+    try std.testing.expectEqualSlices(u8, "\x00\x00\xfe\xff\x00\x00\x00a", try encode(arena, "\u{FEFF}a", .utf32be));
+    try std.testing.expectEqualSlices(u8, "a:\x00", try encode(arena, "a:\x00", .utf8));
 }
 
 /// A case's `json` or `compose_fail` held to what this library composes
