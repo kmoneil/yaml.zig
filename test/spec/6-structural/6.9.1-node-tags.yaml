@@ -4,6 +4,8 @@
     productions: [97, 98]
     quotes:
     - "6.9.1: In this case, the YAML processor must deliver the verbatim tag as-is to the application. In particular, verbatim tags are not subject to tag resolution."
+    - "[97] c-ns-tag-property"
+    - "[98] c-verbatim-tag"
   yaml: |
     !<tag:yaml.org,2002:str> foo :
       !<!bar> baz
@@ -23,6 +25,8 @@
     quotes:
     - "6.9.1: A verbatim tag must either begin with a “!” (a local tag) or be a valid URI (a global tag)."
     - "6.9.1: There is no way to explicitly specify the “?” non-specific tag."
+    - "[98] c-verbatim-tag"
+    - "[100] c-non-specific-tag"
   note: >-
     The spec's Example 6.25 gives it as an error: "Verbatim tags aren't
     resolved, so ! is invalid." The grammar lets it through; the YAML
@@ -36,6 +40,7 @@
     productions: [98]
     quotes:
     - "6.9.1: A verbatim tag must either begin with a “!” (a local tag) or be a valid URI (a global tag)."
+    - "[98] c-verbatim-tag"
   note: >-
     The spec's Example 6.25 gives it as an error: "The $:? tag is neither a
     global URI tag nor a local tag starting with '!'." A URI's scheme
@@ -73,6 +78,7 @@
     productions: [99]
     quotes:
     - "6.9.1: A tag shorthand consists of a valid tag handle followed by a non-empty suffix."
+    - "[99] c-ns-shorthand-tag"
   note: libfyaml reads it, its tag the prefix alone.
   fail: true
   yaml: |
@@ -85,6 +91,8 @@
     productions: [99, 92]
     quotes:
     - "6.9.1: The tag handle must be associated with a prefix, either by default or by using a “TAG” directive."
+    - "[99] c-ns-shorthand-tag"
+    - "[92] c-named-tag-handle"
   fail: true
   yaml: |
     %TAG !e! tag:example,2000:app/
@@ -96,6 +104,8 @@
     productions: [99, 40]
     quotes:
     - "6.9.1: The suffix must not contain any “!” character. This would cause the tag shorthand to be interpreted as having a named tag handle."
+    - "[99] c-ns-shorthand-tag"
+    - "[40] ns-tag-char"
   note: Read so, `!a!` has no TAG directive.
   fail: true
   yaml: |
@@ -107,6 +117,7 @@
     quotes:
     - "6.9.1: In addition, the suffix must not contain the “[”, “]”, “{”, “}” and “,” characters."
     - "[40] ns-tag-char ::= ns-uri-char - c-tag # '!' - c-flow-indicator"
+    - "[99] c-ns-shorthand-tag"
   note: libfyaml reads one tag, `!a,b`.
   yaml: |
     [!a,b]
@@ -125,6 +136,8 @@
     productions: [99, 95]
     quotes:
     - "6.9.1: The resulting parsed tag is the concatenation of the prefix and the suffix and must either begin with “!” (a local tag) or be a valid URI (a global tag)."
+    - "[99] c-ns-shorthand-tag"
+    - "[95] ns-global-tag-prefix"
   note: >-
     `foo` and `x` make `foox`, with no scheme. The YAML reference parser
     and libfyaml read it (karte t93).
@@ -138,6 +151,8 @@
     productions: [99, 95]
     quotes:
     - "6.9.1: The resulting parsed tag is the concatenation of the prefix and the suffix and must either begin with “!” (a local tag) or be a valid URI (a global tag)."
+    - "[99] c-ns-shorthand-tag"
+    - "[95] ns-global-tag-prefix"
   yaml: |
     %TAG !e! foo:
     --- !e!x a

@@ -5,6 +5,7 @@
     quotes:
     - "[191] c-mapping-value # ':' (not followed by non-ws char)"
     - "7.3.3: However, the “:”, “?” and “-” indicators may be used as the first character if followed by a non-space “safe” character, as this causes no ambiguity."
+    - "[126] ns-plain-first"
   note: >-
     The YAML reference parser reads {a: {b: c}}: its grammar checks the
     note for `?` ([190]) but not for `:` (karte t87). libfyaml reads as
@@ -64,6 +65,7 @@
     productions: [191, 185]
     quotes:
     - "[185] s-indent(m) ( ns-l-compact-sequence(n+1+m) | ns-l-compact-mapping(n+1+m) )"
+    - "[191] l-block-map-explicit-value"
   yaml: |
     ? a
     : - b
@@ -75,6 +77,220 @@
        +SEQ
         =VAL :b
        -SEQ
+      -MAP
+     -DOC
+    -STR
+
+- name: A block mapping, its indentation detected (Example 8.16)
+  spec:
+    productions: [187, 188]
+    quotes:
+    - "8.2.2: A Block mapping is a series of entries, each presenting a key/value pair."
+    - "[187] l+block-mapping(n) ::= ( s-indent(n+1+m) ns-l-block-map-entry(n+1+m) )+"
+    - "[188] ns-l-block-map-entry"
+  yaml: |
+    block mapping:
+     key: value
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :block mapping
+       +MAP
+        =VAL :key
+        =VAL :value
+       -MAP
+      -MAP
+     -DOC
+    -STR
+
+- name: Explicit entries, an empty value, a block key and a compact value (Example 8.17)
+  spec:
+    productions: [189, 190, 191]
+    quotes:
+    - "8.2.2: If the “?” indicator is specified, the optional value node must be specified on a separate line, denoted by the “:” indicator."
+    - "[189] c-l-block-map-explicit-entry"
+    - "[190] c-l-block-map-explicit-key"
+    - "[191] l-block-map-explicit-value"
+  yaml: |
+    ? explicit key # Empty value
+    ? |
+      block key
+    : - one # Explicit compact
+      - two # block value
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :explicit key
+       =VAL :
+       =VAL |block key\n
+       +SEQ
+        =VAL :one
+        =VAL :two
+       -SEQ
+      -MAP
+     -DOC
+    -STR
+
+- name: Implicit entries, both empty and a quoted key (Example 8.18)
+  spec:
+    productions: [192, 193, 194]
+    quotes:
+    - "8.2.2: Also, while both the implicit key and the value following it may be empty, the “:” indicator is mandatory."
+    - "[192] ns-l-block-map-implicit-entry"
+    - "[193] ns-s-block-map-implicit-key"
+    - "[194] c-l-block-map-implicit-value"
+  yaml: |
+    plain key: in-line value
+    : # Both empty
+    "quoted key":
+    - entry
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :plain key
+       =VAL :in-line value
+       =VAL :
+       =VAL :
+       =VAL "quoted key
+       +SEQ
+        =VAL :entry
+       -SEQ
+      -MAP
+     -DOC
+    -STR
+
+- name: Compact mappings in a sequence and an explicit entry (Example 8.19)
+  spec:
+    productions: [195]
+    quotes:
+    - "8.2.2: This compact notation may be nested inside block sequences and explicit block mapping entries."
+    - "[195] ns-l-compact-mapping"
+  yaml: |
+    - sun: yellow
+    - ? earth: blue
+      : moon: white
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       +MAP
+        =VAL :sun
+        =VAL :yellow
+       -MAP
+       +MAP
+        +MAP
+         =VAL :earth
+         =VAL :blue
+        -MAP
+        +MAP
+         =VAL :moon
+         =VAL :white
+        -MAP
+       -MAP
+      -SEQ
+     -DOC
+    -STR
+
+- name: An implicit key of 1024 characters
+  spec:
+    productions: [193, 154]
+    quotes:
+    - "8.2.2: Hence, such keys are subject to the same restrictions; they are limited to a single line and must not span more than 1024 Unicode characters."
+    - "[154] ns-s-implicit-yaml-key(c) ::= ns-flow-yaml-node(0,c) s-separate-in-line? /* At most 1024 characters altogether */"
+    - "[193] ns-s-block-map-implicit-key"
+  yaml: |
+    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa: x
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+       =VAL :x
+      -MAP
+     -DOC
+    -STR
+
+- name: An implicit key of 1025 characters
+  spec:
+    productions: [193, 154]
+    quotes:
+    - "8.2.2: Hence, such keys are subject to the same restrictions; they are limited to a single line and must not span more than 1024 Unicode characters."
+    - "[193] ns-s-block-map-implicit-key"
+    - "[154] ns-s-implicit-yaml-key"
+  note: The YAML reference parser and libfyaml read it.
+  fail: true
+  yaml: |
+    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa: x
+
+- name: In a block mapping, a value is never adjacent to the ':', after a JSON key too
+  spec:
+    productions: [194]
+    quotes:
+    - "8.2.2: Note however that in block mappings the value must never be adjacent to the “:”, as this greatly reduces readability and is not required for JSON compatibility (unlike the case in flow mappings)."
+    - "[194] c-l-block-map-implicit-value"
+  fail: true
+  yaml: |
+    "a":b
+
+- name: A compact mapping's key may have properties; the mapping cannot
+  spec:
+    productions: [195, 154]
+    quotes:
+    - "8.2.2: Note that it is not possible to specify node properties for such a nested mapping."
+    - "[195] ns-l-compact-mapping"
+    - "[154] ns-s-implicit-yaml-key"
+  note: The anchor here is the key's.
+  yaml: |
+    - &a a: b
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       +MAP
+        =VAL &a :a
+        =VAL :b
+       -MAP
+      -SEQ
+     -DOC
+    -STR
+
+- name: A block mapping's properties on the entry's line, the mapping below
+  spec:
+    productions: [200]
+    quotes:
+    - "[200] s-l+block-collection(n,c) ::= ( s-separate(n+1,c) c-ns-properties(n+1,c) )? s-l-comments ( seq-space(n,c) | l+block-mapping(n) )"
+  yaml: |
+    - &a
+      a: b
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       +MAP &a
+        =VAL :a
+        =VAL :b
+       -MAP
+      -SEQ
+     -DOC
+    -STR
+
+- name: A '?' with no white space after it begins a plain key
+  spec:
+    productions: [190, 126]
+    quotes:
+    - "[190] c-mapping-key # '?' (not followed by non-ws char)"
+    - "[126] ( c-mapping-key # '?' | c-mapping-value # ':' | c-sequence-entry # '-' ) [ lookahead = ns-plain-safe(c) ]"
+  yaml: |
+    ?a: b
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :?a
+       =VAL :b
       -MAP
      -DOC
     -STR

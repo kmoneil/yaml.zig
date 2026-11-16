@@ -1,0 +1,122 @@
+---
+- name: A block sequence, its indentation detected (Example 8.14)
+  spec:
+    productions: [183, 184]
+    quotes:
+    - "8.2.1: A block sequence is simply a series of nodes, each denoted by a leading “-” indicator."
+    - "[183] l+block-sequence(n) ::= ( s-indent(n+1+m) c-l-block-seq-entry(n+1+m) )+"
+    - "[184] c-l-block-seq-entry"
+  yaml: |
+    block sequence:
+      - one
+      - two : three
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :block sequence
+       +SEQ
+        =VAL :one
+        +MAP
+         =VAL :two
+         =VAL :three
+        -MAP
+       -SEQ
+      -MAP
+     -DOC
+    -STR
+
+- name: A '-' with no white space after it begins a plain scalar
+  spec:
+    productions: [184, 126]
+    quotes:
+    - "8.2.1: The “-” indicator must be separated from the node by white space. This allows “-” to be used as the first character in a plain scalar if followed by a non-space character (e.g. “-42”)."
+    - "[184] c-sequence-entry # '-' [ lookahead ≠ ns-char ] s-l+block-indented(n,BLOCK-IN)"
+    - "[126] ns-plain-first"
+  yaml: |
+    -a
+  tree: |
+    +STR
+     +DOC
+      =VAL :-a
+     -DOC
+    -STR
+
+- name: A '-' and a tab begin an entry
+  spec:
+    productions: [184]
+    quotes:
+    - "[184] c-sequence-entry # '-' [ lookahead ≠ ns-char ] s-l+block-indented(n,BLOCK-IN)"
+  yaml: |
+    -—»a
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       =VAL :a
+      -SEQ
+     -DOC
+    -STR
+
+- name: Entries empty, a block node, a compact sequence, a compact mapping (Example 8.15)
+  spec:
+    productions: [185, 186, 195]
+    quotes:
+    - "8.2.1: The entry node may be either completely empty, be a nested block node or use a compact in-line notation."
+    - "[186] ns-l-compact-sequence(n) ::= c-l-block-seq-entry(n) ( s-indent(n) c-l-block-seq-entry(n) )*"
+    - "[185] s-l+block-indented"
+    - "[195] ns-l-compact-mapping"
+  yaml: |
+    - # Empty
+    - |
+     block node
+    - - one # Compact
+      - two # sequence
+    - one: two # Compact mapping
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       =VAL :
+       =VAL |block node\n
+       +SEQ
+        =VAL :one
+        =VAL :two
+       -SEQ
+       +MAP
+        =VAL :one
+        =VAL :two
+       -MAP
+      -SEQ
+     -DOC
+    -STR
+
+- name: A compact sequence takes no properties
+  spec:
+    productions: [185, 186]
+    quotes:
+    - "8.2.1: Note that it is not possible to specify node properties for such a collection."
+    - "[185] s-l+block-indented"
+    - "[186] ns-l-compact-sequence"
+  fail: true
+  yaml: |
+    - &a - b
+
+- name: A '-' past an entry's column is more of its plain scalar
+  spec:
+    productions: [184, 134]
+    quotes:
+    - "[184] c-sequence-entry # '-' [ lookahead ≠ ns-char ] s-l+block-indented(n,BLOCK-IN)"
+    - "[134] s-ns-plain-next-line(n,c) ::= s-flow-folded(n) ns-plain-char(c) nb-ns-plain-in-line(c)"
+  note: The line ` - b` is a continuation line of `a`, and `-` a plain scalar's character there.
+  yaml: |
+    - a
+     - b
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       =VAL :a - b
+      -SEQ
+     -DOC
+    -STR

@@ -1,0 +1,63 @@
+---
+- name: A literal scalar (Example 8.7)
+  spec:
+    productions: [170, 173]
+    quotes:
+    - "8.1.2: Inside literal scalars, all (indented) characters are considered to be content, including white space characters."
+    - "[170] c-l+literal(n) ::= c-literal # '|' c-b-block-header(t) l-literal-content(n+m,t)"
+    - "[173] l-literal-content"
+  yaml: |
+    |
+     literal
+     —»text
+
+  tree: |
+    +STR
+     +DOC
+      =VAL |literal\n\ttext\n
+     -DOC
+    -STR
+
+- name: Literal content, its empty lines kept, its trailing comment not (Example 8.8)
+  spec:
+    productions: [171, 172, 173]
+    quotes:
+    - "8.1.2: In addition, empty lines are not folded, though final line breaks and trailing empty lines are chomped."
+    - "[172] b-nb-literal-next(n) ::= b-as-line-feed l-nb-literal-text(n)"
+    - "[171] l-nb-literal-text"
+    - "[173] l-literal-content"
+  yaml: |
+    |
+    ␣
+    ␣␣
+      literal
+    ␣␣␣
+    ␣␣
+      text
+
+    ␣# Comment
+  tree: |
+    +STR
+     +DOC
+      =VAL |\n\nliteral\n \n\ntext\n
+     -DOC
+    -STR
+
+- name: A literal scalar holds no escapes
+  spec:
+    productions: [171]
+    quotes:
+    - "8.1.2: There is no way to escape characters inside literal scalars."
+    - "[171] l-nb-literal-text"
+  yaml: |
+    a: |
+      a\nb
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :a
+       =VAL |a\\nb\n
+      -MAP
+     -DOC
+    -STR

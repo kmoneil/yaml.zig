@@ -31,6 +31,7 @@
     - "[173] l-literal-content(n,t) ::= ( l-nb-literal-text(n) b-nb-literal-next(n)* b-chomped-last(t) )? l-chomped-empty(n,t)"
     - "[166] l-chomped-empty(n,CLIP) ::= l-strip-empty(n)"
     - "8.1.1.2: However, any trailing empty lines are excluded from the scalar's content."
+    - "[167] l-strip-empty"
   note: >-
     The yaml-test-suite's K858 has `clip: >` and an empty line read as "".
     With the last line a space and no line break, the YAML reference
@@ -56,6 +57,8 @@
     - "[171] l-nb-literal-text(n) ::= l-empty(n,BLOCK-IN)* s-indent(n) nb-char+"
     - "[168] l-keep-empty(n) ::= l-empty(n,BLOCK-IN)* l-trail-comments(n)?"
     - "8.1.1.2: In this case, the final line break and any trailing empty lines are considered to be part of the scalar's content."
+    - "[173] l-literal-content"
+    - "[70] l-empty"
   note: >-
     At the top level n is -1, so `|2+` puts the content at column 1, and
     the line of two spaces is text, a space. The YAML reference parser
@@ -69,5 +72,188 @@
     +STR
      +DOC
       =VAL | \n\n
+     -DOC
+    -STR
+
+- name: Chomping the final line break (Example 8.4)
+  spec:
+    productions: [164, 165]
+    quotes:
+    - "8.1.1.2: Stripping is specified by the “-” chomping indicator. In this case, the final line break and any trailing empty lines are excluded from the scalar’s content."
+    - "8.1.1.2: Clipping is the default behavior used if no explicit chomping indicator is specified. In this case, the final line break character is preserved in the scalar’s content."
+    - "[164] c-chomping-indicator"
+    - "[165] b-chomped-last"
+  yaml: |
+    strip: |-
+      text
+    clip: |
+      text
+    keep: |+
+      text
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :strip
+       =VAL |text
+       =VAL :clip
+       =VAL |text\n
+       =VAL :keep
+       =VAL |text\n
+      -MAP
+     -DOC
+    -STR
+
+- name: Chomping trailing lines, and the comments after them (Example 8.5)
+  spec:
+    productions: [166, 167, 168, 169]
+    quotes:
+    - "8.1.1.2: To prevent ambiguity, the first such comment line must be less indented than the block scalar content. Additional comment lines, if any, are not so restricted."
+    - "[169] l-trail-comments(n) ::= s-indent-less-than(n) c-nb-comment-text b-comment l-comment*"
+    - "[166] l-chomped-empty"
+    - "[167] l-strip-empty"
+    - "[168] l-keep-empty"
+  yaml: |
+    ␣# Strip
+      # Comments:
+    strip: |-
+      # text
+    ␣␣
+    ␣# Clip
+      # comments:
+    ↵
+    clip: |
+      # text
+    ␣
+    ␣# Keep
+      # comments:
+    ↵
+    keep: |+
+      # text
+    ↵
+    ␣# Trail
+      # comments.
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :strip
+       =VAL |# text
+       =VAL :clip
+       =VAL |# text\n
+       =VAL :keep
+       =VAL |# text\n\n
+      -MAP
+     -DOC
+    -STR
+
+- name: A scalar of empty lines alone, chomped (Example 8.6)
+  spec:
+    productions: [166, 167, 168]
+    quotes:
+    - "8.1.1.2: If a block scalar consists only of empty lines, then these lines are considered as trailing lines and hence are affected by chomping."
+    - "[166] l-chomped-empty"
+    - "[167] l-strip-empty"
+    - "[168] l-keep-empty"
+  yaml: |
+    strip: >-
+    ↵
+    clip: >
+    ↵
+    keep: |+
+    ↵
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :strip
+       =VAL >
+       =VAL :clip
+       =VAL >
+       =VAL :keep
+       =VAL |\n
+      -MAP
+     -DOC
+    -STR
+
+- name: A comment line at the content's indentation is content
+  spec:
+    productions: [169, 171]
+    quotes:
+    - "8.1.1.2: To prevent ambiguity, the first such comment line must be less indented than the block scalar content."
+    - "[169] l-trail-comments"
+    - "[171] l-nb-literal-text"
+  yaml: |
+    a: |
+      x
+      # c
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :a
+       =VAL |x\n# c\n
+      -MAP
+     -DOC
+    -STR
+
+- name: A stripped scalar ending the input with no line break
+  spec:
+    productions: [165]
+    quotes:
+    - "[165] b-chomped-last(STRIP) ::= b-non-content | <end-of-input>"
+  yaml: |
+    a: |-
+      x∎
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :a
+       =VAL |x
+      -MAP
+     -DOC
+    -STR
+
+- name: A clipped scalar ending the input with no line break keeps one
+  spec:
+    productions: [165]
+    quotes:
+    - "[165] b-chomped-last(CLIP) ::= b-as-line-feed | <end-of-input>"
+    - "8.1.1.2: In this case, the final line break character is preserved in the scalar’s content."
+  note: >-
+    The text leaves open what <end-of-input> gives in place of the final
+    line break. The call (2026-11-16): a line feed, as the yaml-test-suite
+    reads it (L24T/01, `foo: |`, `  x`, then spaces with no line break, is
+    "x\n \n"), and the YAML reference parser and libfyaml with it.
+  yaml: |
+    a: |
+      x∎
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :a
+       =VAL |x\n
+      -MAP
+     -DOC
+    -STR
+
+- name: A kept scalar ending the input with no line break keeps one
+  spec:
+    productions: [165]
+    quotes:
+    - "[165] b-chomped-last(KEEP) ::= b-as-line-feed | <end-of-input>"
+  note: As for clipping, the call made (2026-11-16) with the yaml-test-suite.
+  yaml: |
+    a: |+
+      x∎
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :a
+       =VAL |x\n
+      -MAP
      -DOC
     -STR

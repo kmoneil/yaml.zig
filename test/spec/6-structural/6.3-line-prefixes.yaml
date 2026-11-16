@@ -6,6 +6,7 @@
     - "6.3: This prefix always includes the indentation. For flow scalar styles it additionally includes all leading white space, which may contain tab characters."
     - "[68] s-block-line-prefix(n) ::= s-indent(n)"
     - "[69] s-flow-line-prefix(n) ::= s-indent(n) s-separate-in-line?"
+    - "[67] s-line-prefix"
   yaml: |
     plain: text
       lines
@@ -34,6 +35,7 @@
     quotes:
     - "[69] s-flow-line-prefix(n) ::= s-indent(n) s-separate-in-line?"
     - "6.1: To maintain portability, tab characters must not be used in indentation"
+    - "[63] s-indent"
   note: libfyaml reads `x y`.
   fail: true
   yaml: |

@@ -43,6 +43,7 @@
     quotes:
     - "[69] s-flow-line-prefix(n) ::= s-indent(n) s-separate-in-line?"
     - "[63] s-indent(0) ::= <empty>"
+    - "[70] l-empty"
   yaml: |
     x
     —»
@@ -61,6 +62,7 @@
     - "[70] l-empty(n,c) ::= ( s-line-prefix(n,c) | s-indent-less-than(n) ) b-as-line-feed"
     - "[69] s-flow-line-prefix(n) ::= s-indent(n) s-separate-in-line?"
     - "6.1: To maintain portability, tab characters must not be used in indentation"
+    - "[64] s-indent-less-than"
   note: The yaml-test-suite's DK95/01 has a tab leading a quoted scalar's line with text on it.
   fail: true
   yaml: |
@@ -74,6 +76,7 @@
     quotes:
     - "[69] s-flow-line-prefix(n) ::= s-indent(n) s-separate-in-line?"
     - "[63] s-indent(0) ::= <empty>"
+    - "[70] l-empty"
   yaml: |
     "a
     —»

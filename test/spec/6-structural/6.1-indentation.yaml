@@ -4,6 +4,7 @@
     productions: [63]
     quotes:
     - "6.1: Each node must be indented further than its parent node. All sibling nodes must use the exact same indentation level."
+    - "[63] s-indent"
   yaml: |
     a:
       b: 1
@@ -28,6 +29,7 @@
     productions: [63]
     quotes:
     - "6.1: All sibling nodes must use the exact same indentation level."
+    - "[63] s-indent"
   fail: true
   yaml: |
     a:
@@ -39,6 +41,7 @@
     productions: [63]
     quotes:
     - "6.1: All sibling nodes must use the exact same indentation level."
+    - "[63] s-indent"
   note: "Nor is it more of `1`, as a plain scalar holds no `: ` (7.3.3)."
   fail: true
   yaml: |
@@ -62,6 +65,8 @@
     productions: [63, 78]
     quotes:
     - "6.1: In general, indentation is defined as a zero or more space characters at the start of a line."
+    - "[63] s-indent"
+    - "[78] l-comment"
   yaml: |
     ␣␣# Leading comment line spaces are
     ␣␣␣# neither content nor indentation.
@@ -99,6 +104,8 @@
     productions: [63, 66]
     quotes:
     - "6.1: The “-”, “?” and “:” characters used to denote block collection entries are perceived by people to be part of the indentation."
+    - "[63] s-indent"
+    - "[66] s-separate-in-line"
   yaml: |
     ? a
     : -—»b
@@ -146,6 +153,7 @@
     productions: [64, 169]
     quotes:
     - "[169] l-trail-comments(n) ::= s-indent-less-than(n) c-nb-comment-text b-comment l-comment*"
+    - "[64] s-indent-less-than"
   yaml: |
     a: |
       x

@@ -1,0 +1,74 @@
+---
+- name: Block scalar headers, empty and with each indicator (Example 8.1)
+  spec:
+    productions: [162, 163, 164]
+    quotes:
+    - "[162] c-b-block-header(t) ::= ( ( c-indentation-indicator c-chomping-indicator(t) ) | ( c-chomping-indicator(t) c-indentation-indicator ) ) s-b-comment"
+    - "8.1.1: This header is followed by a non-content line break with an optional comment."
+    - "[163] c-indentation-indicator"
+    - "[164] c-chomping-indicator"
+  yaml: |
+    - | # Empty header
+     literal
+    - >1 # Indentation indicator
+      folded
+    - |+ # Chomping indicator
+     keep
+
+    - >1- # Both indicators
+      strip
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       =VAL |literal\n
+       =VAL > folded\n
+       =VAL |keep\n\n
+       =VAL > strip
+      -SEQ
+     -DOC
+    -STR
+
+- name: A header's comment needs a separation before it
+  spec:
+    productions: [162, 77]
+    quotes:
+    - "[77] s-b-comment ::= ( s-separate-in-line c-nb-comment-text? )? b-comment"
+    - "[162] c-b-block-header"
+  fail: true
+  yaml: |
+    a: |#c
+      x
+
+- name: A header holds nothing but its indicators and a comment
+  spec:
+    productions: [162]
+    quotes:
+    - "8.1.1: This header is followed by a non-content line break with an optional comment."
+    - "[162] c-b-block-header"
+  fail: true
+  yaml: |
+    a: |x
+      x
+
+- name: An indentation indicator is 1 to 9, not 0
+  spec:
+    productions: [163]
+    quotes:
+    - "[163] c-indentation-indicator ::= [x31-x39] # 1-9"
+  note: As the yaml-test-suite's 2G84/00.
+  fail: true
+  yaml: |
+    |0
+     x
+
+- name: An indentation indicator is one digit
+  spec:
+    productions: [163]
+    quotes:
+    - "[163] c-indentation-indicator ::= [x31-x39] # 1-9"
+  note: As the yaml-test-suite's 2G84/01.
+  fail: true
+  yaml: |
+    |10
+     x

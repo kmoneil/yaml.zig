@@ -1,0 +1,80 @@
+---
+- name: A folded scalar (Example 8.9)
+  spec:
+    productions: [174, 182]
+    quotes:
+    - "8.1.3: It is similar to the literal style; however, folded scalars are subject to line folding."
+    - "[174] c-l+folded(n) ::= c-folded # '>' c-b-block-header(t) l-folded-content(n+m,t)"
+    - "[182] l-folded-content"
+  yaml: |
+    >
+     folded
+     text
+
+  tree: |
+    +STR
+     +DOC
+      =VAL >folded text\n
+     -DOC
+    -STR
+
+- name: Folded lines, more-indented lines, empty lines and the final ones (Examples 8.10 to 8.13)
+  spec:
+    productions: [175, 176, 177, 178, 179, 180, 181, 182]
+    quotes:
+    - "8.1.3: Folding allows long lines to be broken anywhere a single space character separates two non-space characters."
+    - "8.1.3: Lines starting with white space characters (more-indented lines) are not folded."
+    - "8.1.3: Line breaks and empty lines separating folded and more-indented lines are also not folded."
+    - "8.1.3: The final line break and trailing empty lines if any, are subject to chomping and are never folded."
+    - "[175] s-nb-folded-text"
+    - "[176] l-nb-folded-lines"
+    - "[177] s-nb-spaced-text"
+    - "[178] b-l-spaced"
+    - "[179] l-nb-spaced-lines"
+    - "[180] l-nb-same-lines"
+    - "[181] l-nb-diff-lines"
+    - "[182] l-folded-content"
+  note: >-
+    The spec's own result shows "* bullet\n \n  * list", a space between:
+    with the empty line its text has there, the productions give "\n\n",
+    as the yaml-test-suite's 7T8X reads it.
+  yaml: |
+    >
+
+     folded
+     line
+
+     next
+     line
+       * bullet
+
+       * list
+       * lines
+
+     last
+     line
+
+    # Comment
+  tree: |
+    +STR
+     +DOC
+      =VAL >\nfolded line\nnext line\n  * bullet\n\n  * list\n  * lines\n\nlast line\n
+     -DOC
+    -STR
+
+- name: A line led by a tab past the indentation is more-indented, not folded
+  spec:
+    productions: [177]
+    quotes:
+    - "[177] s-nb-spaced-text(n) ::= s-indent(n) s-white nb-char*"
+  yaml: |
+    >
+     a
+     —»b
+     c
+  tree: |
+    +STR
+     +DOC
+      =VAL >a\n\tb\nc\n
+     -DOC
+    -STR

@@ -5,6 +5,7 @@
     quotes:
     - "6.7: In all other cases, YAML allows tokens to be separated by multi-line (possibly empty) comments."
     - "[81] s-separate-lines(n) ::= ( s-l-comments s-flow-line-prefix(n) ) | s-separate-in-line"
+    - "[80] s-separate"
   yaml: |
     { first: Sammy, last: Sosa }:
     # Statistics:
@@ -38,6 +39,7 @@
     quotes:
     - "6.7: Implicit keys are restricted to a single line."
     - "[80] s-separate(n,FLOW-KEY) ::= s-separate-in-line"
+    - "[154] ns-s-implicit-yaml-key"
   fail: true
   yaml: |
     [a
@@ -48,6 +50,7 @@
     productions: [81]
     quotes:
     - "6.7: Note that structures following multi-line comment separation must be properly indented, even though there is no such restriction on the separation comment lines themselves."
+    - "[81] s-separate-lines"
   yaml: |
     a: # c
     # d
@@ -67,6 +70,7 @@
     productions: [81]
     quotes:
     - "6.7: Note that structures following multi-line comment separation must be properly indented, even though there is no such restriction on the separation comment lines themselves."
+    - "[81] s-separate-lines"
   note: "libfyaml reads {a: b}."
   fail: true
   yaml: |

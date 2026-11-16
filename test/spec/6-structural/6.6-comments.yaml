@@ -5,6 +5,8 @@
     quotes:
     - "6.6: Comments must be separated from other tokens by white space characters."
     - "[77] s-b-comment ::= ( s-separate-in-line c-nb-comment-text? )? b-comment"
+    - "[75] c-nb-comment-text"
+    - "[76] b-comment"
   yaml: |
     key:    # Comment
       value∎
@@ -23,6 +25,7 @@
     productions: [75]
     quotes:
     - "6.6: Comments must be separated from other tokens by white space characters."
+    - "[75] c-nb-comment-text"
   yaml: |
     a#b
   tree: |
@@ -37,6 +40,7 @@
     productions: [75, 77]
     quotes:
     - "[75] c-nb-comment-text ::= c-comment # '#' nb-char*"
+    - "[77] s-b-comment"
   yaml: |
     a #b
   tree: |
@@ -51,6 +55,7 @@
     productions: [75]
     quotes:
     - "6.6: Comments must be separated from other tokens by white space characters."
+    - "[75] c-nb-comment-text"
   yaml: |
     [a#b]
   tree: |
@@ -67,6 +72,7 @@
     productions: [77, 79]
     quotes:
     - "[79] s-l-comments ::= ( s-b-comment | <start-of-line> ) l-comment*"
+    - "[77] s-b-comment"
   yaml: |
     [a, # c
      b]
@@ -100,6 +106,7 @@
     quotes:
     - "[78] l-comment ::= s-separate-in-line c-nb-comment-text? b-comment"
     - "6.2: Note that such white space may safely include tab characters."
+    - "[66] s-separate-in-line"
   yaml: |
     —»# c
     a
@@ -115,6 +122,7 @@
     productions: [79]
     quotes:
     - "6.6: In most cases, when a line may end with a comment, YAML allows it to be followed by additional comment lines."
+    - "[79] s-l-comments"
   yaml: |
     key:    # Comment
             # lines
@@ -150,6 +158,8 @@
     productions: [77, 79]
     quotes:
     - "6.6: The only exception is a comment ending a block scalar header."
+    - "[77] s-b-comment"
+    - "[79] s-l-comments"
   note: "The line ` # d` is the scalar's first, its indentation one space."
   yaml: |
     a: | # c

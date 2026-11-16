@@ -5,6 +5,7 @@
     quotes:
     - "[209] l-directive-document ::= l-directive+ l-explicit-document"
     - "[82] ( ns-yaml-directive | ns-tag-directive | ns-reserved-directive )"
+    - "[83] ns-reserved-directive"
   note: libfyaml reads one with no `---` after it (karte t68).
   fail: true
   yaml: |

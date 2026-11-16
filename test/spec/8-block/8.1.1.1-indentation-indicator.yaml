@@ -1,0 +1,111 @@
+---
+- name: Indentation detected, and indicated (Example 8.2)
+  spec:
+    productions: [163]
+    quotes:
+    - "8.1.1.1: If no indentation indicator is given, then the content indentation level is equal to the number of leading spaces on the first non-empty line of the contents."
+    - "8.1.1.1: If a block scalar has an indentation indicator, then the content indentation level of the block scalar is equal to the indentation level of the block scalar plus the integer value of the indentation indicator character."
+    - "[163] c-indentation-indicator"
+  yaml: |
+    - |
+     detected
+    - >
+    ␣
+    ␣␣
+      # detected
+    - |1
+      explicit
+    - >
+    ␣—»
+     detected
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       =VAL |detected\n
+       =VAL >\n\n# detected\n
+       =VAL | explicit\n
+       =VAL >\t\ndetected\n
+      -SEQ
+     -DOC
+    -STR
+
+- name: A leading empty line with more spaces than the first text line (Example 8.3)
+  spec:
+    productions: [163, 171]
+    quotes:
+    - "8.1.1.1: It is an error for any of the leading empty lines to contain more spaces than the first non-empty line."
+    - "[163] c-indentation-indicator"
+    - "[171] l-nb-literal-text"
+  fail: true
+  yaml: |
+    - |
+    ␣␣
+     text
+
+- name: A text line less indented than the first (Example 8.3)
+  spec:
+    productions: [163, 175]
+    quotes:
+    - "8.1.1.1: It is an error if any non-empty line does not begin with a number of spaces greater than or equal to the content indentation level."
+    - "[163] c-indentation-indicator"
+    - "[175] s-nb-folded-text"
+  fail: true
+  yaml: |
+    - >
+      text
+     text
+
+- name: A text line less indented than the indicator says (Example 8.3)
+  spec:
+    productions: [163, 171]
+    quotes:
+    - "8.1.1.1: It is an error if any non-empty line does not begin with a number of spaces greater than or equal to the content indentation level."
+    - "[163] c-indentation-indicator"
+    - "[171] l-nb-literal-text"
+  note: libfyaml reads it, as `ext` and a NUL.
+  fail: true
+  yaml: |
+    - |2
+     text
+
+- name: With an indicator, a leading line of more spaces is text, its spaces past the level
+  spec:
+    productions: [163, 171]
+    quotes:
+    - "8.1.1.1: If a block scalar has an indentation indicator, then the content indentation level of the block scalar is equal to the indentation level of the block scalar plus the integer value of the indentation indicator character."
+    - "[171] l-nb-literal-text(n) ::= l-empty(n,BLOCK-IN)* s-indent(n) nb-char+"
+    - "[163] c-indentation-indicator"
+  yaml: |
+    - |1
+    ␣␣
+      x
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       =VAL | \n x\n
+      -SEQ
+     -DOC
+    -STR
+
+- name: With no text line, the indentation is the longest line's
+  spec:
+    productions: [163, 168]
+    quotes:
+    - "8.1.1.1: If there is no non-empty line then the content indentation level is equal to the number of spaces on the longest line."
+    - "[163] c-indentation-indicator"
+    - "[168] l-keep-empty"
+  yaml: |
+    a: |+
+    ␣␣␣
+    ␣␣
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :a
+       =VAL |\n\n
+      -MAP
+     -DOC
+    -STR

@@ -41,7 +41,9 @@ holds a list of cases in the yaml-test-suite's own source format, with a
 ```
 
 - `productions`: the numbers of the productions the case exercises, as
-  the published spec numbers them (https://yaml.org/spec/1.2.2/).
+  the published spec numbers them (https://yaml.org/spec/1.2.2/). Each
+  must be quoted, if only by its name (`"[134] s-ns-plain-next-line"`), so
+  a wrong number fails.
 - `quotes`: the text that decides the case, word for word: `[N] ...` from
   production N, which `productions` must name, or `S.S.S: ...` from that
   section's prose. The harness holds each to the spec's text and fails a

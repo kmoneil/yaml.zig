@@ -5,6 +5,7 @@
     quotes:
     - "6.8.2: Each “TAG” directive associates a handle with a prefix."
     - "[88] ns-tag-directive ::= \"TAG\" s-separate-in-line c-tag-handle s-separate-in-line ns-tag-prefix"
+    - "[89] c-tag-handle"
   yaml: |
     %TAG !yaml! tag:yaml.org,2002:
     ---
@@ -21,6 +22,7 @@
     productions: [88]
     quotes:
     - "6.8.2: It is an error to specify more than one “TAG” directive for the same handle in the same document, even if both occurrences give the same prefix."
+    - "[88] ns-tag-directive"
   fail: true
   yaml: |
     %TAG ! !foo
@@ -33,6 +35,7 @@
     quotes:
     - "6.8.2.1: By default, the prefix associated with this handle is “!”."
     - "6.8.2.1: It is possible to override the default behavior by providing an explicit “TAG” directive, associating a different prefix for this handle."
+    - "[90] c-primary-tag-handle"
   yaml: |
     # Private
     !foo "bar"
@@ -73,6 +76,7 @@
     productions: [92]
     quotes:
     - "6.8.2.1: A named tag handle surrounds a non-empty name with “!” characters."
+    - "[92] c-named-tag-handle"
   yaml: |
     %TAG !e! tag:example.com,2000:app/
     ---
@@ -89,6 +93,7 @@
     productions: [92]
     quotes:
     - "6.8.2.1: A handle name must not be used in a tag shorthand unless an explicit “TAG” directive has associated some prefix with it."
+    - "[92] c-named-tag-handle"
   fail: true
   yaml: |
     !h!bar baz
@@ -99,6 +104,7 @@
     quotes:
     - "6.8.2.1: A handle name must not be used in a tag shorthand unless an explicit “TAG” directive has associated some prefix with it."
     - "[209] l-directive-document ::= l-directive+ l-explicit-document"
+    - "[88] ns-tag-directive"
   fail: true
   yaml: |
     %TAG !e! tag:a,
@@ -112,6 +118,7 @@
     quotes:
     - "6.8.2.2: If the prefix begins with a “!” character, shorthands using the handle are expanded to a local tag."
     - "[94] c-ns-local-tag-prefix ::= c-tag # '!' ns-uri-char*"
+    - "[93] ns-tag-prefix"
   yaml: |
     %TAG !m! !my-
     --- # Bulb here
@@ -136,6 +143,7 @@
     quotes:
     - "6.8.2.2: If the prefix begins with a character other than “!”, it must be a valid URI prefix, and should contain at least the scheme."
     - "[95] ns-global-tag-prefix ::= ns-tag-char ns-uri-char*"
+    - "[93] ns-tag-prefix"
   yaml: |
     %TAG !e! tag:example.com,2000:app/
     ---

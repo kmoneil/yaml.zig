@@ -5,6 +5,7 @@
     quotes:
     - "[199] s-l+block-scalar(n,c) ::= s-separate(n+1,c) ( c-ns-properties(n+1,c) s-separate(n+1,c) )? ( c-l+literal(n) | c-l+folded(n) )"
     - "[81] s-separate-lines(n) ::= ( s-l-comments s-flow-line-prefix(n) ) | s-separate-in-line"
+    - "[69] s-flow-line-prefix"
   note: Only a block sequence has an indentless form (seq-space). Also `-`, a line break, `|`.
   fail: true
   yaml: |
@@ -38,6 +39,7 @@
     - "[197] s-l+flow-in-block(n) ::= s-separate(n+1,FLOW-OUT) ns-flow-node(n+1,FLOW-OUT) s-l-comments"
     - "[69] s-flow-line-prefix(n) ::= s-indent(n) s-separate-in-line?"
     - "6.1: To maintain portability, tab characters must not be used in indentation"
+    - "[81] s-separate-lines"
   note: The yaml-test-suite's DK95/00 has this with a plain scalar (`foo:`, a tab, `bar`).
   fail: true
   yaml: |
@@ -50,6 +52,7 @@
     quotes:
     - "[197] s-l+flow-in-block(n) ::= s-separate(n+1,FLOW-OUT) ns-flow-node(n+1,FLOW-OUT) s-l-comments"
     - "[69] s-flow-line-prefix(n) ::= s-indent(n) s-separate-in-line?"
+    - "[63] s-indent"
   note: As the yaml-test-suite's 6CA3 and Q5MG.
   yaml: |
     —»[a]
@@ -61,3 +64,199 @@
       -SEQ
      -DOC
     -STR
+
+- name: Block node types, flow, block scalar, block collection (Example 8.20)
+  spec:
+    productions: [196, 197, 198]
+    quotes:
+    - "8.2.3: YAML allows flow nodes to be embedded inside block collections (but not vice-versa)."
+    - "[196] s-l+block-node(n,c) ::= s-l+block-in-block(n,c) | s-l+flow-in-block(n)"
+    - "[197] s-l+flow-in-block"
+    - "[198] s-l+block-in-block"
+  yaml: |
+    -
+      "flow in block"
+    - >
+     Block scalar
+    - !!map # Block collection
+      foo : bar
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       =VAL "flow in block
+       =VAL >Block scalar\n
+       +MAP <tag:yaml.org,2002:map>
+        =VAL :foo
+        =VAL :bar
+       -MAP
+      -SEQ
+     -DOC
+    -STR
+
+- name: Block scalar nodes, an indicator and properties on a line before (Example 8.21)
+  spec:
+    productions: [199, 165]
+    quotes:
+    - "8.2.3: The block node’s properties may span across several lines. In this case, they must be indented by at least one more space than the block collection, regardless of the indentation of the block collection entries."
+    - "[165] b-chomped-last(CLIP) ::= b-as-line-feed | <end-of-input>"
+    - "[199] s-l+block-scalar"
+  note: >-
+    The spec's own result shows "value" for `literal`, its final line
+    break gone; clipping keeps it, "value\n", as the yaml-test-suite's M5C3
+    reads it.
+  yaml: |
+    literal: |2
+      value
+    folded:
+       !foo
+      >1
+     value
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :literal
+       =VAL |value\n
+       =VAL :folded
+       =VAL <!foo> >value\n
+      -MAP
+     -DOC
+    -STR
+
+- name: Block collection nodes, an indentless sequence and properties (Example 8.22)
+  spec:
+    productions: [200, 201]
+    quotes:
+    - "8.2.3: Since people perceive the “-” indicator as indentation, nested block sequences may be indented by one less space to compensate, except, of course, if nested inside another block sequence (BLOCK-OUT context versus BLOCK-IN context)."
+    - "[201] seq-space(n,BLOCK-OUT) ::= l+block-sequence(n-1)"
+    - "[200] s-l+block-collection"
+  yaml: |
+    sequence: !!seq
+    - entry
+    - !!seq
+     - nested
+    mapping: !!map
+     foo: bar
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :sequence
+       +SEQ <tag:yaml.org,2002:seq>
+        =VAL :entry
+        +SEQ <tag:yaml.org,2002:seq>
+         =VAL :nested
+        -SEQ
+       -SEQ
+       =VAL :mapping
+       +MAP <tag:yaml.org,2002:map>
+        =VAL :foo
+        =VAL :bar
+       -MAP
+      -MAP
+     -DOC
+    -STR
+
+- name: A block node's properties at its parent's column are none of its
+  spec:
+    productions: [200]
+    quotes:
+    - "8.2.3: In this case, they must be indented by at least one more space than the block collection, regardless of the indentation of the block collection entries."
+    - "[200] s-l+block-collection"
+  fail: true
+  yaml: |
+    a:
+    !!map
+      b: c
+
+- name: A block node's properties on a line before it, indented
+  spec:
+    productions: [200]
+    quotes:
+    - "[200] s-l+block-collection(n,c) ::= ( s-separate(n+1,c) c-ns-properties(n+1,c) )? s-l-comments ( seq-space(n,c) | l+block-mapping(n) )"
+  yaml: |
+    a:
+      !!map
+      b: c
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :a
+       +MAP <tag:yaml.org,2002:map>
+        =VAL :b
+        =VAL :c
+       -MAP
+      -MAP
+     -DOC
+    -STR
+
+- name: In a sequence, a nested sequence below an entry's '-' is indented past it
+  spec:
+    productions: [201]
+    quotes:
+    - "[201] seq-space(n,BLOCK-IN) ::= l+block-sequence(n)"
+  yaml: |
+    -
+     - a
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       +SEQ
+        =VAL :a
+       -SEQ
+      -SEQ
+     -DOC
+    -STR
+
+- name: In a sequence, an entry at its column is the next, not a nested one
+  spec:
+    productions: [201]
+    quotes:
+    - "[201] seq-space(n,BLOCK-IN) ::= l+block-sequence(n)"
+  yaml: |
+    -
+    - a
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       =VAL :
+       =VAL :a
+      -SEQ
+     -DOC
+    -STR
+
+- name: A mapping value's sequence may be at the mapping's column
+  spec:
+    productions: [201]
+    quotes:
+    - "[201] seq-space(n,BLOCK-OUT) ::= l+block-sequence(n-1)"
+  yaml: |
+    a:
+    - b
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :a
+       +SEQ
+        =VAL :b
+       -SEQ
+      -MAP
+     -DOC
+    -STR
+
+- name: A mapping value's flow node at the mapping's column is none of its
+  spec:
+    productions: [197]
+    quotes:
+    - "8.2.3: Flow nodes must be indented by at least one more space than the parent block collection."
+    - "[197] s-l+flow-in-block"
+  note: libfyaml reads it.
+  fail: true
+  yaml: |
+    a:
+    [b]

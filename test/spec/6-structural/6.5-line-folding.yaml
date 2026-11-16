@@ -6,6 +6,7 @@
     - "6.5: If a line break is followed by an empty line, it is trimmed; the first line break is discarded and the rest are retained as content."
     - "[71] b-l-trimmed(n,c) ::= b-non-content l-empty(n,c)+"
     - "[73] b-l-folded(n,c) ::= b-l-trimmed(n,c) | b-as-space"
+    - "[72] b-as-space"
   yaml: |
     >-
       trimmed
@@ -58,6 +59,7 @@
     productions: [71]
     quotes:
     - "6.5: the first line break is discarded and the rest are retained as content."
+    - "[71] b-l-trimmed"
   yaml: |
     a
 
@@ -75,6 +77,7 @@
     productions: [73]
     quotes:
     - "6.5: In addition, folding does not apply to line breaks surrounding text lines that contain leading white space."
+    - "[73] b-l-folded"
   yaml: |
     >
       foo␣

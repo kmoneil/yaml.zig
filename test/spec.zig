@@ -307,6 +307,12 @@ const Spec = struct {
         if (case.spec.quotes.len == 0) return "its `spec` quotes nothing";
         for (case.spec.productions) |n| {
             if (n == 0 or n > spec.productions.len) return try arena.print("there is no production [{d}]", .{n});
+            // Each named production quoted, if only by its name, so a
+            // wrong number cannot pass: `[134] s-ns-plain-next-line`.
+            const prefix = try arena.print("[{d}]", .{n});
+            for (case.spec.quotes) |quote| {
+                if (std.mem.startsWith(u8, quote, prefix)) break;
+            } else return try arena.print("it names [{d}] {s} but quotes nothing of it: add `[{d}] {s}` at least", .{ n, spec.productions[n - 1].name, n, spec.productions[n - 1].name });
         }
         for (case.spec.quotes) |quote| {
             if (try spec.quoteProblem(arena, case, quote)) |why| return why;
@@ -444,8 +450,12 @@ test "a citation holds only when its quotes are in the text it names" {
     try std.testing.expectEqual(2, spec.productions.len);
     try std.testing.expectEqualStrings("c", spec.productions[1].name);
     try std.testing.expectEqualStrings("1.1", spec.productions[0].section);
-    const good: Case = .{ .name = "", .yaml = "", .spec = .{ .productions = &.{ 1, 2 }, .quotes = &.{ "[1] b # ':' (not followed by non-ws char)", "1.1: may begin with “:” if a “safe” one follows." } } };
+    const good: Case = .{ .name = "", .yaml = "", .spec = .{ .productions = &.{ 1, 2 }, .quotes = &.{ "[1] b # ':' (not followed by non-ws char)", "1.1: may begin with “:” if a “safe” one follows.", "[2] c" } } };
     try std.testing.expectEqual(null, try spec.cite(arena, good));
+    const unquoted: Case = .{ .name = "", .yaml = "", .spec = .{ .productions = &.{ 1, 2 }, .quotes = &.{"[1] b"} } };
+    try std.testing.expect(try spec.cite(arena, unquoted) != null);
+    const misnamed: Case = .{ .name = "", .yaml = "", .spec = .{ .productions = &.{2}, .quotes = &.{"[2] a"} } };
+    try std.testing.expect(try spec.cite(arena, misnamed) != null);
     const misquoted: Case = .{ .name = "", .yaml = "", .spec = .{ .productions = &.{1}, .quotes = &.{"[1] b # ':' (not followed by a char)"} } };
     try std.testing.expect(try spec.cite(arena, misquoted) != null);
     const unnamed: Case = .{ .name = "", .yaml = "", .spec = .{ .productions = &.{2}, .quotes = &.{"[1] b"} } };

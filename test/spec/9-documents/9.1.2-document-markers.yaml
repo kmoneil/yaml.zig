@@ -5,6 +5,7 @@
     quotes:
     - "[205] l-document-suffix ::= c-document-end s-l-comments"
     - "[204] c-document-end ::= \"...\" # (not followed by non-ws char)"
+    - "[211] l-yaml-stream"
   fail: true
   yaml: |
     ... a
@@ -14,6 +15,7 @@
     productions: [205, 211]
     quotes:
     - "[205] l-document-suffix ::= c-document-end s-l-comments"
+    - "[211] l-yaml-stream"
   yaml: |
     ... # c
     b

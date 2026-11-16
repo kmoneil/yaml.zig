@@ -26,6 +26,7 @@
     productions: [160, 96]
     quotes:
     - "[160] c-flow-json-node(n,c) ::= ( c-ns-properties(n,c) s-separate(n,c) )? c-flow-json-content(n,c)"
+    - "[96] c-ns-properties"
   fail: true
   yaml: |
     [!{a: b}]
@@ -70,6 +71,7 @@
     productions: [96]
     quotes:
     - "6.9: Node properties may be specified in any order before the node’s content. Either or both may be omitted."
+    - "[96] c-ns-properties"
   yaml: |
     !!str &a1 "foo":
       !!str bar
@@ -122,6 +124,7 @@
     quotes:
     - "[159] ( c-ns-properties(n,c) ( ( s-separate(n,c) ns-flow-yaml-content(n,c) ) | e-scalar ) )"
     - "7.2: Both the node’s properties and node content are optional."
+    - "[96] c-ns-properties"
   yaml: |
     !!str
   tree: |
@@ -136,6 +139,7 @@
     productions: [96, 159]
     quotes:
     - "[159] ( c-ns-properties(n,c) ( ( s-separate(n,c) ns-flow-yaml-content(n,c) ) | e-scalar ) )"
+    - "[96] c-ns-properties"
   yaml: |
     &a
   tree: |

@@ -5,6 +5,7 @@
     quotes:
     - "6.9.2: It marks a node for future reference."
     - "[101] c-ns-anchor-property ::= c-anchor # '&' ns-anchor-name"
+    - "[103] ns-anchor-name"
   yaml: |
     First occurrence: &anchor Value
     Second occurrence: *anchor
@@ -25,6 +26,7 @@
     productions: [102, 103]
     quotes:
     - "[102] ns-anchor-char ::= ns-char - c-flow-indicator"
+    - "[103] ns-anchor-name"
   note: So `&a:` and then `x` is a scalar anchored `a:`, not a mapping.
   yaml: |
     &a: x
@@ -40,6 +42,7 @@
     productions: [102]
     quotes:
     - "6.9.2: Anchor names must not contain the “[”, “]”, “{”, “}” and “,” characters."
+    - "[102] ns-anchor-char"
   yaml: |
     [&a, b]
   tree: |
@@ -68,6 +71,7 @@
     productions: [101]
     quotes:
     - "6.9.2: An anchored node need not be referenced by any alias nodes; in particular, it is valid for all nodes to be anchored."
+    - "[101] c-ns-anchor-property"
   yaml: |
     &a [&b x, &c {&d k: &e v}]
   tree: |
