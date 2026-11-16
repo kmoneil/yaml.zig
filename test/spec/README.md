@@ -51,9 +51,11 @@ holds a list of cases in the yaml-test-suite's own source format, with a
   return, `⇔` a byte order mark, `↵` marks a line break on a line that
   is otherwise empty, and `∎` at the end means no final line break.
 - `tree`: the events, in the yaml-test-suite's notation, indented as you
-  like. Or `fail: true` for an input that is no YAML; the events before
-  the error are the reader's own, which the spec does not decide, and are
-  not held.
+  like, `␣` for a trailing space. Or `fail: true` for an input that is no
+  YAML; the events before the error are the reader's own, which the spec
+  does not decide, and are not held.
+- A plain `name` or `note` must not hold ` #` (the rest would be a
+  comment) or `: `: quote it.
 - `note`: what else is worth knowing: what the YAML reference parser or
   libfyaml does if it differs, where the spec is silent or ambiguous and
   whose call the reading is.

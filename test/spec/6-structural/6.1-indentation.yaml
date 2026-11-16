@@ -1,0 +1,204 @@
+---
+- name: Siblings at the same indentation
+  spec:
+    productions: [63]
+    quotes:
+    - "6.1: Each node must be indented further than its parent node. All sibling nodes must use the exact same indentation level."
+  yaml: |
+    a:
+      b: 1
+      c: 2
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :a
+       +MAP
+        =VAL :b
+        =VAL :1
+        =VAL :c
+        =VAL :2
+       -MAP
+      -MAP
+     -DOC
+    -STR
+
+- name: A sibling less indented than the first, but past the parent, is none
+  spec:
+    productions: [63]
+    quotes:
+    - "6.1: All sibling nodes must use the exact same indentation level."
+  fail: true
+  yaml: |
+    a:
+      b: 1
+     c: 2
+
+- name: A sibling more indented than the first is none
+  spec:
+    productions: [63]
+    quotes:
+    - "6.1: All sibling nodes must use the exact same indentation level."
+  note: "Nor is it more of `1`, as a plain scalar holds no `: ` (7.3.3)."
+  fail: true
+  yaml: |
+    a:
+      b: 1
+       c: 2
+
+- name: A tab cannot indent a block
+  spec:
+    productions: [63]
+    quotes:
+    - "[63] s-indent(n+1) ::= s-space s-indent(n)"
+    - "6.1: To maintain portability, tab characters must not be used in indentation, since different systems treat tabs differently."
+  fail: true
+  yaml: |
+    a:
+    —»b: 1
+
+- name: Indentation spaces, comment lines and flow lines (Example 6.1)
+  spec:
+    productions: [63, 78]
+    quotes:
+    - "6.1: In general, indentation is defined as a zero or more space characters at the start of a line."
+  yaml: |
+    ␣␣# Leading comment line spaces are
+    ␣␣␣# neither content nor indentation.
+    ␣␣␣␣
+    Not indented:
+     By one space: |
+        By four
+          spaces
+     Flow style: [    # Leading spaces
+       By two,        # in flow style
+      Also by two,    # are neither
+      —»Still by two   # content nor
+        ]             # indentation.
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :Not indented
+       +MAP
+        =VAL :By one space
+        =VAL |By four\n  spaces\n
+        =VAL :Flow style
+        +SEQ []
+         =VAL :By two
+         =VAL :Also by two
+         =VAL :Still by two
+        -SEQ
+       -MAP
+      -MAP
+     -DOC
+    -STR
+
+- name: Indicators perceived as indentation (Example 6.2)
+  spec:
+    productions: [63, 66]
+    quotes:
+    - "6.1: The “-”, “?” and “:” characters used to denote block collection entries are perceived by people to be part of the indentation."
+  yaml: |
+    ? a
+    : -—»b
+      -  -—»c
+         - d
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :a
+       +SEQ
+        =VAL :b
+        +SEQ
+         =VAL :c
+         =VAL :d
+        -SEQ
+       -SEQ
+      -MAP
+     -DOC
+    -STR
+
+- name: In a block scalar, an empty line of fewer spaces than its indentation
+  spec:
+    productions: [64, 70]
+    quotes:
+    - "[70] l-empty(n,c) ::= ( s-line-prefix(n,c) | s-indent-less-than(n) ) b-as-line-feed"
+    - "[64] s-indent-less-than(n+1) ::= s-space s-indent-less-than(n) | <empty>"
+  yaml: |
+    a: |
+      x
+    ␣
+      y
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :a
+       =VAL |x\n\ny\n
+      -MAP
+     -DOC
+    -STR
+
+- name: A block scalar's trailing comment, less indented than its content
+  spec:
+    productions: [64, 169]
+    quotes:
+    - "[169] l-trail-comments(n) ::= s-indent-less-than(n) c-nb-comment-text b-comment l-comment*"
+  yaml: |
+    a: |
+      x
+     # c
+    b: 1
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :a
+       =VAL |x\n
+       =VAL :b
+       =VAL :1
+      -MAP
+     -DOC
+    -STR
+
+- name: A stripped block scalar's trailing line of its indentation's spaces is empty
+  spec:
+    productions: [65, 167]
+    quotes:
+    - "[167] l-strip-empty(n) ::= ( s-indent-less-or-equal(n) b-non-content )* l-trail-comments(n)?"
+    - "[65] s-indent-less-or-equal(n+1) ::= s-space s-indent-less-or-equal(n) | <empty>"
+  yaml: |
+    a: |-
+      x
+    ␣␣
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :a
+       =VAL |x
+      -MAP
+     -DOC
+    -STR
+
+- name: A line of one space more than a block scalar's indentation is a text line, a space
+  spec:
+    productions: [65, 171]
+    quotes:
+    - "[65] s-indent-less-or-equal(n+1) ::= s-space s-indent-less-or-equal(n) | <empty>"
+    - "[171] l-nb-literal-text(n) ::= l-empty(n,BLOCK-IN)* s-indent(n) nb-char+"
+  yaml: |
+    a: |-
+      x
+    ␣␣␣
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :a
+       =VAL |x\n␣
+      -MAP
+     -DOC
+    -STR

@@ -1,0 +1,84 @@
+---
+- name: An anchor and an alias to it (Example 6.29)
+  spec:
+    productions: [101, 103]
+    quotes:
+    - "6.9.2: It marks a node for future reference."
+    - "[101] c-ns-anchor-property ::= c-anchor # '&' ns-anchor-name"
+  yaml: |
+    First occurrence: &anchor Value
+    Second occurrence: *anchor
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :First occurrence
+       =VAL &anchor :Value
+       =VAL :Second occurrence
+       =ALI *anchor
+      -MAP
+     -DOC
+    -STR
+
+- name: An anchor's name may hold a ':'
+  spec:
+    productions: [102, 103]
+    quotes:
+    - "[102] ns-anchor-char ::= ns-char - c-flow-indicator"
+  note: So `&a:` and then `x` is a scalar anchored `a:`, not a mapping.
+  yaml: |
+    &a: x
+  tree: |
+    +STR
+     +DOC
+      =VAL &a: :x
+     -DOC
+    -STR
+
+- name: An anchor's name ends before a flow indicator
+  spec:
+    productions: [102]
+    quotes:
+    - "6.9.2: Anchor names must not contain the “[”, “]”, “{”, “}” and “,” characters."
+  yaml: |
+    [&a, b]
+  tree: |
+    +STR
+     +DOC
+      +SEQ []
+       =VAL &a :
+       =VAL :b
+      -SEQ
+     -DOC
+    -STR
+
+- name: A flow collection at once after an anchor is none
+  spec:
+    productions: [102, 160]
+    quotes:
+    - "[102] ns-anchor-char ::= ns-char - c-flow-indicator"
+    - "[160] c-flow-json-node(n,c) ::= ( c-ns-properties(n,c) s-separate(n,c) )? c-flow-json-content(n,c)"
+  note: The anchor is `a`, and `[b]` needs a separation after it.
+  fail: true
+  yaml: |
+    &a[b] x
+
+- name: Every node anchored
+  spec:
+    productions: [101]
+    quotes:
+    - "6.9.2: An anchored node need not be referenced by any alias nodes; in particular, it is valid for all nodes to be anchored."
+  yaml: |
+    &a [&b x, &c {&d k: &e v}]
+  tree: |
+    +STR
+     +DOC
+      +SEQ [] &a
+       =VAL &b :x
+       +MAP {} &c
+        =VAL &d :k
+        =VAL &e :v
+       -MAP
+      -SEQ
+     -DOC
+    -STR

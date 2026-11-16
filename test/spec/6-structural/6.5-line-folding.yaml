@@ -1,0 +1,126 @@
+---
+- name: Line folding, trimmed and as a space (Example 6.6)
+  spec:
+    productions: [71, 72, 73]
+    quotes:
+    - "6.5: If a line break is followed by an empty line, it is trimmed; the first line break is discarded and the rest are retained as content."
+    - "[71] b-l-trimmed(n,c) ::= b-non-content l-empty(n,c)+"
+    - "[73] b-l-folded(n,c) ::= b-l-trimmed(n,c) | b-as-space"
+  yaml: |
+    >-
+      trimmed
+    ␣␣
+    ␣
+
+      as
+      space∎
+  tree: |
+    +STR
+     +DOC
+      =VAL >trimmed\n\n\nas space
+     -DOC
+    -STR
+
+- name: A line break before a line that is not empty is a space
+  spec:
+    productions: [72]
+    quotes:
+    - "6.5: Otherwise (the following line is not empty), the line break is converted to a single space (x20)."
+    - "[72] b-as-space ::= b-break"
+  yaml: |
+    a
+    b
+  tree: |
+    +STR
+     +DOC
+      =VAL :a b
+     -DOC
+    -STR
+
+- name: A line break and one empty line are a line feed
+  spec:
+    productions: [71]
+    quotes:
+    - "[71] b-l-trimmed(n,c) ::= b-non-content l-empty(n,c)+"
+  yaml: |
+    a
+
+    b
+  tree: |
+    +STR
+     +DOC
+      =VAL :a\nb
+     -DOC
+    -STR
+
+- name: A line break and two empty lines are two line feeds
+  spec:
+    productions: [71]
+    quotes:
+    - "6.5: the first line break is discarded and the rest are retained as content."
+  yaml: |
+    a
+
+
+    b
+  tree: |
+    +STR
+     +DOC
+      =VAL :a\n\nb
+     -DOC
+    -STR
+
+- name: Block folding keeps more-indented lines and the breaks around them (Example 6.7)
+  spec:
+    productions: [73]
+    quotes:
+    - "6.5: In addition, folding does not apply to line breaks surrounding text lines that contain leading white space."
+  yaml: |
+    >
+      foo␣
+    ␣
+      —»␣bar
+
+      baz
+  tree: |
+    +STR
+     +DOC
+      =VAL >foo \n\n\t bar\n\nbaz\n
+     -DOC
+    -STR
+
+- name: Flow folding drops the white space around each line (Example 6.8)
+  spec:
+    productions: [74]
+    quotes:
+    - "6.5: Once all such spaces have been discarded, all line breaks are folded without exception."
+    - "[74] s-flow-folded(n) ::= s-separate-in-line? b-l-folded(n,FLOW-IN) s-flow-line-prefix(n)"
+  yaml: |
+    "
+      foo␣
+    ␣
+      —»␣bar
+
+      baz
+    ␣"
+  tree: |
+    +STR
+     +DOC
+      =VAL " foo\nbar\nbaz␣
+     -DOC
+    -STR
+
+- name: A plain scalar's trailing spaces before a line break are dropped
+  spec:
+    productions: [74]
+    quotes:
+    - "[74] s-flow-folded(n) ::= s-separate-in-line? b-l-folded(n,FLOW-IN) s-flow-line-prefix(n)"
+  yaml: |
+    a␣␣
+      b
+  tree: |
+    +STR
+     +DOC
+      =VAL :a b
+     -DOC
+    -STR

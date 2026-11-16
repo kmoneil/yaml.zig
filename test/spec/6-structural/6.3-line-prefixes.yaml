@@ -1,0 +1,41 @@
+---
+- name: Line prefixes of plain, quoted and block scalars (Example 6.4)
+  spec:
+    productions: [67, 68, 69]
+    quotes:
+    - "6.3: This prefix always includes the indentation. For flow scalar styles it additionally includes all leading white space, which may contain tab characters."
+    - "[68] s-block-line-prefix(n) ::= s-indent(n)"
+    - "[69] s-flow-line-prefix(n) ::= s-indent(n) s-separate-in-line?"
+  yaml: |
+    plain: text
+      lines
+    quoted: "text
+      —»lines"
+    block: |
+      text
+       —»lines
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :plain
+       =VAL :text lines
+       =VAL :quoted
+       =VAL "text lines
+       =VAL :block
+       =VAL |text\n \tlines\n
+      -MAP
+     -DOC
+    -STR
+
+- name: A plain scalar's next line cannot begin with a tab before its indentation
+  spec:
+    productions: [69, 63]
+    quotes:
+    - "[69] s-flow-line-prefix(n) ::= s-indent(n) s-separate-in-line?"
+    - "6.1: To maintain portability, tab characters must not be used in indentation"
+  note: libfyaml reads `x y`.
+  fail: true
+  yaml: |
+    k: x
+    —»y

@@ -1,0 +1,75 @@
+---
+- name: Tokens separated by comment lines, a flow mapping as a key (Example 6.12)
+  spec:
+    productions: [80, 81]
+    quotes:
+    - "6.7: In all other cases, YAML allows tokens to be separated by multi-line (possibly empty) comments."
+    - "[81] s-separate-lines(n) ::= ( s-l-comments s-flow-line-prefix(n) ) | s-separate-in-line"
+  yaml: |
+    { first: Sammy, last: Sosa }:
+    # Statistics:
+      hr:  # Home runs
+         65
+      avg: # Average
+       0.278
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       +MAP {}
+        =VAL :first
+        =VAL :Sammy
+        =VAL :last
+        =VAL :Sosa
+       -MAP
+       +MAP
+        =VAL :hr
+        =VAL :65
+        =VAL :avg
+        =VAL :0.278
+       -MAP
+      -MAP
+     -DOC
+    -STR
+
+- name: An implicit key cannot be separated from its ':' by a line break
+  spec:
+    productions: [80, 154]
+    quotes:
+    - "6.7: Implicit keys are restricted to a single line."
+    - "[80] s-separate(n,FLOW-KEY) ::= s-separate-in-line"
+  fail: true
+  yaml: |
+    [a
+    : b]
+
+- name: After comment lines, the value indented past its mapping
+  spec:
+    productions: [81]
+    quotes:
+    - "6.7: Note that structures following multi-line comment separation must be properly indented, even though there is no such restriction on the separation comment lines themselves."
+  yaml: |
+    a: # c
+    # d
+      b
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :a
+       =VAL :b
+      -MAP
+     -DOC
+    -STR
+
+- name: After comment lines, a value not indented past its mapping is none
+  spec:
+    productions: [81]
+    quotes:
+    - "6.7: Note that structures following multi-line comment separation must be properly indented, even though there is no such restriction on the separation comment lines themselves."
+  note: "libfyaml reads {a: b}."
+  fail: true
+  yaml: |
+    a: # c
+    # d
+    b

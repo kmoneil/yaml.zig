@@ -1,0 +1,166 @@
+---
+- name: A comment separated from what comes before it (Example 6.9)
+  spec:
+    productions: [75, 76, 77]
+    quotes:
+    - "6.6: Comments must be separated from other tokens by white space characters."
+    - "[77] s-b-comment ::= ( s-separate-in-line c-nb-comment-text? )? b-comment"
+  yaml: |
+    key:    # Comment
+      value∎
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :key
+       =VAL :value
+      -MAP
+     -DOC
+    -STR
+
+- name: A '#' with no white space before it begins no comment
+  spec:
+    productions: [75]
+    quotes:
+    - "6.6: Comments must be separated from other tokens by white space characters."
+  yaml: |
+    a#b
+  tree: |
+    +STR
+     +DOC
+      =VAL :a#b
+     -DOC
+    -STR
+
+- name: A '#' with a space before it begins a comment
+  spec:
+    productions: [75, 77]
+    quotes:
+    - "[75] c-nb-comment-text ::= c-comment # '#' nb-char*"
+  yaml: |
+    a #b
+  tree: |
+    +STR
+     +DOC
+      =VAL :a
+     -DOC
+    -STR
+
+- name: In a flow collection, a '#' with no white space before it is the scalar's
+  spec:
+    productions: [75]
+    quotes:
+    - "6.6: Comments must be separated from other tokens by white space characters."
+  yaml: |
+    [a#b]
+  tree: |
+    +STR
+     +DOC
+      +SEQ []
+       =VAL :a#b
+      -SEQ
+     -DOC
+    -STR
+
+- name: A comment in a flow collection, then its next entry
+  spec:
+    productions: [77, 79]
+    quotes:
+    - "[79] s-l-comments ::= ( s-b-comment | <start-of-line> ) l-comment*"
+  yaml: |
+    [a, # c
+     b]
+  tree: |
+    +STR
+     +DOC
+      +SEQ []
+       =VAL :a
+       =VAL :b
+      -SEQ
+     -DOC
+    -STR
+
+- name: A stream of comment lines and white space holds no document (Example 6.10)
+  spec:
+    productions: [78]
+    quotes:
+    - "6.6: Note that outside scalar content, a line containing only white space characters is taken to be a comment line."
+    - "[78] l-comment ::= s-separate-in-line c-nb-comment-text? b-comment"
+  yaml: |
+    ␣␣# Comment
+    ␣␣␣
+    ↵
+  tree: |
+    +STR
+    -STR
+
+- name: A comment line led by a tab
+  spec:
+    productions: [78, 66]
+    quotes:
+    - "[78] l-comment ::= s-separate-in-line c-nb-comment-text? b-comment"
+    - "6.2: Note that such white space may safely include tab characters."
+  yaml: |
+    —»# c
+    a
+  tree: |
+    +STR
+     +DOC
+      =VAL :a
+     -DOC
+    -STR
+
+- name: A comment and comment lines after a key's ':' (Example 6.11)
+  spec:
+    productions: [79]
+    quotes:
+    - "6.6: In most cases, when a line may end with a comment, YAML allows it to be followed by additional comment lines."
+  yaml: |
+    key:    # Comment
+            # lines
+      value
+
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :key
+       =VAL :value
+      -MAP
+     -DOC
+    -STR
+
+- name: A comment at the end of the input, with no line break
+  spec:
+    productions: [76]
+    quotes:
+    - "6.6: To ensure JSON compatibility, YAML processors must allow for the omission of the final comment line break of the input stream."
+    - "[76] b-comment ::= b-non-content | <end-of-input>"
+  yaml: |
+    a # c∎
+  tree: |
+    +STR
+     +DOC
+      =VAL :a
+     -DOC
+    -STR
+
+- name: A block scalar header's comment cannot be followed by comment lines
+  spec:
+    productions: [77, 79]
+    quotes:
+    - "6.6: The only exception is a comment ending a block scalar header."
+  note: "The line ` # d` is the scalar's first, its indentation one space."
+  yaml: |
+    a: | # c
+     # d
+      x
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :a
+       =VAL |# d\n x\n
+      -MAP
+     -DOC
+    -STR

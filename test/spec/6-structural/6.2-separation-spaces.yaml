@@ -1,0 +1,43 @@
+---
+- name: Separation spaces may include tabs (Example 6.3)
+  spec:
+    productions: [66]
+    quotes:
+    - "6.2: Note that such white space may safely include tab characters."
+    - "[66] s-separate-in-line ::= s-white+ | <start-of-line>"
+  yaml: |
+    - foo:—»␣bar
+    - - baz
+      -—»baz
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       +MAP
+        =VAL :foo
+        =VAL :bar
+       -MAP
+       +SEQ
+        =VAL :baz
+        =VAL :baz
+       -SEQ
+      -SEQ
+     -DOC
+    -STR
+
+- name: A tab alone separates a value from its ':'
+  spec:
+    productions: [66]
+    quotes:
+    - "[66] s-separate-in-line ::= s-white+ | <start-of-line>"
+  yaml: |
+    a:—»b
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :a
+       =VAL :b
+      -MAP
+     -DOC
+    -STR

@@ -109,6 +109,10 @@ fn readCases(arena: Allocator, io: Io, path: []const u8) ![]const File {
     const files = try arena.alloc(File, paths.items.len);
     for (paths.items, files) |p, *file| {
         const text = try dir.readFileAlloc(io, p, arena, .limited(1 << 20));
+        if (cutShort(text)) |line| {
+            std.debug.print("spec: {s}/{s}:{d}: a plain `name` or `note` holding ` #` loses the rest as a comment: quote it\n", .{ path, p, line });
+            return error.CaseCutShort;
+        }
         var diagnostic: yaml.Diagnostic = .{};
         const cases = yaml.parseFromSliceLeaky([]const Case, arena, text, .{ .diagnostic = &diagnostic }) catch |err| {
             std.debug.print("spec: {s}/{s}: {f}\n", .{ path, p, &diagnostic });
@@ -117,6 +121,27 @@ fn readCases(arena: Allocator, io: Io, path: []const u8) ![]const File {
         file.* = .{ .path = try std.fs.path.join(arena, &.{ path, p }), .cases = cases };
     }
     return files;
+}
+
+/// The number of the first line whose `name` or `note`, a plain scalar,
+/// holds ` #`: the rest of it is a comment, and the value cut short
+/// with no error. Null with none.
+fn cutShort(text: []const u8) ?usize {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    var number: usize = 0;
+    while (lines.next()) |line| {
+        number += 1;
+        const field = std.mem.trimStart(u8, std.mem.trimStart(u8, line, " "), "- ");
+        const value = if (std.mem.startsWith(u8, field, "name: ")) field["name: ".len..] else if (std.mem.startsWith(u8, field, "note: ")) field["note: ".len..] else continue;
+        if (value.len == 0 or std.mem.findScalar(u8, "\"'>|", value[0]) != null) continue;
+        if (std.mem.find(u8, value, " #") != null) return number;
+    }
+    return null;
+}
+
+test "a plain name or note holding ' #' is found" {
+    try std.testing.expectEqual(2, cutShort("- name: a\n  note: b ` # c` d\n"));
+    try std.testing.expectEqual(null, cutShort("- name: a\n  note: \"b ` # c` d\"\n  yaml: |\n    a # c\n"));
 }
 
 fn lessThan(_: void, a: []const u8, b: []const u8) bool {
@@ -135,7 +160,8 @@ fn run(arena: Allocator, case: Case) !?[]const u8 {
     } else {
         if (parsed.rejection) |r| return try r.describe(arena);
         const tree = case.tree orelse return "a case that reads needs its `tree`";
-        if (try check.firstDifference(arena, try treeEvents(arena, tree), got.written())) |difference| return difference;
+        // A tree may show a trailing space as `␣`, as a case's input does.
+        if (try check.firstDifference(arena, try treeEvents(arena, try decodeMarkers(arena, tree)), got.written())) |difference| return difference;
     }
     var safe: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
     const compared = try yaml.Reader.compare(safe.allocator(), arena, input);

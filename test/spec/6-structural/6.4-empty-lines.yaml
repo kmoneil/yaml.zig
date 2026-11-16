@@ -84,3 +84,29 @@
       =VAL "a\nb
      -DOC
     -STR
+
+- name: Empty lines in a quoted and a block scalar (Example 6.5)
+  spec:
+    productions: [70]
+    quotes:
+    - "6.4: An empty line line consists of the non-content prefix followed by a line break."
+    - "[70] l-empty(n,c) ::= ( s-line-prefix(n,c) | s-indent-less-than(n) ) b-as-line-feed"
+  yaml: |
+    Folding:
+      "Empty line
+       —»
+      as a line feed"
+    Chomping: |
+      Clipped empty lines
+    ␣
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :Folding
+       =VAL "Empty line\nas a line feed
+       =VAL :Chomping
+       =VAL |Clipped empty lines\n
+      -MAP
+     -DOC
+    -STR
