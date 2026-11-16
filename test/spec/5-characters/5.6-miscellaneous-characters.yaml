@@ -96,22 +96,49 @@
     - "5.6: By convention, any URI characters other than the allowed printable ASCII characters are first encoded in UTF-8 and then each byte is escaped using the “%” character."
     - "5.6: The YAML processor must not expand such escaped characters."
     - "6.9.1: In this case, the YAML processor must deliver the verbatim tag as-is to the application."
+    - "6.9.1: The choice of tag handle is a presentation detail and must not be used to convey content information."
     - "[39] ns-uri-char"
     - "[98] c-verbatim-tag"
   note: >-
-    An open question, put to Kevin (2026-11-16). 5.6 says a processor must
-    not expand a tag's escapes, and 6.9.1 that a verbatim tag is delivered
-    as-is; Example 6.26 and the yaml-test-suite (6CK3) expand a
-    shorthand's, which settles shorthands by the rule (6.9.1's case). No
-    example or suite case reads a verbatim tag's, and yaml.zig expands it
-    as it does a shorthand's, as libfyaml and the YAML reference parser
-    do. A %TAG prefix's escape yaml.zig expands too, as the reference
-    does; libfyaml keeps it.
+    The spec conflicts with itself over a tag's %-escapes, and no reading
+    holds all of it. 5.6 says they are not expanded; Example 6.26 expands
+    a shorthand's (`!e!tag%21` is "tag:example.com,2000:app/tag!"); and
+    how a tag is written (its handle, a %TAG prefix, verbatim or not) is a
+    presentation detail that must not change it. Kept here but expanded in
+    a shorthand, the same tag written two ways would be two tags. yaml.zig
+    follows the yaml-test-suite, which expands them (6CK3), and does so in
+    every tag alike: a shorthand's suffix, a %TAG prefix, and a verbatim
+    tag, as libfyaml and the YAML reference parser do here. Kevin's call,
+    2026-11-16, by his rule that where the spec is at odds with itself
+    the yaml-test-suite decides (karte t92).
   yaml: |
     !<tag:a%2Cb> x
   tree: |
     +STR
      +DOC
       =VAL <tag:a,b> :x
+     -DOC
+    -STR
+
+- name: A %TAG prefix's escape, expanded as a shorthand's is
+  spec:
+    productions: [39, 95]
+    quotes:
+    - "5.6: The YAML processor must not expand such escaped characters."
+    - "6.9.1: The choice of tag handle is a presentation detail and must not be used to convey content information."
+    - "[95] ns-global-tag-prefix ::= ns-tag-char ns-uri-char*"
+    - "[39] ns-uri-char"
+  note: >-
+    The same conflict, and the same call, as the verbatim tag's before
+    it: expanded, so `tag:x%2C` and `a` make the tag `tag:x,` and `%2Ca`
+    would. libfyaml keeps the escape; the YAML reference parser expands
+    it.
+  yaml: |
+    %TAG !e! tag:x%2C
+    --- !e!a y
+  tree: |
+    +STR
+     +DOC ---
+      =VAL <tag:x,a> :y
      -DOC
     -STR

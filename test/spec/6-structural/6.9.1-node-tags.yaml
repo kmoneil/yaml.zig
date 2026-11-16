@@ -63,9 +63,11 @@
     exactly as presented"; this example's own result is the tag
     "tag:example.com,2000:app/tag!", the %21 expanded. yaml.zig follows
     the yaml-test-suite, which expands it (6CK3, built from this example),
-    as the YAML reference parser and libfyaml do too. Kevin's rule,
-    2026-11-16: where the spec is at odds with itself, the yaml-test-suite
-    decides (karte t92).
+    as the YAML reference parser and libfyaml do too, and expands every
+    tag's escapes alike, a verbatim tag's and a %TAG prefix's too: how a
+    tag is written is a presentation detail that must not change it
+    (5.6's cases). Kevin's call, 2026-11-16, by his rule that where the
+    spec is at odds with itself the yaml-test-suite decides (karte t92).
   yaml: |
     %TAG !e! tag:example.com,2000:app/
     ---
