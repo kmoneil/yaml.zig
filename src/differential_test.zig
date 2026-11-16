@@ -165,9 +165,9 @@ fn lineStart(input: []const u8, i: usize) usize {
 }
 
 /// A disagreement read against the spec and found libfyaml's the other
-/// way (t82): yaml.zig reads, as the spec and the YAML reference parser
-/// do, where libfyaml refuses or reads otherwise; known by what holds of
-/// the input, and why.
+/// way (t82): yaml.zig reads, as the spec says (and the YAML reference
+/// parser), where libfyaml refuses or reads otherwise; known by what holds
+/// of the input, and why.
 const Otherwise = struct {
     when: *const fn (input: []const u8) bool,
     why: []const u8,
@@ -175,39 +175,10 @@ const Otherwise = struct {
 
 const libfyaml_otherwise = [_]Otherwise{
     .{
-        .when = explicitValueWithNoBlank,
-        .why = "an explicit key's `:` asks for no blank after it, and a compact collection may follow it at once (l-block-map-explicit-value, 8.2.2): libfyaml reads `? a` then `:b: c` as the key `:b`, and refuses `:- b`",
-    },
-    .{
         .when = verbatimTagBeforeValue,
         .why = "a verbatim tag ends at its `>`, and a value's `:` may follow it at once, the key empty (7.3): libfyaml refuses `!<v>: x`",
     },
 };
-
-/// Whether a line begins, past its indentation, with a `:` and something
-/// not blank after it, where the nearest line above reaching its column
-/// has a `?` there: an explicit key's value.
-fn explicitValueWithNoBlank(input: []const u8) bool {
-    var it = std.mem.splitScalar(u8, input, '\n');
-    var line_start: usize = 0;
-    while (it.next()) |line| : (line_start += line.len + 1) {
-        const k = std.mem.findNone(u8, line, " ") orelse continue;
-        if (k + 1 < line.len and line[k] == ':' and !std.ascii.isWhitespace(line[k + 1]) and keyAbove(input[0..line_start], k)) return true;
-    }
-    return false;
-}
-
-/// Whether the nearest line of `above` with anything on it at or left of
-/// `column` has a `?` at that column.
-fn keyAbove(above: []const u8, column: usize) bool {
-    var it = std.mem.splitBackwardsScalar(u8, above, '\n');
-    while (it.next()) |line| {
-        const j = std.mem.findNone(u8, line, " ") orelse continue;
-        if (j > column) continue;
-        return column < line.len and line[column] == '?';
-    }
-    return false;
-}
 
 /// Whether a verbatim tag (`!<...>`) has a `:` at once after it.
 fn verbatimTagBeforeValue(input: []const u8) bool {
@@ -311,9 +282,8 @@ test "libfyaml's readings the spec settles otherwise are known (t82)" {
     var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    // yaml.zig reads, as the YAML reference parser does; libfyaml reads
-    // otherwise, or refuses. The seeded draw that found the first: run 8.
-    for ([_][]const u8{ "? - a\n  - b\n:- c\n", "? a\n:b: c\n", "- ? a\n  :b: c\n", "!<v>: x\n", "{!<v>: x}\n" }) |input| {
+    // yaml.zig reads, as the spec says; libfyaml refuses.
+    for ([_][]const u8{ "!<v>: x\n", "{!<v>: x}\n" }) |input| {
         const a = try ours(arena, input);
         try testing.expect(!a.refused);
         try testing.expect(!agree(a, try theirs(arena, input)));
@@ -326,10 +296,12 @@ test "libfyaml's readings the spec settles otherwise are known (t82)" {
         try testing.expect(!agree(a, try theirs(arena, input)));
         try expectAgree(arena, input);
     }
-    // Neither shape is any `:` or tab: these are still held to libfyaml.
-    try testing.expect(!explicitValueWithNoBlank("a: 1\n:b: c\n"));
-    try testing.expect(!explicitValueWithNoBlank("? a\n: b\n"));
+    // An explicit key's `:` with no blank after it (t87): both read the
+    // key `:b`, as the spec says, and both refuse `:- c` (seeded draw 8).
+    for ([_][]const u8{ "? a\n:b: c\n", "- ? a\n  :b: c\n", "? - a\n  - b\n:- c\n" }) |input| try expectAgree(arena, input);
+    // Neither shape is any tab or `:`: these are still held to libfyaml.
     try testing.expect(!tabLineBefore("k: x\n y\n", 6));
+    try testing.expect(!verbatimTagBeforeValue("!a: x\n"));
 }
 
 test "fuzz: differential: yaml.zig's events are libfyaml's" {

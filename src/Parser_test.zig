@@ -430,26 +430,21 @@ test "a flow value at once after its ':' only after a JSON-like key (t68)" {
     try expectEvents("{a:\"b\"}", "+STR\n+DOC\n+MAP {}\n=VAL :a:\"b\"\n=VAL :\n-MAP\n-DOC\n-STR");
 }
 
-test "an explicit key's ':' needs no blank after it before a compact entry (t82)" {
-    // Found by the differential campaign, held to the YAML reference
-    // parser: l-block-map-explicit-value (8.2.2) asks for no blank after
-    // its `:`, so a compact collection may begin at once. libfyaml reads
-    // `:b` as a key, as yaml.zig did, and refuses `:- b`
-    // (differential_test.zig's `libfyaml_otherwise`).
-    try expectEvents("? a\n:b: c\n", "+STR\n+DOC\n+MAP\n=VAL :a\n+MAP\n=VAL :b\n=VAL :c\n-MAP\n-MAP\n-DOC\n-STR");
-    try expectEvents("?\n:b: c\n", "+STR\n+DOC\n+MAP\n=VAL :\n+MAP\n=VAL :b\n=VAL :c\n-MAP\n-MAP\n-DOC\n-STR");
-    try expectEvents("? a\n:- b\n", "+STR\n+DOC\n+MAP\n=VAL :a\n+SEQ\n=VAL :b\n-SEQ\n-MAP\n-DOC\n-STR");
-    try expectEvents("? a\n::x: y\n", "+STR\n+DOC\n+MAP\n=VAL :a\n+MAP\n=VAL ::x\n=VAL :y\n-MAP\n-MAP\n-DOC\n-STR");
-    try expectEvents("? a\n:\"q\": y\n", "+STR\n+DOC\n+MAP\n=VAL :a\n+MAP\n=VAL \"q\n=VAL :y\n-MAP\n-MAP\n-DOC\n-STR");
-    try expectEvents("? a\n:b: c\nd: e\n", "+STR\n+DOC\n+MAP\n=VAL :a\n+MAP\n=VAL :b\n=VAL :c\n-MAP\n=VAL :d\n=VAL :e\n-MAP\n-DOC\n-STR");
-    try expectEvents("- ? a\n  :b: c\n", "+STR\n+DOC\n+SEQ\n+MAP\n=VAL :a\n+MAP\n=VAL :b\n=VAL :c\n-MAP\n-MAP\n-SEQ\n-DOC\n-STR");
-    // With the key's value given already, or no explicit key, or no
-    // entry able to begin after the `:`, the line is a key beginning `:`.
-    // (On the last, the reference parser also prints an event of the
-    // reading it gave up.)
-    try expectEvents("? a\n: x\n:b: c\n", "+STR\n+DOC\n+MAP\n=VAL :a\n=VAL :x\n=VAL ::b\n=VAL :c\n-MAP\n-DOC\n-STR");
-    try expectEvents("a: 1\n:b: c\n", "+STR\n+DOC\n+MAP\n=VAL :a\n=VAL :1\n=VAL ::b\n=VAL :c\n-MAP\n-DOC\n-STR");
-    try expectEvents("? a\n:#x: y\n", "+STR\n+DOC\n+MAP\n=VAL :a\n=VAL :\n=VAL ::#x\n=VAL :y\n-MAP\n-DOC\n-STR");
+test "a ':' with no blank after it is no indicator, after an explicit key too (t87)" {
+    // YAML 1.2.2 marks every mapping value's `:` "not followed by non-ws
+    // char" (l-block-map-explicit-value [191], c-l-block-map-implicit-value
+    // [194]), and a plain scalar may begin with `:` and a safe character
+    // "as this causes no ambiguity" (7.3.3). So after `? a`, `:b: c` is the
+    // key `:b`. The YAML reference parser checks this of `?` but not of
+    // `:`, and reads the value's compact mapping; libfyaml reads as here.
+    try expectEvents("? a\n:b: c\n", "+STR\n+DOC\n+MAP\n=VAL :a\n=VAL :\n=VAL ::b\n=VAL :c\n-MAP\n-DOC\n-STR");
+    try expectEvents("?\n::\n b\n", "+STR\n+DOC\n+MAP\n=VAL :\n=VAL :\n=VAL ::\n=VAL :b\n-MAP\n-DOC\n-STR");
+    try expectEvents("- ? a\n  :b: c\n", "+STR\n+DOC\n+SEQ\n+MAP\n=VAL :a\n=VAL :\n=VAL ::b\n=VAL :c\n-MAP\n-SEQ\n-DOC\n-STR");
+    try expectEvents("? a\n:- b\n", "+STR\n+DOC\n+MAP\n=VAL :a\nERROR 2:1 could not find the ':' this key needs");
+    // With a blank after it, the explicit value may hold a compact
+    // collection on its line.
+    try expectEvents("? a\n: b: c\n", "+STR\n+DOC\n+MAP\n=VAL :a\n+MAP\n=VAL :b\n=VAL :c\n-MAP\n-MAP\n-DOC\n-STR");
+    try expectEvents("? a\n: - b\n", "+STR\n+DOC\n+MAP\n=VAL :a\n+SEQ\n=VAL :b\n-SEQ\n-MAP\n-DOC\n-STR");
 }
 
 test "a verbatim tag may end just before a value's ':', an empty key (t82)" {

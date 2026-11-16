@@ -837,10 +837,6 @@ fn blockMappingExplicitValue(r: *Reader) Error!void {
     }
     if (r.column() != r.indent()) return error.Unsupported;
     if (r.atIndicator(':')) return r.blockMappingValue(true);
-    // A `:` with no blank after it may be the value's all the same, a
-    // compact collection after it (`:b: c`), or begin a key: the
-    // scanner's `explicitValueHere` decides, rare enough to leave to it.
-    if (r.s.ch(0) == ':') return error.Unsupported;
     if (!try r.atKey()) return error.Unsupported;
     r.state = .block_mapping_key;
     return r.emitEmpty(r.s.mark);
