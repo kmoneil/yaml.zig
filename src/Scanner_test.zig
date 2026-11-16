@@ -637,6 +637,27 @@ test "quoted scalars as keys, values and entries; their marks" {
     try testing.expectEqualDeep(Scanner.Mark{ .offset = 6, .column = 5 }, token.end);
 }
 
+test "a \\u surrogate pair is the character JSON means by it (t94)" {
+    // RFC 8259's own: U+1D11E, G clef, as its UTF-16 pair.
+    try expectTokens("\"\\uD834\\uDD1E \\ud83d\\ude00\"",
+        \\+STR
+        \\"𝄞 😀
+        \\-STR
+    );
+    var s: Scanner = .init(testing.allocator, "\"\\uD834\\uDD1E\"");
+    defer s.deinit();
+    _ = try s.next();
+    const token = try s.next();
+    try testing.expectEqualDeep(Scanner.Mark{ .offset = 14, .column = 14 }, token.end);
+    // A high surrogate with no low one after it, or a low one alone.
+    for ([_][]const u8{ "\"\\uD834\"", "\"\\uD834x\"", "\"\\uD834\\u0041\"", "\"\\uD834\\uD834\"", "\"\\uDD1E\\uD834\"", "\"\\uD834\\uDD1\"", "\"\\U0000D834\\uDD1E\"" }) |input| {
+        try expectTokens(input,
+            \\+STR
+            \\ERROR 1:2 an escape names no Unicode character
+        );
+    }
+}
+
 test "quoted scalar errors (suite 55WF, QB6E, 5TRB, RXY3, DK95/01)" {
     try expectTokens("\"\\.\"",
         \\+STR

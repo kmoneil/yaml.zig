@@ -1235,13 +1235,31 @@ fn scanEscape(s: *Scanner, arena: Allocator, value: *std.ArrayList(u8)) Error!vo
     };
     s.skipN(2);
     const hex = s.input[s.mark.offset..][0..@min(digits, s.input.len - s.mark.offset)];
-    const code = parseHex(hex) orelse return s.fail(mark, "an escape needs as many hex digits as its letter says");
+    var code = parseHex(hex) orelse return s.fail(mark, "an escape needs as many hex digits as its letter says");
     if (hex.len < digits) return s.fail(mark, "an escape needs as many hex digits as its letter says");
+    s.skipN(digits);
+    // JSON writes a character past U+FFFF as two `\u` escapes, its UTF-16
+    // surrogate pair, and the double-quoted style is "a superset of the
+    // JSON string format" (YAML 1.2.2, 7.5): the pair is that character.
+    // A surrogate alone names none, and is refused below (t94).
+    if (c == 'u' and code >= 0xD800 and code <= 0xDBFF) {
+        if (s.lowSurrogateNext()) |low| {
+            code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+            s.skipN(6);
+        }
+    }
     const point = std.math.cast(u21, code) orelse return s.fail(mark, "an escape names no Unicode character");
     var buf: [4]u8 = undefined;
     const len = std.unicode.utf8Encode(point, &buf) catch return s.fail(mark, "an escape names no Unicode character");
     try value.appendSlice(arena, buf[0..len]);
-    s.skipN(digits);
+}
+
+/// The low surrogate a `\u` escape at the cursor names, if it names one.
+fn lowSurrogateNext(s: *const Scanner) ?u32 {
+    const at = s.mark.offset;
+    if (at + 6 > s.input.len or s.input[at] != '\\' or s.input[at + 1] != 'u') return null;
+    const low = parseHex(s.input[at + 2 ..][0..4]) orelse return null;
+    return if (low >= 0xDC00 and low <= 0xDFFF) low else null;
 }
 
 /// The number `hex` spells in hex digits alone (no sign, no `_`).

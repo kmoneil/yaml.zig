@@ -1,0 +1,191 @@
+---
+- name: Every escape (Example 5.13)
+  spec:
+    productions: [62, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 54, 55, 56, 57, 58, 59, 60, 61]
+    quotes:
+    - "5.7: Each escape sequence must be parsed into the appropriate Unicode character."
+    - "[62] c-ns-esc-char"
+    - "[41] c-escape ::= '\\'"
+    - "[42] ns-esc-null ::= '0'"
+    - "[43] ns-esc-bell ::= 'a'"
+    - "[44] ns-esc-backspace ::= 'b'"
+    - "[45] ns-esc-horizontal-tab ::= 't' | x09"
+    - "[46] ns-esc-line-feed ::= 'n'"
+    - "[47] ns-esc-vertical-tab ::= 'v'"
+    - "[48] ns-esc-form-feed ::= 'f'"
+    - "[49] ns-esc-carriage-return ::= 'r'"
+    - "[50] ns-esc-escape ::= 'e'"
+    - "[51] ns-esc-space ::= x20"
+    - "[52] ns-esc-double-quote ::= '\"'"
+    - "[54] ns-esc-backslash ::= '\\'"
+    - "[55] ns-esc-next-line ::= 'N'"
+    - "[56] ns-esc-non-breaking-space ::= '_'"
+    - "[57] ns-esc-line-separator ::= 'L'"
+    - "[58] ns-esc-paragraph-separator ::= 'P'"
+    - "[59] ns-esc-8-bit ::= 'x' ns-hex-digit{2}"
+    - "[60] ns-esc-16-bit ::= 'u' ns-hex-digit{4}"
+    - "[61] ns-esc-32-bit ::= 'U' ns-hex-digit{8}"
+  yaml: |
+    - "Fun with \\"
+    - "\" \a \b \e \f"
+    - "\n \r \t \v \0"
+    - "\  \_ \N \L \P \
+      \x41 A \U00000041"
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       =VAL "Fun with \\
+       =VAL "" \a \b \e \f
+       =VAL "\n \r \t \v \0
+       =VAL "  \_ \N \L \P A A A
+      -SEQ
+     -DOC
+    -STR
+  json: |
+    ["Fun with \\", "\" \u0007 \b \u001b \f", "\n \r \t \u000b \u0000", "    \u0085     A A A"]
+
+- name: An escaped '/', and a '\' before a tab
+  spec:
+    productions: [53, 45]
+    quotes:
+    - "[53] ns-esc-slash ::= '/'"
+    - "[45] ns-esc-horizontal-tab ::= 't' | x09"
+  yaml: |
+    "a\/b\—»c"
+  tree: |
+    +STR
+     +DOC
+      =VAL "a/b\tc
+     -DOC
+    -STR
+
+- name: Invalid escapes (Example 5.14)
+  spec:
+    productions: [62, 59]
+    quotes:
+    - "[62] c-ns-esc-char"
+    - "[59] ns-esc-8-bit ::= 'x' ns-hex-digit{2}"
+  fail: true
+  yaml: |
+    Bad escapes:
+      "\c
+      \xq-"
+
+- name: An escape of too few hex digits
+  spec:
+    productions: [59, 36]
+    quotes:
+    - "[59] ns-esc-8-bit ::= 'x' ns-hex-digit{2}"
+    - "[36] ns-hex-digit ::= ns-dec-digit # 0-9 | [x41-x46] # A-F | [x61-x66] # a-f"
+  fail: true
+  yaml: |
+    "\x4"
+
+- name: An escape's hex digits, of either case
+  spec:
+    productions: [60, 36]
+    quotes:
+    - "[60] ns-esc-16-bit ::= 'u' ns-hex-digit{4}"
+    - "[36] ns-hex-digit ::= ns-dec-digit # 0-9 | [x41-x46] # A-F | [x61-x66] # a-f"
+  yaml: |
+    "éé\U0001F600"
+  tree: |
+    +STR
+     +DOC
+      =VAL "éé😀
+     -DOC
+    -STR
+
+- name: An escape of a character not printable
+  spec:
+    productions: [59]
+    quotes:
+    - "5.1: Characters outside this set must be presented using escape sequences."
+    - "[59] ns-esc-8-bit"
+  yaml: |
+    "\x80\x7F"
+  tree: "+STR\n +DOC\n  =VAL \"\u0080\u007F\n -DOC\n-STR\n"
+  json: |
+    "\u0080\u007f"
+
+- name: An escape past the last Unicode character
+  spec:
+    productions: [61]
+    quotes:
+    - "5.7: Each escape sequence must be parsed into the appropriate Unicode character."
+    - "[61] ns-esc-32-bit"
+  note: The YAML reference parser reads a NUL.
+  fail: true
+  yaml: |
+    "\U00110000"
+
+- name: Two \u escapes of a UTF-16 surrogate pair are the one character, as in JSON
+  spec:
+    productions: [60]
+    quotes:
+    - "7.5: Even the double-quoted style is a superset of the JSON string format."
+    - "5.7: Each escape sequence must be parsed into the appropriate Unicode character."
+    - "[60] ns-esc-16-bit"
+  note: >-
+    JSON writes a character past U+FFFF as the 12-character escape of its
+    UTF-16 surrogate pair (RFC 8259, 7: U+1D11E as "𝄞"), and
+    the double-quoted style is a superset of JSON's strings, so the pair
+    reads as JSON reads it. The yaml-test-suite has no case; libfyaml and
+    the YAML reference parser read it so. yaml.zig refused it before
+    karte t94.
+  yaml: |
+    "𝄞 😀"
+  tree: |
+    +STR
+     +DOC
+      =VAL "𝄞 😀
+     -DOC
+    -STR
+
+- name: A \u escape of a surrogate alone
+  spec:
+    productions: [60, 1]
+    quotes:
+    - "5.7: Each escape sequence must be parsed into the appropriate Unicode character."
+    - "[1] | [xA0-xD7FF] # Basic Multilingual Plane (BMP) | [xE000-xFFFD] # Additional Unicode Areas"
+    - "[60] ns-esc-16-bit"
+  note: >-
+    A surrogate is no character; alone, half of a pair, it names none.
+    libfyaml refuses it too; the YAML reference parser reads U+FFFD.
+  fail: true
+  yaml: |
+    "\uD800"
+
+- name: A low surrogate's escape before a high one's
+  spec:
+    productions: [60]
+    quotes:
+    - "5.7: Each escape sequence must be parsed into the appropriate Unicode character."
+    - "[60] ns-esc-16-bit"
+  fail: true
+  yaml: |
+    "\uDD1E\uD834"
+
+- name: A '\' is no escape but in a double-quoted scalar
+  spec:
+    productions: [41]
+    quotes:
+    - "5.7: Note that escape sequences are only interpreted in double-quoted scalars."
+    - "5.7: In all other scalar styles, the “\\” character has no special meaning and non-printable characters are not available."
+    - "[41] c-escape"
+  yaml: |
+    - a\tb
+    - 'a\tb'
+    - |
+      a\tb
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       =VAL :a\\tb
+       =VAL 'a\\tb
+       =VAL |a\\tb\n
+      -SEQ
+     -DOC
+    -STR
