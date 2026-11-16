@@ -1,0 +1,63 @@
+---
+- name: A mapping value's block scalar must be indented past the mapping
+  spec:
+    productions: [199, 81, 69]
+    quotes:
+    - "[199] s-l+block-scalar(n,c) ::= s-separate(n+1,c) ( c-ns-properties(n+1,c) s-separate(n+1,c) )? ( c-l+literal(n) | c-l+folded(n) )"
+    - "[81] s-separate-lines(n) ::= ( s-l-comments s-flow-line-prefix(n) ) | s-separate-in-line"
+  note: Only a block sequence has an indentless form (seq-space). Also `-`, a line break, `|`.
+  fail: true
+  yaml: |
+    k:
+    |
+     x
+
+- name: A mapping value's block scalar, a space past the mapping
+  spec:
+    productions: [199]
+    quotes:
+    - "[199] s-l+block-scalar(n,c) ::= s-separate(n+1,c) ( c-ns-properties(n+1,c) s-separate(n+1,c) )? ( c-l+literal(n) | c-l+folded(n) )"
+  yaml: |
+    k:
+     |
+     x
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :k
+       =VAL |x\n
+      -MAP
+     -DOC
+    -STR
+
+- name: A tab cannot indent a flow node in a block
+  spec:
+    productions: [197, 81, 69]
+    quotes:
+    - "[197] s-l+flow-in-block(n) ::= s-separate(n+1,FLOW-OUT) ns-flow-node(n+1,FLOW-OUT) s-l-comments"
+    - "[69] s-flow-line-prefix(n) ::= s-indent(n) s-separate-in-line?"
+    - "6.1: To maintain portability, tab characters must not be used in indentation"
+  note: The yaml-test-suite's DK95/00 has this with a plain scalar (`foo:`, a tab, `bar`).
+  fail: true
+  yaml: |
+    c:
+    —»[a]
+
+- name: At the top level, where the column is 0, a tab may come before a flow node
+  spec:
+    productions: [197, 69, 63]
+    quotes:
+    - "[197] s-l+flow-in-block(n) ::= s-separate(n+1,FLOW-OUT) ns-flow-node(n+1,FLOW-OUT) s-l-comments"
+    - "[69] s-flow-line-prefix(n) ::= s-indent(n) s-separate-in-line?"
+  note: As the yaml-test-suite's 6CA3 and Q5MG.
+  yaml: |
+    —»[a]
+  tree: |
+    +STR
+     +DOC
+      +SEQ []
+       =VAL :a
+      -SEQ
+     -DOC
+    -STR

@@ -1,0 +1,86 @@
+---
+- name: A blank line of a tab, before a mapping value's column, ends its plain scalar
+  spec:
+    productions: [70, 69, 64]
+    quotes:
+    - "[70] l-empty(n,c) ::= ( s-line-prefix(n,c) | s-indent-less-than(n) ) b-as-line-feed"
+    - "[69] s-flow-line-prefix(n) ::= s-indent(n) s-separate-in-line?"
+    - "[64] s-indent-less-than(n+1) ::= s-space s-indent-less-than(n) | <empty>"
+    - "6.1: To maintain portability, tab characters must not be used in indentation"
+  note: >-
+    The value's scalar is at n = 1, so a line of it, blank or not, takes
+    one space first; with none, the tab's line is a comment's, and ` y`
+    is out of place. libfyaml folds over it and reads `x y` (karte t82).
+  fail: true
+  yaml: |
+    k: x
+    —»
+     y
+
+- name: A blank line of a space and then a tab is a line of the scalar
+  spec:
+    productions: [70, 69]
+    quotes:
+    - "[70] l-empty(n,c) ::= ( s-line-prefix(n,c) | s-indent-less-than(n) ) b-as-line-feed"
+    - "[69] s-flow-line-prefix(n) ::= s-indent(n) s-separate-in-line?"
+  yaml: |
+    k: x
+    ␣—»
+     y
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :k
+       =VAL :x\ny
+      -MAP
+     -DOC
+    -STR
+
+- name: At the top level, where the column is 0, a blank line of a tab is one of the scalar
+  spec:
+    productions: [70, 69, 63]
+    quotes:
+    - "[69] s-flow-line-prefix(n) ::= s-indent(n) s-separate-in-line?"
+    - "[63] s-indent(0) ::= <empty>"
+  yaml: |
+    x
+    —»
+    y
+  tree: |
+    +STR
+     +DOC
+      =VAL :x\ny
+     -DOC
+    -STR
+
+- name: A blank line of a tab, before a mapping value's column, cannot be in its quoted scalar
+  spec:
+    productions: [70, 69, 64]
+    quotes:
+    - "[70] l-empty(n,c) ::= ( s-line-prefix(n,c) | s-indent-less-than(n) ) b-as-line-feed"
+    - "[69] s-flow-line-prefix(n) ::= s-indent(n) s-separate-in-line?"
+    - "6.1: To maintain portability, tab characters must not be used in indentation"
+  note: The yaml-test-suite's DK95/01 has a tab leading a quoted scalar's line with text on it.
+  fail: true
+  yaml: |
+    k: "a
+    —»
+     b"
+
+- name: At the top level, a blank line of a tab is a line of a quoted scalar
+  spec:
+    productions: [70, 69, 63]
+    quotes:
+    - "[69] s-flow-line-prefix(n) ::= s-indent(n) s-separate-in-line?"
+    - "[63] s-indent(0) ::= <empty>"
+  yaml: |
+    "a
+    —»
+     b"
+  tree: |
+    +STR
+     +DOC
+      =VAL "a\nb
+     -DOC
+    -STR

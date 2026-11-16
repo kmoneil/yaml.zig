@@ -1,0 +1,40 @@
+---
+- name: A reserved directive is a directive, so a '---' must follow it
+  spec:
+    productions: [209, 82, 83]
+    quotes:
+    - "[209] l-directive-document ::= l-directive+ l-explicit-document"
+    - "[82] ( ns-yaml-directive | ns-tag-directive | ns-reserved-directive )"
+  note: libfyaml reads one with no `---` after it (karte t68).
+  fail: true
+  yaml: |
+    %FOO
+
+- name: A reserved directive and a '---' begin a document
+  spec:
+    productions: [209, 83]
+    quotes:
+    - "[209] l-directive-document ::= l-directive+ l-explicit-document"
+    - "[83] ns-reserved-directive ::= ns-directive-name ( s-separate-in-line ns-directive-parameter )*"
+  yaml: |
+    %FOO bar
+    --- x
+  tree: |
+    +STR
+     +DOC ---
+      =VAL :x
+     -DOC
+    -STR
+
+- name: A global tag prefix cannot begin with a flow indicator
+  spec:
+    productions: [93, 95, 40]
+    quotes:
+    - "[93] ns-tag-prefix ::= c-ns-local-tag-prefix | ns-global-tag-prefix"
+    - "[95] ns-global-tag-prefix ::= ns-tag-char ns-uri-char*"
+    - "[40] ns-tag-char ::= ns-uri-char - c-tag # '!' - c-flow-indicator"
+  note: The YAML reference parser and libfyaml read it (karte t68).
+  fail: true
+  yaml: |
+    %TAG ! ,x
+    --- a

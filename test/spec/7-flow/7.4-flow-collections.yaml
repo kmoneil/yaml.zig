@@ -1,0 +1,60 @@
+---
+- name: A flow collection's '?' needs white space after it
+  spec:
+    productions: [150, 126]
+    quotes:
+    - "[150] c-mapping-key # '?' (not followed by non-ws char) s-separate(n,c) ns-flow-map-explicit-entry(n,c)"
+    - "[126] ( c-mapping-key # '?' | c-mapping-value # ':' | c-sequence-entry # '-' ) [ lookahead = ns-plain-safe(c) ]"
+  note: Before `]`, `?` begins no plain scalar either, `]` being no ns-plain-safe(c) in a flow collection.
+  fail: true
+  yaml: |
+    [?]
+
+- name: A '?' before a safe character begins a plain scalar
+  spec:
+    productions: [126]
+    quotes:
+    - "[126] ( c-mapping-key # '?' | c-mapping-value # ':' | c-sequence-entry # '-' ) [ lookahead = ns-plain-safe(c) ]"
+  yaml: |
+    {?: a}
+  tree: |
+    +STR
+     +DOC
+      +MAP {}
+       =VAL :?
+       =VAL :a
+      -MAP
+     -DOC
+    -STR
+
+- name: After a key that is not JSON-like, a flow value needs a separation from its ':'
+  spec:
+    productions: [147]
+    quotes:
+    - "[147] c-mapping-value # ':' [ lookahead ≠ ns-plain-safe(c) ] ( ( s-separate(n,c) ns-flow-node(n,c) ) | e-node # \"\" )"
+  note: libfyaml reads it (karte t68).
+  fail: true
+  yaml: |
+    [a:[b]]
+
+- name: After a JSON-like key, a flow value may follow its ':' at once
+  spec:
+    productions: [149, 153]
+    quotes:
+    - "[149] c-mapping-value # ':' ( ( s-separate(n,c)? ns-flow-node(n,c) ) | e-node # \"\" )"
+    - "[153] c-ns-flow-pair-json-key-entry(n,c) ::= c-s-implicit-json-key(FLOW-KEY) c-ns-flow-map-adjacent-value(n,c)"
+  yaml: |
+    ["a":[b]]
+  tree: |
+    +STR
+     +DOC
+      +SEQ []
+       +MAP {}
+        =VAL "a
+        +SEQ []
+         =VAL :b
+        -SEQ
+       -MAP
+      -SEQ
+     -DOC
+    -STR

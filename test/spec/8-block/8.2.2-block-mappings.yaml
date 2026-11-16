@@ -1,0 +1,80 @@
+---
+- name: After an explicit key, a ':' with no blank after it is no indicator
+  spec:
+    productions: [191, 126]
+    quotes:
+    - "[191] c-mapping-value # ':' (not followed by non-ws char)"
+    - "7.3.3: However, the “:”, “?” and “-” indicators may be used as the first character if followed by a non-space “safe” character, as this causes no ambiguity."
+  note: >-
+    The YAML reference parser reads {a: {b: c}}: its grammar checks the
+    note for `?` ([190]) but not for `:` (karte t87). libfyaml reads as
+    here.
+  yaml: |
+    ? a
+    :b: c
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :a
+       =VAL :
+       =VAL ::b
+       =VAL :c
+      -MAP
+     -DOC
+    -STR
+
+- name: After an explicit key, a ':' and a blank begin its value, a compact mapping
+  spec:
+    productions: [191, 185]
+    quotes:
+    - "[191] l-block-map-explicit-value(n) ::= s-indent(n) c-mapping-value # ':' (not followed by non-ws char) s-l+block-indented(n,BLOCK-OUT)"
+    - "[185] s-indent(m) ( ns-l-compact-sequence(n+1+m) | ns-l-compact-mapping(n+1+m) )"
+  yaml: |
+    ? a
+    : b: c
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :a
+       +MAP
+        =VAL :b
+        =VAL :c
+       -MAP
+      -MAP
+     -DOC
+    -STR
+
+- name: An implicit key's value holds no block collection on the ':'s line
+  spec:
+    productions: [194, 200]
+    quotes:
+    - "[194] c-mapping-value # ':' (not followed by non-ws char) ( s-l+block-node(n,BLOCK-OUT) | ( e-node # \"\" s-l-comments ) )"
+    - "[200] s-l+block-collection(n,c) ::= ( s-separate(n+1,c) c-ns-properties(n+1,c) )? s-l-comments ( seq-space(n,c) | l+block-mapping(n) )"
+  note: >-
+    A block collection begins on the lines after its s-l-comments; only an
+    explicit key's value may hold a compact one ([185]). Also `: ? a`.
+  fail: true
+  yaml: |
+    : - a
+
+- name: An explicit key's value may hold a compact sequence on the ':'s line
+  spec:
+    productions: [191, 185]
+    quotes:
+    - "[185] s-indent(m) ( ns-l-compact-sequence(n+1+m) | ns-l-compact-mapping(n+1+m) )"
+  yaml: |
+    ? a
+    : - b
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :a
+       +SEQ
+        =VAL :b
+       -SEQ
+      -MAP
+     -DOC
+    -STR

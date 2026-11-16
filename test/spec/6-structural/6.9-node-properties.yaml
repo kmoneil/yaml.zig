@@ -1,0 +1,66 @@
+---
+- name: A verbatim tag and an empty scalar make a key, its ':' at once after the tag
+  spec:
+    productions: [154, 159, 98]
+    quotes:
+    - "[154] ns-s-implicit-yaml-key(c) ::= ns-flow-yaml-node(0,c) s-separate-in-line?"
+    - "[159] ( c-ns-properties(n,c) ( ( s-separate(n,c) ns-flow-yaml-content(n,c) ) | e-scalar ) )"
+    - "[98] c-verbatim-tag ::= \"!<\" ns-uri-char+ '>'"
+  note: >-
+    A shorthand tag would take the `:` into its name (`!a: x` is tagged
+    `!a:`). libfyaml refuses it (karte t82).
+  yaml: |
+    !<v>: x
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL <v> :
+       =VAL :x
+      -MAP
+     -DOC
+    -STR
+
+- name: A flow collection's properties need a separation before it
+  spec:
+    productions: [160, 96]
+    quotes:
+    - "[160] c-flow-json-node(n,c) ::= ( c-ns-properties(n,c) s-separate(n,c) )? c-flow-json-content(n,c)"
+  fail: true
+  yaml: |
+    [!{a: b}]
+
+- name: A flow node's properties and an empty scalar, a closer at once after them
+  spec:
+    productions: [159]
+    quotes:
+    - "[159] ( c-ns-properties(n,c) ( ( s-separate(n,c) ns-flow-yaml-content(n,c) ) | e-scalar ) )"
+  yaml: |
+    [!a]
+  tree: |
+    +STR
+     +DOC
+      +SEQ []
+       =VAL <!a> :
+      -SEQ
+     -DOC
+    -STR
+
+- name: A flow collection's properties, a space, and the collection
+  spec:
+    productions: [160]
+    quotes:
+    - "[160] c-flow-json-node(n,c) ::= ( c-ns-properties(n,c) s-separate(n,c) )? c-flow-json-content(n,c)"
+  yaml: |
+    [! {a: b}]
+  tree: |
+    +STR
+     +DOC
+      +SEQ []
+       +MAP {} <!>
+        =VAL :a
+        =VAL :b
+       -MAP
+      -SEQ
+     -DOC
+    -STR

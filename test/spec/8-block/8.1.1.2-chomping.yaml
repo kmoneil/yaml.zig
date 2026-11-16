@@ -1,0 +1,73 @@
+---
+- name: A tab-led comment after a block scalar, where the document ends, is the stream's
+  spec:
+    productions: [169, 78]
+    quotes:
+    - "[169] l-trail-comments(n) ::= s-indent-less-than(n) c-nb-comment-text b-comment l-comment*"
+    - "[78] l-comment ::= s-separate-in-line c-nb-comment-text? b-comment"
+  note: >-
+    s-indent-less-than takes spaces alone, so the tab's line is none of
+    the scalar's trailing comments, and the scalar ends before it. The
+    yaml-test-suite's Y79Y/000 is an error only because an entry follows
+    the line (karte t68).
+  yaml: |
+    foo: |
+      x
+    —»# c∎
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :foo
+       =VAL |x\n
+      -MAP
+     -DOC
+    -STR
+
+- name: A clipped block scalar with no text line has no line break to keep
+  spec:
+    productions: [173, 166, 167]
+    quotes:
+    - "[173] l-literal-content(n,t) ::= ( l-nb-literal-text(n) b-nb-literal-next(n)* b-chomped-last(t) )? l-chomped-empty(n,t)"
+    - "[166] l-chomped-empty(n,CLIP) ::= l-strip-empty(n)"
+    - "8.1.1.2: However, any trailing empty lines are excluded from the scalar's content."
+  note: >-
+    The yaml-test-suite's K858 has `clip: >` and an empty line read as "".
+    With the last line a space and no line break, the YAML reference
+    parser reads "\n" (karte t82).
+  yaml: |
+    k: |
+
+    ␣∎
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :k
+       =VAL |
+      -MAP
+     -DOC
+    -STR
+
+- name: A kept block scalar keeps the empty line after a text line of a space
+  spec:
+    productions: [173, 171, 168, 70]
+    quotes:
+    - "[171] l-nb-literal-text(n) ::= l-empty(n,BLOCK-IN)* s-indent(n) nb-char+"
+    - "[168] l-keep-empty(n) ::= l-empty(n,BLOCK-IN)* l-trail-comments(n)?"
+    - "8.1.1.2: In this case, the final line break and any trailing empty lines are considered to be part of the scalar's content."
+  note: >-
+    At the top level n is -1, so `|2+` puts the content at column 1, and
+    the line of two spaces is text, a space. The YAML reference parser
+    reads " \n", dropping the empty line; with `x` for that space it
+    reads " x\n\n", as here (karte t82).
+  yaml: |
+    |2+
+    ␣␣
+    ↵
+  tree: |
+    +STR
+     +DOC
+      =VAL | \n\n
+     -DOC
+    -STR

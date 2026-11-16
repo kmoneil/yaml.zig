@@ -24,6 +24,7 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run tests, zigvet and gnarl");
     const harness = addTests(b, test_step, target, optimize, mod);
+    const spec_harness = addSpecTests(b, test_step, target, optimize, mod);
 
     // The same tests with yaml built ReleaseSafe and ReleaseFast. A
     // consumer builds this library in the mode it ships; in ReleaseFast
@@ -34,7 +35,15 @@ pub fn build(b: *std.Build) void {
     for ([_]std.builtin.Optimize{ .safe, .fast }) |mode| {
         const release_mod = b.createModule(.{ .root_source_file = b.path("src/root.zig"), .target = target, .optimize = mode });
         _ = addTests(b, release_step, target, mode, release_mod);
+        _ = addSpecTests(b, release_step, target, mode, release_mod);
     }
+
+    // `zig build spec [-- coverage]` runs the spec suite (test/spec, karte
+    // t88) and prints its count, or the productions no case exercises.
+    const spec_step = b.step("spec", "Run the spec suite, its quotes held to YAML 1.2.2 (-- coverage: what no case exercises)");
+    const spec_run = specRun(b, spec_harness);
+    spec_run.addPassthruArgs();
+    spec_step.dependOn(&spec_run.step);
 
     // tools/doc_examples.zig fails when the README's copy of an example
     // differs from its file in examples/. `zig build doc-examples --
@@ -264,6 +273,38 @@ fn addTests(b: *std.Build, step: *std.Build.Step, target: std.Build.ResolvedTarg
     quiet.addArgs(&.{ "check", "--quiet" });
     step.dependOn(&quiet.step);
     return harness;
+}
+
+/// The spec suite (test/spec.zig, karte t88): its own tests, and its
+/// harness run over test/spec's cases against YAML 1.2.2's text, as steps
+/// `step` depends on. Returns the harness.
+fn addSpecTests(b: *std.Build, step: *std.Build.Step, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, yaml: *std.Build.Module) *std.Build.Step.Compile {
+    const spec_mod = b.createModule(.{
+        .root_source_file = b.path("test/spec.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "yaml", .module = yaml }},
+    });
+    step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = spec_mod })).step);
+    const harness = b.addExecutable(.{ .name = "spec", .root_module = spec_mod });
+    const run = specRun(b, harness);
+    run.addArg("check");
+    step.dependOn(&run.step);
+    return harness;
+}
+
+/// A run of the spec harness over test/spec, against YAML 1.2.2's text:
+/// yaml/yaml-spec's spec/1.2.2/spec.md, kept as it is in
+/// test/spec/yaml-1.2.2.md (it "may be freely copied, provided it is not
+/// modified"). Fetching it would not do: Zig 0.17.1's package cache
+/// drops the archive's executable bits, and the hash then differs.
+fn specRun(b: *std.Build, harness: *std.Build.Step.Compile) *std.Build.Step.Run {
+    const run = b.addRunArtifact(harness);
+    run.addDirectoryArg(b.path("test/spec"));
+    run.addFileArg(b.path("test/spec/yaml-1.2.2.md"));
+    // It reads the cases as it runs, which the build does not see.
+    run.has_side_effects = true;
+    return run;
 }
 
 /// The `yaml` command's module, over `yaml`, built for `target`.

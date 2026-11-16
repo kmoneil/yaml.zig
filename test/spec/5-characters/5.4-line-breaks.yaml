@@ -1,0 +1,37 @@
+---
+- name: A carriage return alone ends a line
+  spec:
+    productions: [28]
+    quotes:
+    - "[28] | b-carriage-return | b-line-feed"
+    - "5.4: Outside scalar content, YAML allows any line break to be used to terminate lines."
+  note: >-
+    The YAML reference parser and libfyaml take a lone carriage return as
+    no line break (karte t82).
+  yaml: |
+    - a←- b←∎
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       =VAL :a
+       =VAL :b
+      -SEQ
+     -DOC
+    -STR
+
+- name: A carriage return alone inside a plain scalar is a line break, folded
+  spec:
+    productions: [28, 29]
+    quotes:
+    - "[28] | b-carriage-return | b-line-feed"
+    - "[29] b-as-line-feed ::= b-break"
+    - "5.4: Line breaks inside scalar content must be normalized by the YAML processor. Each such line break must be parsed into a single line feed character."
+  yaml: |
+    a←b
+  tree: |
+    +STR
+     +DOC
+      =VAL :a b
+     -DOC
+    -STR

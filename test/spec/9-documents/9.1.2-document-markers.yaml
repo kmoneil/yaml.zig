@@ -1,0 +1,25 @@
+---
+- name: Nothing but a comment may follow a '...' on its line, with no document before it too
+  spec:
+    productions: [205, 204, 211]
+    quotes:
+    - "[205] l-document-suffix ::= c-document-end s-l-comments"
+    - "[204] c-document-end ::= \"...\" # (not followed by non-ws char)"
+  fail: true
+  yaml: |
+    ... a
+
+- name: A '...' and a comment, then a document
+  spec:
+    productions: [205, 211]
+    quotes:
+    - "[205] l-document-suffix ::= c-document-end s-l-comments"
+  yaml: |
+    ... # c
+    b
+  tree: |
+    +STR
+     +DOC
+      =VAL :b
+     -DOC
+    -STR
