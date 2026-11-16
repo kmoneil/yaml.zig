@@ -112,6 +112,32 @@ test "yaml, each command end to end" {
     }
 }
 
+test "skill --install refuses a link, as Homebrew's, and leaves what it points to" {
+    // Making a link on Windows needs a privilege a test cannot count on.
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "brew/skill");
+    try tmp.dir.writeFile(io, .{ .sub_path = "brew/skill/SKILL.md", .data = "brew's\n" });
+    try tmp.dir.createDirPath(io, "agents");
+    try tmp.dir.symLink(io, "../brew/skill", "agents/yaml", .{ .is_directory = true });
+    const exe = try Io.Dir.cwd().realPathFileAlloc(io, test_options.yaml_exe, gpa);
+    defer gpa.free(exe);
+
+    const result = try std.process.run(gpa, io, .{ .argv = &.{ exe, "skill", "--install", "agents" }, .cwd = .{ .dir = tmp.dir } });
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+    try std.testing.expectEqualStrings("", result.stdout);
+    try std.testing.expectEqualStrings("yaml: agents/yaml is a link to ../brew/skill, which keeps the skill current by itself; to write a copy there instead, remove the link first\n", result.stderr);
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 2 }, result.term);
+
+    const kept = try tmp.dir.readFileAlloc(io, "brew/skill/SKILL.md", gpa, .limited(64));
+    defer gpa.free(kept);
+    try std.testing.expectEqualStrings("brew's\n", kept);
+}
+
 /// Runs the binary in `dir` with `args`, its stdout and then its stderr.
 fn runIn(gpa: std.mem.Allocator, io: Io, dir: Io.Dir, exe: []const u8, args: []const []const u8) ![]u8 {
     var argv: std.ArrayList([]const u8) = .empty;

@@ -147,14 +147,19 @@ for the yaml installed. There are two ways to put it there.
 **With Homebrew**, the formula installs the skill beside the binary.
 Link it once, and every `brew upgrade` keeps it current:
 
-```sh
-mkdir -p ~/.agents/skills ~/.claude/skills
-ln -s "$(brew --prefix)/opt/yaml/share/yaml/skill" ~/.agents/skills/yaml
-ln -s "$(brew --prefix)/opt/yaml/share/yaml/skill" ~/.claude/skills/yaml
+```console
+$ mkdir -p ~/.agents/skills ~/.claude/skills
+$ rm -rf ~/.agents/skills/yaml ~/.claude/skills/yaml
+$ ln -s "$(brew --prefix)/opt/yaml/share/yaml/skill" ~/.agents/skills/yaml
+$ ln -s "$(brew --prefix)/opt/yaml/share/yaml/skill" ~/.claude/skills/yaml
+$ readlink ~/.claude/skills/yaml
+/opt/homebrew/opt/yaml/share/yaml/skill
 ```
 
-If either destination is already a directory, from an earlier
-`yaml skill --install`, remove it first.
+The `rm` clears what an earlier `yaml skill --install` left there:
+`ln -s` onto a folder puts the link inside it and says nothing.
+`readlink` prints the skill's path under your Homebrew prefix; if it
+prints nothing, the link is not there.
 
 **Otherwise**, `yaml skill --install DIR` writes `DIR/yaml/SKILL.md`:
 
@@ -165,4 +170,6 @@ yaml skill --install ~/.agents/skills
 
 Run it again after an upgrade. The guide needs nothing, but the name
 and description in `SKILL.md` are a copy made when it ran, and a release
-can change them; a second run writes over the first.
+can change them; a second run writes over the first. Where `DIR/yaml`
+is a link, as Homebrew's is, it refuses and says so: that skill is
+current already, and to write a copy there instead, remove the link.

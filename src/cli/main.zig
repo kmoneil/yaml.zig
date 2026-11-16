@@ -685,6 +685,15 @@ fn skill(arena: Allocator, io: Io, out: *Io.Writer, args: Args) !u8 {
     };
     const sub = try std.fs.path.join(arena, &.{ dir, "yaml" });
     const path = try std.fs.path.join(arena, &.{ sub, "SKILL.md" });
+    // A link there is another install's, as Homebrew's is (docs/cli.md),
+    // and keeps the skill current by itself. Writing through it would
+    // change that install's copy, and createDirPath refuses it as NotDir,
+    // which says nothing of why (t86).
+    var target: [Io.Dir.max_path_bytes]u8 = undefined;
+    if (Io.Dir.cwd().readLink(io, sub, &target)) |len| {
+        std.debug.print("yaml: {s} is a link to {s}, which keeps the skill current by itself; to write a copy there instead, remove the link first\n", .{ sub, target[0..len] });
+        return 2;
+    } else |_| {}
     Io.Dir.cwd().createDirPath(io, sub) catch |err| {
         std.debug.print("yaml: {s}: {t}\n", .{ sub, err });
         return 2;
