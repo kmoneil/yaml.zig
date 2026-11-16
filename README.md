@@ -349,7 +349,10 @@ $ yaml json --merge-keys compose.yaml | jq .services
 - `--merge-keys`, `--schema`, `--duplicate-keys keep` and `--max-depth`
   set the library's options. A file named `-` is standard input.
 - `yaml skill` prints a guide for AI coding agents, every example in it
-  tested; `yaml skill --install DIR` installs it.
+  tested. Homebrew installs it as a skill to link once into
+  `~/.claude/skills` or `~/.agents/skills`, and
+  `yaml skill --install ~/.claude/skills` writes it there without
+  Homebrew; [the yaml command](docs/cli.md#for-ai-agents) has both.
 
 The exit status is 0 on success, 1 when a file is not YAML, lint warns,
 or a path has no value, and 2 for a usage error. `yaml --help` lists

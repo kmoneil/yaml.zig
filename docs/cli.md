@@ -134,5 +134,35 @@ not be read.
 
 `yaml skill` prints a guide for coding agents: each command with an
 example, the errors seen most and how to fix them. Every example in it
-is tested. `yaml skill --install DIR` writes `DIR/yaml/SKILL.md`, which
-tells the agent to run `yaml skill`, so it is never out of date.
+is tested.
+
+An agent finds it as a skill: a `yaml/SKILL.md` in the folder it reads
+skills from, `~/.claude/skills` for Claude Code and `~/.agents/skills`
+for Codex, Cursor, Gemini CLI and most others (or a repository's
+`.claude/skills`, for that repository alone). The skill is short: the
+name and description that tell the agent when to load it, and a line
+that has it run `yaml skill`, so the guide it reads is always the one
+for the yaml installed. There are two ways to put it there.
+
+**With Homebrew**, the formula installs the skill beside the binary.
+Link it once, and every `brew upgrade` keeps it current:
+
+```sh
+mkdir -p ~/.agents/skills ~/.claude/skills
+ln -s "$(brew --prefix)/opt/yaml/share/yaml/skill" ~/.agents/skills/yaml
+ln -s "$(brew --prefix)/opt/yaml/share/yaml/skill" ~/.claude/skills/yaml
+```
+
+If either destination is already a directory, from an earlier
+`yaml skill --install`, remove it first.
+
+**Otherwise**, `yaml skill --install DIR` writes `DIR/yaml/SKILL.md`:
+
+```sh
+yaml skill --install ~/.claude/skills
+yaml skill --install ~/.agents/skills
+```
+
+Run it again after an upgrade. The guide needs nothing, but the name
+and description in `SKILL.md` are a copy made when it ran, and a release
+can change them; a second run writes over the first.

@@ -51,7 +51,10 @@ const usage =
     \\skill prints what an AI agent needs to work with yaml: each command
     \\with an example, the errors seen most and how to fix them, the exit
     \\status. --install <dir> writes <dir>/yaml/SKILL.md, a stub that has
-    \\the agent run `yaml skill`, so it is never out of date.
+    \\the agent run `yaml skill`: <dir> is ~/.claude/skills for Claude
+    \\Code, ~/.agents/skills for most other agents. Run it again after an
+    \\upgrade, since the stub's name and description are a copy. Homebrew
+    \\installs the stub for you to link once: `brew info kmoneil/tap/yaml`.
     \\
     \\A file named - is read from standard input. UTF-16 and UTF-32 are
     \\read too, by their byte order mark or their first bytes.
@@ -88,7 +91,9 @@ const skill_text = @embedFile("skill.md");
 
 /// What `yaml skill --install` writes: the skill's frontmatter, so an
 /// agent knows when to load it, and a line that hands over to `yaml
-/// skill`, so it never needs updating (as karte's does).
+/// skill`, so the guide is always this binary's (as karte's does). The
+/// frontmatter is a copy, current only until a release changes it; the
+/// Homebrew formula writes the stub with this at every install (t83).
 const skill_stub = skill_text[0 .. (std.mem.find(u8, skill_text[4..], "\n---\n") orelse unreachable) + 4 + "\n---\n".len] ++
     \\
     \\Run `yaml skill` and follow what it prints: it is the guide to the yaml installed on this machine, current for its version.

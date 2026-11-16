@@ -74,7 +74,10 @@ jobs:
       # runs after the tag, which cannot move. So the same checks run here
       # first, on a dry run too. They are a copy of the `test do` block in
       # the tap's yaml.rb, and change when it does. Like brew, it runs in an
-      # empty directory.
+      # empty directory. The formula's install writes the agent skill with
+      # `yaml skill --install` too, so a release where that fails would not
+      # install at all; its last check, that the skill it installed is the
+      # one the binary writes, needs the installed formula and is not here.
       - name: the tap formula's test passes
         run: |
           bin="$PWD/zig-out/release/yaml-linux-amd64"
@@ -100,6 +103,11 @@ jobs:
             *"a mapping cannot have two equal keys"*) ;;
             *) fail "check on dup.yaml does not name the duplicate key" "$got" ;;
           esac
+
+          got="$("$bin" skill --install "$dir")"
+          [ "$got" = "wrote $dir/yaml/SKILL.md" ] || fail "skill --install did not say it wrote yaml/SKILL.md" "$got"
+          got="$(sed -n 2p "$dir/yaml/SKILL.md")"
+          [ "$got" = "name: yaml" ] || fail "the skill skill --install wrote is not named yaml" "$got"
       - name: checksums
         run: cd zig-out/release && sha256sum yaml-* > SHA256SUMS && cat SHA256SUMS
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
