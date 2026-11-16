@@ -1,0 +1,96 @@
+---
+- name: Flow content, JSON-like and plain (Example 7.23)
+  spec:
+    productions: [156, 157, 158]
+    quotes:
+    - "7.5: JSON-like flow styles all have explicit start and end indicators."
+    - "[156] ns-flow-yaml-content(n,c) ::= ns-plain(n,c)"
+    - "[157] c-flow-json-content(n,c) ::= c-flow-sequence(n,c) | c-flow-mapping(n,c) | c-single-quoted(n,c) | c-double-quoted(n,c)"
+    - "[158] ns-flow-content(n,c) ::= ns-flow-yaml-content(n,c) | c-flow-json-content(n,c)"
+  yaml: |
+    - [ a, b ]
+    - { a: b }
+    - "a"
+    - 'b'
+    - c
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       +SEQ []
+        =VAL :a
+        =VAL :b
+       -SEQ
+       +MAP {}
+        =VAL :a
+        =VAL :b
+       -MAP
+       =VAL "a
+       =VAL 'b
+       =VAL :c
+      -SEQ
+     -DOC
+    -STR
+
+- name: Flow nodes, with properties, an alias, and properties alone (Example 7.24)
+  spec:
+    productions: [159, 160, 161]
+    quotes:
+    - "7.5: A complete flow node also has optional node properties, except for alias nodes which refer to the anchored node properties."
+    - "[159] ns-flow-yaml-node"
+    - "[160] c-flow-json-node(n,c) ::= ( c-ns-properties(n,c) s-separate(n,c) )? c-flow-json-content(n,c)"
+    - "[161] ns-flow-node"
+  yaml: |
+    - !!str "a"
+    - 'b'
+    - &anchor "c"
+    - *anchor
+    - !!str
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       =VAL <tag:yaml.org,2002:str> "a
+       =VAL 'b
+       =VAL &anchor "c
+       =ALI *anchor
+       =VAL <tag:yaml.org,2002:str> :
+      -SEQ
+     -DOC
+    -STR
+  json: |
+    ["a", "b", "c", "c", ""]
+
+- name: Properties alone in a flow collection, as an entry and as a key
+  spec:
+    productions: [161, 159]
+    quotes:
+    - "[161] ( c-ns-properties(n,c) ( ( s-separate(n,c) ns-flow-content(n,c) ) | e-scalar ) )"
+    - "[159] ns-flow-yaml-node"
+  yaml: |
+    - [!!str, &a]
+    - {&b : c}
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       +SEQ []
+        =VAL <tag:yaml.org,2002:str> :
+        =VAL &a :
+       -SEQ
+       +MAP {}
+        =VAL &b :
+        =VAL :c
+       -MAP
+      -SEQ
+     -DOC
+    -STR
+
+- name: A JSON-like node's properties need a separation before its content
+  spec:
+    productions: [160]
+    quotes:
+    - "[160] c-flow-json-node(n,c) ::= ( c-ns-properties(n,c) s-separate(n,c) )? c-flow-json-content(n,c)"
+  fail: true
+  yaml: |
+    [!!str"a"]

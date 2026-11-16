@@ -1,0 +1,157 @@
+---
+- name: Double-quoted implicit keys, in a block and in a flow (Example 7.4)
+  spec:
+    productions: [109, 110, 111]
+    quotes:
+    - "7.3.1: Double-quoted scalars are restricted to a single line when contained inside an implicit key."
+    - "[109] c-double-quoted(n,c) ::= c-double-quote # '\"' nb-double-text(n,c) c-double-quote # '\"'"
+    - "[110] nb-double-text"
+    - "[111] nb-double-one-line ::= nb-double-char*"
+  yaml: |
+    "implicit block key" : [
+      "implicit flow key" : value,
+     ]
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL "implicit block key
+       +SEQ []
+        +MAP {}
+         =VAL "implicit flow key
+         =VAL :value
+        -MAP
+       -SEQ
+      -MAP
+     -DOC
+    -STR
+
+- name: A double-quoted implicit key of two lines
+  spec:
+    productions: [110]
+    quotes:
+    - "7.3.1: Double-quoted scalars are restricted to a single line when contained inside an implicit key."
+    - "[110] nb-double-text(n,BLOCK-KEY) ::= nb-double-one-line"
+  yaml: |
+    "a
+    b": c
+  fail: true
+
+- name: Escapes for '\' and '"', and a tab as it is
+  spec:
+    productions: [107, 108]
+    quotes:
+    - '7.3.1: This comes at the cost of having to escape the “\” and “"” characters.'
+    - "[107] nb-double-char ::= c-ns-esc-char | ( nb-json - c-escape # '\\' - c-double-quote # '\"' )"
+    - "[108] ns-double-char"
+  yaml: |
+    "a\\b\"c—»d"
+  tree: |
+    +STR
+     +DOC
+      =VAL "a\\b"c\td
+     -DOC
+    -STR
+
+- name: A '"' unescaped ends the scalar
+  spec:
+    productions: [107, 109]
+    quotes:
+    - "[107] nb-double-char ::= c-ns-esc-char | ( nb-json - c-escape # '\\' - c-double-quote # '\"' )"
+    - "[109] c-double-quoted"
+  fail: true
+  yaml: |
+    "a"b"
+
+- name: Line breaks folded, trimmed, and escaped (Example 7.5)
+  spec:
+    productions: [112, 113]
+    quotes:
+    - "7.3.1: In a multi-line double-quoted scalar, line breaks are subject to flow line folding, which discards any trailing white space characters."
+    - "7.3.1: In this case, the escaped line break is excluded from the content and any trailing white space characters that precede the escaped line break are preserved."
+    - "[112] s-double-escaped(n) ::= s-white* c-escape # '\\' b-non-content l-empty(n,FLOW-IN)* s-flow-line-prefix(n)"
+    - "[113] s-double-break(n) ::= s-double-escaped(n) | s-flow-folded(n)"
+  yaml: |
+    "folded␣
+    to a space,—»
+    ␣
+    to a line feed, or␣—»\
+    ␣\␣—»non-content"
+  tree: |
+    +STR
+     +DOC
+      =VAL "folded to a space,\nto a line feed, or \t \tnon-content
+     -DOC
+    -STR
+
+- name: An escaped line break keeps the white space before it, not the next line's prefix
+  spec:
+    productions: [112]
+    quotes:
+    - "7.3.1: In this case, the escaped line break is excluded from the content and any trailing white space characters that precede the escaped line break are preserved."
+    - "[112] s-double-escaped"
+  yaml: |
+    - "a␣␣\
+      b"
+    - "a\
+          b"
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       =VAL "a  b
+       =VAL "ab
+      -SEQ
+     -DOC
+    -STR
+
+- name: Double-quoted lines, their leading and trailing white space excluded (Example 7.6)
+  spec:
+    productions: [114, 115, 116]
+    quotes:
+    - "7.3.1: All leading and trailing white space characters on each line are excluded from the content."
+    - "7.3.1: Empty lines, if any, are consumed as part of the line folding."
+    - "[114] nb-ns-double-in-line ::= ( s-white* ns-double-char )*"
+    - "[115] s-double-next-line"
+    - "[116] nb-double-multi-line"
+  yaml: |
+    "␣1st non-empty
+
+    ␣2nd non-empty␣
+    —»3rd non-empty␣"
+  tree: |
+    +STR
+     +DOC
+      =VAL " 1st non-empty\n2nd non-empty 3rd non-empty␣
+     -DOC
+    -STR
+
+- name: A double-quoted scalar's next line needs the indentation of its block
+  spec:
+    productions: [115, 69]
+    quotes:
+    - "[115] s-double-next-line(n) ::= s-double-break(n)"
+    - "[69] s-flow-line-prefix(n) ::= s-indent(n) s-separate-in-line?"
+  yaml: |
+    a: "b
+    c"
+  fail: true
+
+- name: A double-quoted scalar's next line indented past its block's
+  spec:
+    productions: [115, 69]
+    quotes:
+    - "[115] s-double-next-line(n) ::= s-double-break(n)"
+    - "[69] s-flow-line-prefix(n) ::= s-indent(n) s-separate-in-line?"
+  yaml: |
+    a: "b
+     c"
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :a
+       =VAL "b c
+      -MAP
+     -DOC
+    -STR

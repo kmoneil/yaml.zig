@@ -1,0 +1,113 @@
+---
+- name: Aliases, each to the most recent node with its anchor (Example 7.1)
+  spec:
+    productions: [104]
+    quotes:
+    - "7.1: The alias refers to the most recent preceding node having the same anchor."
+    - "[104] c-ns-alias-node ::= c-alias # '*' ns-anchor-name"
+  yaml: |
+    First occurrence: &anchor Foo
+    Second occurrence: *anchor
+    Override anchor: &anchor Bar
+    Reuse anchor: *anchor
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :First occurrence
+       =VAL &anchor :Foo
+       =VAL :Second occurrence
+       =ALI *anchor
+       =VAL :Override anchor
+       =VAL &anchor :Bar
+       =VAL :Reuse anchor
+       =ALI *anchor
+      -MAP
+     -DOC
+    -STR
+  json: |
+    {"First occurrence": "Foo", "Second occurrence": "Foo", "Override anchor": "Bar", "Reuse anchor": "Bar"}
+
+- name: An alias to an anchor that comes after it
+  spec:
+    productions: [104]
+    quotes:
+    - "7.1: It is an error for an alias node to use an anchor that does not previously occur in the document."
+    - "[104] c-ns-alias-node"
+  note: The events are well-formed; the error is in composing them.
+  yaml: |
+    - *a
+    - &a x
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       =ALI *a
+       =VAL &a :x
+      -SEQ
+     -DOC
+    -STR
+  compose_fail: true
+
+- name: An alias to an anchor in the document before
+  spec:
+    productions: [104]
+    quotes:
+    - "7.1: It is an error for an alias node to use an anchor that does not previously occur in the document."
+    - "[104] c-ns-alias-node"
+  yaml: |
+    &a x
+    --- *a
+  tree: |
+    +STR
+     +DOC
+      =VAL &a :x
+     -DOC
+     +DOC ---
+      =ALI *a
+     -DOC
+    -STR
+  compose_fail: true
+
+- name: An anchor no alias uses
+  spec:
+    productions: [104]
+    quotes:
+    - "7.1: It is not an error to specify an anchor that is not used by any alias node."
+    - "[104] c-ns-alias-node"
+  yaml: |
+    [&a x, &b y, *a]
+  tree: |
+    +STR
+     +DOC
+      +SEQ []
+       =VAL &a :x
+       =VAL &b :y
+       =ALI *a
+      -SEQ
+     -DOC
+    -STR
+  json: |
+    ["x", "y", "x"]
+
+- name: An alias with an anchor of its own
+  spec:
+    productions: [104, 161]
+    quotes:
+    - "7.1: Note that an alias node must not specify any properties or content, as these were already specified at the first occurrence of the node."
+    - "[161] ns-flow-node(n,c) ::= c-ns-alias-node | ns-flow-content(n,c)"
+    - "[104] c-ns-alias-node"
+  fail: true
+  yaml: |
+    [&a x, &b *a]
+
+- name: An alias with a tag
+  spec:
+    productions: [104]
+    quotes:
+    - "7.1: Note that an alias node must not specify any properties or content, as these were already specified at the first occurrence of the node."
+    - "[104] c-ns-alias-node"
+  fail: true
+  yaml: |
+    - &a x
+    - !!str *a

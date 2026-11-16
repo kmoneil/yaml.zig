@@ -1,0 +1,509 @@
+---
+- name: Flow mappings, a final ',' and none (Example 7.15)
+  spec:
+    productions: [140, 141]
+    quotes:
+    - "7.4.2: Flow mappings are denoted by surrounding “{” and “}” characters."
+    - "7.4.2: Mapping entries are separated by a “,” character."
+    - "[140] c-flow-mapping(n,c) ::= c-mapping-start # '{' s-separate(n,c)? ns-s-flow-map-entries(n,in-flow(c))? c-mapping-end # '}'"
+    - "[141] ns-s-flow-map-entries"
+  yaml: |
+    - { one : two , three: four , }
+    - {five: six,seven : eight}
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       +MAP {}
+        =VAL :one
+        =VAL :two
+        =VAL :three
+        =VAL :four
+       -MAP
+       +MAP {}
+        =VAL :five
+        =VAL :six
+        =VAL :seven
+        =VAL :eight
+       -MAP
+      -SEQ
+     -DOC
+    -STR
+
+- name: A ',' alone in a flow mapping
+  spec:
+    productions: [141]
+    quotes:
+    - "7.4: This does not cause ambiguity because flow collection entries can never be completely empty."
+    - "[141] ns-s-flow-map-entries"
+  fail: true
+  yaml: |
+    {,}
+
+- name: Explicit, implicit, and completely empty entries (Example 7.16)
+  spec:
+    productions: [142, 143]
+    quotes:
+    - "7.4.2: If the optional “?” mapping key indicator is specified, the rest of the entry may be completely empty."
+    - "[142] ns-flow-map-entry"
+    - "[143] ns-flow-map-explicit-entry(n,c) ::= ns-flow-map-implicit-entry(n,c) | ( e-node # \"\" e-node # \"\" )"
+  yaml: |
+    {
+    ? explicit: entry,
+    implicit: entry,
+    ?
+    }
+  tree: |
+    +STR
+     +DOC
+      +MAP {}
+       =VAL :explicit
+       =VAL :entry
+       =VAL :implicit
+       =VAL :entry
+       =VAL :
+       =VAL :
+      -MAP
+     -DOC
+    -STR
+
+- name: A '?' and a space, then nothing
+  spec:
+    productions: [142, 143]
+    quotes:
+    - "[142] c-mapping-key # '?' (not followed by non-ws char) s-separate(n,c) ns-flow-map-explicit-entry(n,c)"
+    - "[143] ns-flow-map-explicit-entry"
+  yaml: |
+    {? }
+  tree: |
+    +STR
+     +DOC
+      +MAP {}
+       =VAL :
+       =VAL :
+      -MAP
+     -DOC
+    -STR
+
+- name: A '?' before a non-space character begins a plain key
+  spec:
+    productions: [142, 126]
+    quotes:
+    - "[142] c-mapping-key # '?' (not followed by non-ws char) s-separate(n,c) ns-flow-map-explicit-entry(n,c)"
+    - "[126] ( c-mapping-key # '?' | c-mapping-value # ':' | c-sequence-entry # '-' ) [ lookahead = ns-plain-safe(c) ]"
+  yaml: |
+    {?a: b}
+  tree: |
+    +STR
+     +DOC
+      +MAP {}
+       =VAL :?a
+       =VAL :b
+      -MAP
+     -DOC
+    -STR
+
+- name: A '?' before a '}' is neither an indicator nor a plain scalar
+  spec:
+    productions: [142, 126, 129]
+    quotes:
+    - "[142] c-mapping-key # '?' (not followed by non-ws char) s-separate(n,c) ns-flow-map-explicit-entry(n,c)"
+    - "[126] ( c-mapping-key # '?' | c-mapping-value # ':' | c-sequence-entry # '-' ) [ lookahead = ns-plain-safe(c) ]"
+    - "[129] ns-plain-safe-in ::= ns-char - c-flow-indicator"
+  note: libfyaml reads a plain `?`.
+  fail: true
+  yaml: |
+    {?}
+
+- name: Separate values, an omitted value and an omitted key (Example 7.17)
+  spec:
+    productions: [144, 145, 146, 147]
+    quotes:
+    - "7.4.2: Normally, YAML insists the “:” mapping value indicator be separated from the value by white space."
+    - "7.4.2: Note that the value may be completely empty since its existence is indicated by the “:”."
+    - "[144] ns-flow-map-implicit-entry"
+    - "[145] ns-flow-map-yaml-key-entry"
+    - "[146] c-ns-flow-map-empty-key-entry(n,c) ::= e-node # \"\" c-ns-flow-map-separate-value(n,c)"
+    - "[147] c-ns-flow-map-separate-value"
+  yaml: |
+    {
+    unquoted␣:␣"separate",
+    https://foo.com,
+    omitted value:,
+    :␣omitted key,
+    }
+  tree: |
+    +STR
+     +DOC
+      +MAP {}
+       =VAL :unquoted
+       =VAL "separate
+       =VAL :https://foo.com
+       =VAL :
+       =VAL :omitted value
+       =VAL :
+       =VAL :
+       =VAL :omitted key
+      -MAP
+     -DOC
+    -STR
+
+- name: A ':' before a safe character is in the key; before a '}' or ',' it is an indicator
+  spec:
+    productions: [147, 145]
+    quotes:
+    - "7.4.2: It is also a potential source for confusion as “a:1” is a plain scalar and not a key/value pair."
+    - "[147] c-mapping-value # ':' [ lookahead ≠ ns-plain-safe(c) ]"
+    - "[145] ns-flow-map-yaml-key-entry"
+  yaml: |
+    {a:1, b:, c:}
+  tree: |
+    +STR
+     +DOC
+      +MAP {}
+       =VAL :a:1
+       =VAL :
+       =VAL :b
+       =VAL :
+       =VAL :c
+       =VAL :
+      -MAP
+     -DOC
+    -STR
+
+- name: After a plain key, a flow value needs a separation from its ':'
+  spec:
+    productions: [147]
+    quotes:
+    - "[147] c-mapping-value # ':' [ lookahead ≠ ns-plain-safe(c) ] ( ( s-separate(n,c) ns-flow-node(n,c) ) | e-node # \"\" )"
+  note: libfyaml reads it (karte t68).
+  fail: true
+  yaml: |
+    {a:[b]}
+
+- name: A plain key of two lines, and a ':' on the line after its key
+  spec:
+    productions: [145, 147]
+    quotes:
+    - "[145] ns-flow-map-yaml-key-entry(n,c) ::= ns-flow-yaml-node(n,c) ( ( s-separate(n,c)? c-ns-flow-map-separate-value(n,c) ) | e-node # \"\" )"
+    - "[147] c-ns-flow-map-separate-value"
+  note: >-
+    Only a single pair in a flow sequence ([154]) and a block mapping's
+    implicit key are held to one line; the yaml-test-suite reads these
+    alike (NJ66, 4MUZ).
+  yaml: |
+    - { foo
+       bar: baz }
+    - { foo
+       : bar }
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       +MAP {}
+        =VAL :foo bar
+        =VAL :baz
+       -MAP
+       +MAP {}
+        =VAL :foo
+        =VAL :bar
+       -MAP
+      -SEQ
+     -DOC
+    -STR
+
+- name: A flow mapping's plain key of more than 1024 characters
+  spec:
+    productions: [145]
+    quotes:
+    - "[145] ns-flow-map-yaml-key-entry(n,c) ::= ns-flow-yaml-node(n,c)"
+  note: The 1024-character limit is a single pair's ([154]), in a flow sequence; a flow mapping's key has none.
+  yaml: |
+    { kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk: v }
+  tree: |
+    +STR
+     +DOC
+      +MAP {}
+       =VAL :kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk
+       =VAL :v
+      -MAP
+     -DOC
+    -STR
+
+- name: Adjacent values after JSON-like keys (Example 7.18)
+  spec:
+    productions: [148, 149]
+    quotes:
+    - "7.4.2: To ensure JSON compatibility, if a key inside a flow mapping is JSON-like, YAML allows the following value to be specified adjacent to the “:”."
+    - "[148] c-ns-flow-map-json-key-entry"
+    - "[149] c-ns-flow-map-adjacent-value(n,c) ::= c-mapping-value # ':' ( ( s-separate(n,c)? ns-flow-node(n,c) ) | e-node # \"\" )"
+  yaml: |
+    {
+    "adjacent":value,
+    "readable":␣value,
+    "empty":
+    }
+  tree: |
+    +STR
+     +DOC
+      +MAP {}
+       =VAL "adjacent
+       =VAL :value
+       =VAL "readable
+       =VAL :value
+       =VAL "empty
+       =VAL :
+      -MAP
+     -DOC
+    -STR
+
+- name: A JSON-like key of two lines, and a ':' on the line after it
+  spec:
+    productions: [148, 110]
+    quotes:
+    - "[148] c-ns-flow-map-json-key-entry(n,c) ::= c-flow-json-node(n,c) ( ( s-separate(n,c)? c-ns-flow-map-adjacent-value(n,c) ) | e-node # \"\" )"
+    - "[110] nb-double-text(n,FLOW-IN) ::= nb-double-multi-line(n)"
+  yaml: |
+    - {"a
+       b": c}
+    - {"d"
+      :e}
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       +MAP {}
+        =VAL "a b
+        =VAL :c
+       -MAP
+       +MAP {}
+        =VAL "d
+        =VAL :e
+       -MAP
+      -SEQ
+     -DOC
+    -STR
+
+- name: A single pair in a flow sequence (Example 7.19)
+  spec:
+    productions: [150, 151, 152]
+    quotes:
+    - "7.4.2: A more compact notation is usable inside flow sequences, if the mapping contains a single key/value pair."
+    - "[150] ns-flow-pair"
+    - "[151] ns-flow-pair-entry"
+    - "[152] ns-flow-pair-yaml-key-entry(n,c) ::= ns-s-implicit-yaml-key(FLOW-KEY) c-ns-flow-map-separate-value(n,c)"
+  yaml: |
+    [
+    foo: bar
+    ]
+  tree: |
+    +STR
+     +DOC
+      +SEQ []
+       +MAP {}
+        =VAL :foo
+        =VAL :bar
+       -MAP
+      -SEQ
+     -DOC
+    -STR
+
+- name: A single pair's properties are its key's
+  spec:
+    productions: [150]
+    quotes:
+    - "7.4.2: Note that it is not possible to specify any node properties for the mapping in this case."
+    - "[150] ns-flow-pair"
+  yaml: |
+    [ &a foo: bar ]
+  tree: |
+    +STR
+     +DOC
+      +SEQ []
+       +MAP {}
+        =VAL &a :foo
+        =VAL :bar
+       -MAP
+      -SEQ
+     -DOC
+    -STR
+
+- name: A single pair with an explicit key of two lines (Example 7.20)
+  spec:
+    productions: [150, 143]
+    quotes:
+    - "7.4.2: If the “?” indicator is explicitly specified, parsing is unambiguous and the syntax is identical to the general case."
+    - "[150] ns-flow-pair(n,c) ::= ( c-mapping-key # '?' (not followed by non-ws char) s-separate(n,c) ns-flow-map-explicit-entry(n,c) ) | ns-flow-pair-entry(n,c)"
+    - "[143] ns-flow-map-explicit-entry"
+  yaml: |
+    [
+    ? foo
+     bar : baz
+    ]
+  tree: |
+    +STR
+     +DOC
+      +SEQ []
+       +MAP {}
+        =VAL :foo bar
+        =VAL :baz
+       -MAP
+      -SEQ
+     -DOC
+    -STR
+
+- name: Single pairs with a plain key, an empty key, and a JSON-like key (Example 7.21)
+  spec:
+    productions: [151, 152, 153, 154, 155, 146]
+    quotes:
+    - "[151] ns-flow-pair-entry(n,c) ::= ns-flow-pair-yaml-key-entry(n,c) | c-ns-flow-map-empty-key-entry(n,c) | c-ns-flow-pair-json-key-entry(n,c)"
+    - "[152] ns-flow-pair-yaml-key-entry"
+    - "[153] c-ns-flow-pair-json-key-entry"
+    - "[154] ns-s-implicit-yaml-key"
+    - "[155] c-s-implicit-json-key"
+    - "[146] c-ns-flow-map-empty-key-entry"
+  yaml: |
+    - [ YAML␣: separate ]
+    - [ : empty key entry ]
+    - [ {JSON: like}:adjacent ]
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       +SEQ []
+        +MAP {}
+         =VAL :YAML
+         =VAL :separate
+        -MAP
+       -SEQ
+       +SEQ []
+        +MAP {}
+         =VAL :
+         =VAL :empty key entry
+        -MAP
+       -SEQ
+       +SEQ []
+        +MAP {}
+         +MAP {}
+          =VAL :JSON
+          =VAL :like
+         -MAP
+         =VAL :adjacent
+        -MAP
+       -SEQ
+      -SEQ
+     -DOC
+    -STR
+
+- name: A single pair's plain key of two lines (Example 7.22)
+  spec:
+    productions: [154]
+    quotes:
+    - "7.4.2: In addition, the key is restricted to a single line."
+    - "[154] ns-s-implicit-yaml-key"
+  note: libfyaml reads it.
+  fail: true
+  yaml: |
+    [ foo
+     bar: invalid ]
+
+- name: A single pair's JSON-like key of two lines
+  spec:
+    productions: [155]
+    quotes:
+    - "7.4.2: In addition, the key is restricted to a single line."
+    - "[155] c-s-implicit-json-key(c) ::= c-flow-json-node(0,c) s-separate-in-line?"
+  note: libfyaml reads it.
+  fail: true
+  yaml: |
+    ["a
+     b": c]
+
+- name: A single pair's ':' on the line after its key
+  spec:
+    productions: [154]
+    quotes:
+    - "7.4.2: In addition, the key is restricted to a single line."
+    - "[154] ns-s-implicit-yaml-key(c) ::= ns-flow-yaml-node(0,c) s-separate-in-line?"
+  fail: true
+  yaml: |
+    [a
+    : b]
+
+- name: A single pair's plain key of 1024 characters, and of 1023 and a space
+  spec:
+    productions: [154]
+    quotes:
+    - "7.4.2: To limit the amount of lookahead required, the “:” indicator must appear at most 1024 Unicode characters beyond the start of the key."
+    - "[154] ns-s-implicit-yaml-key(c) ::= ns-flow-yaml-node(0,c) s-separate-in-line? /* At most 1024 characters altogether */"
+  yaml: |
+    - [ kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk: v ]
+    - [ kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk : v ]
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       +SEQ []
+        +MAP {}
+         =VAL :kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk
+         =VAL :v
+        -MAP
+       -SEQ
+       +SEQ []
+        +MAP {}
+         =VAL :kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk
+         =VAL :v
+        -MAP
+       -SEQ
+      -SEQ
+     -DOC
+    -STR
+
+- name: A single pair's plain key of 1025 characters
+  spec:
+    productions: [154]
+    quotes:
+    - "[154] ns-s-implicit-yaml-key(c) ::= ns-flow-yaml-node(0,c) s-separate-in-line? /* At most 1024 characters altogether */"
+  note: The YAML reference parser and libfyaml read it.
+  fail: true
+  yaml: |
+    [ kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk: v ]
+
+- name: A single pair's plain key of 1024 characters and a space
+  spec:
+    productions: [154]
+    quotes:
+    - "[154] ns-s-implicit-yaml-key(c) ::= ns-flow-yaml-node(0,c) s-separate-in-line? /* At most 1024 characters altogether */"
+  note: The YAML reference parser and libfyaml read it.
+  fail: true
+  yaml: |
+    [ kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk : v ]
+
+- name: A single pair's JSON-like key of 1024 characters, its quotes counted
+  spec:
+    productions: [155]
+    quotes:
+    - "[155] c-s-implicit-json-key(c) ::= c-flow-json-node(0,c) s-separate-in-line? /* At most 1024 characters altogether */"
+  yaml: |
+    [ "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk": v ]
+  tree: |
+    +STR
+     +DOC
+      +SEQ []
+       +MAP {}
+        =VAL "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk
+        =VAL :v
+       -MAP
+      -SEQ
+     -DOC
+    -STR
+
+- name: A single pair's JSON-like key of 1025 characters, its quotes counted
+  spec:
+    productions: [155]
+    quotes:
+    - "[155] c-s-implicit-json-key(c) ::= c-flow-json-node(0,c) s-separate-in-line? /* At most 1024 characters altogether */"
+  note: The YAML reference parser and libfyaml read it.
+  fail: true
+  yaml: |
+    [ "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk": v ]

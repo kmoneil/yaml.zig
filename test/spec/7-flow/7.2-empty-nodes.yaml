@@ -1,0 +1,85 @@
+---
+- name: Empty content, with properties (Example 7.2)
+  spec:
+    productions: [105]
+    quotes:
+    - "7.2: Nodes with empty content are interpreted as if they were plain scalars with an empty value."
+    - "[105] e-scalar ::= \"\""
+  yaml: |
+    {
+      foo : !!str,
+      !!str : bar,
+    }
+  tree: |
+    +STR
+     +DOC
+      +MAP {}
+       =VAL :foo
+       =VAL <tag:yaml.org,2002:str> :
+       =VAL <tag:yaml.org,2002:str> :
+       =VAL :bar
+      -MAP
+     -DOC
+    -STR
+  json: |
+    {"foo": "", "": "bar"}
+
+- name: Completely empty flow nodes, after a '?' or before a ':' (Example 7.3)
+  spec:
+    productions: [106]
+    quotes:
+    - "7.2: Completely empty nodes are only valid when following some explicit indication for their existence."
+    - "[106] e-node ::= e-scalar # \"\""
+  note: Its JSON would need a null key, which JSON has not.
+  yaml: |
+    {
+      ? foo :,
+      : bar,
+    }
+  tree: |
+    +STR
+     +DOC
+      +MAP {}
+       =VAL :foo
+       =VAL :
+       =VAL :
+       =VAL :bar
+      -MAP
+     -DOC
+    -STR
+
+- name: An empty node is commonly null, an empty tagged one a string
+  spec:
+    productions: [105, 106]
+    quotes:
+    - "7.2: Such nodes are commonly resolved to a “null” value."
+    - "[105] e-scalar"
+    - "[106] e-node"
+  yaml: |
+    a:
+    b: !!str
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :a
+       =VAL :
+       =VAL :b
+       =VAL <tag:yaml.org,2002:str> :
+      -MAP
+     -DOC
+    -STR
+  json: |
+    {"a": null, "b": ""}
+
+- name: No completely empty node with nothing to show it is there
+  spec:
+    productions: [106, 138]
+    quotes:
+    - "7.2: Completely empty nodes are only valid when following some explicit indication for their existence."
+    - "7.4: This does not cause ambiguity because flow collection entries can never be completely empty."
+    - "[106] e-node"
+    - "[138] ns-s-flow-seq-entries"
+  fail: true
+  yaml: |
+    [a, , b]

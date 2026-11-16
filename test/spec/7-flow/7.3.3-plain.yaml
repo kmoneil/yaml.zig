@@ -1,0 +1,332 @@
+---
+- name: Plain characters, outside a flow collection and inside one (Example 7.10)
+  spec:
+    productions: [126, 130]
+    quotes:
+    - "7.3.3: However, the “:”, “?” and “-” indicators may be used as the first character if followed by a non-space “safe” character, as this causes no ambiguity."
+    - "[126] ns-plain-first"
+    - "[130] ns-plain-char"
+  yaml: |
+    # Outside flow collection:
+    - ::vector
+    - ": - ()"
+    - Up, up, and away!
+    - -123
+    - https://example.com/foo#bar
+    # Inside flow collection:
+    - [ ::vector,
+      ": - ()",
+      "Up, up and away!",
+      -123,
+      https://example.com/foo#bar ]
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       =VAL :::vector
+       =VAL ": - ()
+       =VAL :Up, up, and away!
+       =VAL :-123
+       =VAL :https://example.com/foo#bar
+       +SEQ []
+        =VAL :::vector
+        =VAL ": - ()
+        =VAL "Up, up and away!
+        =VAL :-123
+        =VAL :https://example.com/foo#bar
+       -SEQ
+      -SEQ
+     -DOC
+    -STR
+
+- name: In a flow collection, '-', ':' and '?' begin a plain scalar before a safe character
+  spec:
+    productions: [126, 129]
+    quotes:
+    - "[126] ( c-mapping-key # '?' | c-mapping-value # ':' | c-sequence-entry # '-' ) [ lookahead = ns-plain-safe(c) ]"
+    - "[129] ns-plain-safe-in ::= ns-char - c-flow-indicator"
+  yaml: |
+    [-a, :a, ?a]
+  tree: |
+    +STR
+     +DOC
+      +SEQ []
+       =VAL :-a
+       =VAL ::a
+       =VAL :?a
+      -SEQ
+     -DOC
+    -STR
+
+- name: In a flow collection, a '-' before a space begins nothing
+  spec:
+    productions: [126]
+    quotes:
+    - "[126] ( c-mapping-key # '?' | c-mapping-value # ':' | c-sequence-entry # '-' ) [ lookahead = ns-plain-safe(c) ]"
+  fail: true
+  yaml: |
+    [- a]
+
+- name: In a flow collection, a '-' before a flow indicator begins nothing
+  spec:
+    productions: [126, 129]
+    quotes:
+    - "[126] ( c-mapping-key # '?' | c-mapping-value # ':' | c-sequence-entry # '-' ) [ lookahead = ns-plain-safe(c) ]"
+    - "[129] ns-plain-safe-in ::= ns-char - c-flow-indicator"
+  fail: true
+  yaml: |
+    [-]
+
+- name: Outside a flow collection, a '-' before a flow indicator begins a plain scalar
+  spec:
+    productions: [126, 127, 128]
+    quotes:
+    - "[126] ( c-mapping-key # '?' | c-mapping-value # ':' | c-sequence-entry # '-' ) [ lookahead = ns-plain-safe(c) ]"
+    - "[127] ns-plain-safe(FLOW-OUT) ::= ns-plain-safe-out"
+    - "[128] ns-plain-safe-out ::= ns-char"
+  yaml: |
+    a: -]
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :a
+       =VAL :-]
+      -MAP
+     -DOC
+    -STR
+
+- name: Outside a flow collection, a plain scalar holds flow indicators
+  spec:
+    productions: [127, 128, 130]
+    quotes:
+    - "[127] ns-plain-safe(FLOW-OUT) ::= ns-plain-safe-out"
+    - "[128] ns-plain-safe-out ::= ns-char"
+    - "[130] c-mapping-value # ':' [ lookahead = ns-plain-safe(c) ]"
+  note: The ':' before ',' is in the scalar, ',' being safe outside a flow collection.
+  yaml: |
+    - a, b
+    - a:,b
+    - a[b]{c}
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       =VAL :a, b
+       =VAL :a:,b
+       =VAL :a[b]{c}
+      -SEQ
+     -DOC
+    -STR
+
+- name: In a flow collection, a plain scalar ends at a flow indicator, and a ':' before one is an indicator
+  spec:
+    productions: [127, 129, 130]
+    quotes:
+    - "7.3.3: In addition, inside flow collections, or when used as implicit keys, plain scalars must not contain the “[”, “]”, “{”, “}” and “,” characters."
+    - "[127] ns-plain-safe(FLOW-IN) ::= ns-plain-safe-in"
+    - "[129] ns-plain-safe-in ::= ns-char - c-flow-indicator"
+    - "[130] c-mapping-value # ':' [ lookahead = ns-plain-safe(c) ]"
+  yaml: |
+    [a:,b, c:d]
+  tree: |
+    +STR
+     +DOC
+      +SEQ []
+       +MAP {}
+        =VAL :a
+        =VAL :
+       -MAP
+       =VAL :b
+       =VAL :c:d
+      -SEQ
+     -DOC
+    -STR
+
+- name: In a flow collection, a plain scalar cannot hold a '['
+  spec:
+    productions: [129]
+    quotes:
+    - "7.3.3: In addition, inside flow collections, or when used as implicit keys, plain scalars must not contain the “[”, “]”, “{”, “}” and “,” characters."
+    - "[129] ns-plain-safe-in ::= ns-char - c-flow-indicator"
+  fail: true
+  yaml: |
+    [a[b]
+
+- name: A block's implicit key holds flow indicators, as the productions have it
+  spec:
+    productions: [127, 128]
+    quotes:
+    - "[127] ns-plain-safe(BLOCK-KEY) ::= ns-plain-safe-out"
+    - "[128] ns-plain-safe-out ::= ns-char"
+    - "7.3.3: In addition, inside flow collections, or when used as implicit keys, plain scalars must not contain the “[”, “]”, “{”, “}” and “,” characters."
+  note: >-
+    The spec conflicts with itself here. 7.3.3's prose says an implicit
+    key holds no "[", "]", "{", "}" or ","; [127] gives a block's implicit
+    key (BLOCK-KEY) ns-plain-safe-out, which is any ns-char, flow
+    indicators among them, and only a flow key (FLOW-KEY) ns-plain-safe-in.
+    yaml.zig follows the yaml-test-suite, which reads them (AZW3,
+    "Lookahead test cases": `- bla]keks: foo` has the key "bla]keks"), as
+    the YAML reference parser and libfyaml do too. Kevin's rule,
+    2026-11-16: where the spec is at odds with itself, the yaml-test-suite
+    decides (karte t91).
+  yaml: |
+    - bla]keks: foo
+    - a[b]{c},d: e
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       +MAP
+        =VAL :bla]keks
+        =VAL :foo
+       -MAP
+       +MAP
+        =VAL :a[b]{c},d
+        =VAL :e
+       -MAP
+      -SEQ
+     -DOC
+    -STR
+
+- name: A '#' after a non-space character is in the scalar, after a space a comment
+  spec:
+    productions: [130]
+    quotes:
+    - "7.3.3: Plain scalars must never contain the “: ” and “ #” character combinations."
+    - "[130] [ lookbehind = ns-char ] c-comment # '#'"
+  yaml: |
+    - a#b
+    - a #b
+    - [c#d]
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       =VAL :a#b
+       =VAL :a
+       +SEQ []
+        =VAL :c#d
+       -SEQ
+      -SEQ
+     -DOC
+    -STR
+
+- name: A '#' first on a plain scalar's next line begins a comment
+  spec:
+    productions: [134, 130]
+    quotes:
+    - "[134] s-ns-plain-next-line(n,c) ::= s-flow-folded(n) ns-plain-char(c) nb-ns-plain-in-line(c)"
+    - "[130] [ lookbehind = ns-char ] c-comment # '#'"
+  yaml: |
+    - a
+      #b
+    - c
+      d#e
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       =VAL :a
+       =VAL :c d#e
+      -SEQ
+     -DOC
+    -STR
+
+- name: A ':' before a non-space character is in the scalar, before a space an indicator
+  spec:
+    productions: [130]
+    quotes:
+    - "7.4.2: It is also a potential source for confusion as “a:1” is a plain scalar and not a key/value pair."
+    - "[130] c-mapping-value # ':' [ lookahead = ns-plain-safe(c) ]"
+  yaml: |
+    - a:1
+    - a: 1
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       =VAL :a:1
+       +MAP
+        =VAL :a
+        =VAL :1
+       -MAP
+      -SEQ
+     -DOC
+    -STR
+
+- name: Plain implicit keys, in a block and in a flow (Example 7.11)
+  spec:
+    productions: [131, 133]
+    quotes:
+    - "7.3.3: Plain scalars are further restricted to a single line when contained inside an implicit key."
+    - "[131] ns-plain(n,BLOCK-KEY) ::= ns-plain-one-line(BLOCK-KEY)"
+    - "[133] ns-plain-one-line(c) ::= ns-plain-first(c) nb-ns-plain-in-line(c)"
+  yaml: |
+    implicit block key : [
+      implicit flow key : value,
+     ]
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :implicit block key
+       +SEQ []
+        +MAP {}
+         =VAL :implicit flow key
+         =VAL :value
+        -MAP
+       -SEQ
+      -MAP
+     -DOC
+    -STR
+
+- name: A plain implicit key of two lines
+  spec:
+    productions: [131]
+    quotes:
+    - "7.3.3: Plain scalars are further restricted to a single line when contained inside an implicit key."
+    - "[131] ns-plain(n,BLOCK-KEY) ::= ns-plain-one-line(BLOCK-KEY)"
+  fail: true
+  yaml: |
+    a
+    b: c
+
+- name: Plain lines, folded (Example 7.12)
+  spec:
+    productions: [132, 134, 135]
+    quotes:
+    - "7.3.3: All leading and trailing white space characters are excluded from the content."
+    - "[132] nb-ns-plain-in-line(c) ::= ( s-white* ns-plain-char(c) )*"
+    - "[134] s-ns-plain-next-line"
+    - "[135] ns-plain-multi-line(n,c) ::= ns-plain-one-line(c) s-ns-plain-next-line(n,c)*"
+  yaml: |
+    1st non-empty
+
+    ␣2nd non-empty␣
+    —»3rd non-empty
+  tree: |
+    +STR
+     +DOC
+      =VAL :1st non-empty\n2nd non-empty 3rd non-empty
+     -DOC
+    -STR
+
+- name: A plain scalar's next line may begin with '-' or hold ' - '
+  spec:
+    productions: [134, 130]
+    quotes:
+    - "[134] s-ns-plain-next-line(n,c) ::= s-flow-folded(n) ns-plain-char(c) nb-ns-plain-in-line(c)"
+    - "[130] ns-plain-char(c) ::= ( ns-plain-safe(c) - c-mapping-value # ':' - c-comment # '#' )"
+  yaml: |
+    k: a
+      - b
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL :k
+       =VAL :a - b
+      -MAP
+     -DOC
+    -STR

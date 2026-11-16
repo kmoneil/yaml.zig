@@ -1,0 +1,133 @@
+---
+- name: Flow sequences, a final ',' and none (Example 7.13)
+  spec:
+    productions: [137, 138]
+    quotes:
+    - "7.4.1: Flow sequence content is denoted by surrounding “[” and “]” characters."
+    - "7.4: The final “,” may be omitted."
+    - "[137] c-flow-sequence(n,c) ::= c-sequence-start # '[' s-separate(n,c)? in-flow(n,c)? c-sequence-end # ']'"
+    - "[138] ns-s-flow-seq-entries"
+  yaml: |
+    - [ one, two, ]
+    - [three ,four]
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       +SEQ []
+        =VAL :one
+        =VAL :two
+       -SEQ
+       +SEQ []
+        =VAL :three
+        =VAL :four
+       -SEQ
+      -SEQ
+     -DOC
+    -STR
+
+- name: An empty flow sequence
+  spec:
+    productions: [137]
+    quotes:
+    - "[137] c-flow-sequence(n,c) ::= c-sequence-start # '[' s-separate(n,c)? in-flow(n,c)? c-sequence-end # ']'"
+  yaml: |
+    [ ]
+  tree: |
+    +STR
+     +DOC
+      +SEQ []
+      -SEQ
+     -DOC
+    -STR
+
+- name: A flow sequence with no ']'
+  spec:
+    productions: [137]
+    quotes:
+    - "[137] c-flow-sequence(n,c) ::= c-sequence-start # '[' s-separate(n,c)? in-flow(n,c)? c-sequence-end # ']'"
+  fail: true
+  yaml: |
+    [a, b
+
+- name: A ',' with no entry before it
+  spec:
+    productions: [138]
+    quotes:
+    - "7.4: This does not cause ambiguity because flow collection entries can never be completely empty."
+    - "[138] ns-s-flow-seq-entries(n,c) ::= ns-flow-seq-entry(n,c) s-separate(n,c)? ( c-collect-entry # ',' s-separate(n,c)? ns-s-flow-seq-entries(n,c)? )?"
+  fail: true
+  yaml: |
+    [ , a]
+
+- name: A ',' alone
+  spec:
+    productions: [138]
+    quotes:
+    - "7.4: This does not cause ambiguity because flow collection entries can never be completely empty."
+    - "[138] ns-s-flow-seq-entries"
+  fail: true
+  yaml: |
+    [,]
+
+- name: Two entries need a ',' between them
+  spec:
+    productions: [138]
+    quotes:
+    - "7.4.1: Sequence entries are separated by a “,” character."
+    - "[138] ns-s-flow-seq-entries"
+  fail: true
+  yaml: |
+    [[a] b]
+
+- name: A plain scalar takes in a quoted one after it, '"' being no flow indicator
+  spec:
+    productions: [138, 132]
+    quotes:
+    - "7.4.1: Sequence entries are separated by a “,” character."
+    - "[132] nb-ns-plain-in-line(c) ::= ( s-white* ns-plain-char(c) )*"
+    - "[138] ns-s-flow-seq-entries"
+  yaml: |
+    [a "b"]
+  tree: |
+    +STR
+     +DOC
+      +SEQ []
+       =VAL :a "b"
+      -SEQ
+     -DOC
+    -STR
+
+- name: Flow sequence entries, of each kind and of more lines than one (Example 7.14)
+  spec:
+    productions: [139]
+    quotes:
+    - "7.4.1: Any flow node may be used as a flow sequence entry."
+    - "7.4.1: In addition, YAML provides a compact notation for the case where a flow sequence entry is a mapping with a single key/value pair."
+    - "[139] ns-flow-seq-entry(n,c) ::= ns-flow-pair(n,c) | ns-flow-node(n,c)"
+  yaml: |
+    [
+    "double
+     quoted", 'single
+               quoted',
+    plain
+     text, [ nested ],
+    single: pair,
+    ]
+  tree: |
+    +STR
+     +DOC
+      +SEQ []
+       =VAL "double quoted
+       =VAL 'single quoted
+       =VAL :plain text
+       +SEQ []
+        =VAL :nested
+       -SEQ
+       +MAP {}
+        =VAL :single
+        =VAL :pair
+       -MAP
+      -SEQ
+     -DOC
+    -STR

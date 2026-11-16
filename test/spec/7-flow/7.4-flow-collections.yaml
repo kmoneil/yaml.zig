@@ -58,3 +58,26 @@
       -SEQ
      -DOC
     -STR
+
+- name: A flow collection as a block's implicit key
+  spec:
+    productions: [136]
+    quotes:
+    - "7.4: A flow collection may be nested within a block collection (FLOW-OUT context), nested within another flow collection (FLOW-IN context) or be a part of an implicit key (FLOW-KEY context or BLOCK-KEY context)."
+    - "[136] in-flow(n,BLOCK-KEY) ::= ns-s-flow-seq-entries(n,FLOW-KEY)"
+  yaml: |
+    [a, [b]]: c
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       +SEQ []
+        =VAL :a
+        +SEQ []
+         =VAL :b
+        -SEQ
+       -SEQ
+       =VAL :c
+      -MAP
+     -DOC
+    -STR

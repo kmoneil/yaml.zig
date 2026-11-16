@@ -56,6 +56,12 @@ holds a list of cases in the yaml-test-suite's own source format, with a
   like, `␣` for a trailing space. Or `fail: true` for an input that is no
   YAML; the events before the error are the reader's own, which the spec
   does not decide, and are not held.
+- `json`: what the documents compose to, with the core schema, as JSON,
+  one value after another as in the yaml-test-suite's `in.json`; a
+  mapping's order is not held. For what the events cannot show, such as
+  which node an alias refers to. A key that is no string has no JSON.
+- `compose_fail: true`: the events read, to `tree`, but compose no
+  representation, such as an alias to no anchor before it.
 - A plain `name` or `note` must not hold ` #` (the rest would be a
   comment) or `: `: quote it.
 - `note`: what else is worth knowing: what the YAML reference parser or

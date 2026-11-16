@@ -6,19 +6,21 @@
 //!
 //! A case file (test/spec/<chapter>/<section>-<topic>.yaml) is a list of
 //! cases in the yaml-test-suite's own source format (`name`, `yaml`,
-//! `tree`, `fail`), with its markers for what cannot be seen: `—»` (or
+//! `tree`, `fail`, `json`), with its markers for what cannot be seen: `—»` (or
 //! `»`, with any dashes) a tab, `␣` a trailing space, `←` a carriage
 //! return, `⇔` a byte order mark, `↵` a line break shown, and `∎` at the
 //! end for no final line break. Ours is `spec`: `productions`, the
 //! numbers of those the case exercises, and `quotes`, the text that
 //! decides it, word for word as the published spec has it, each
 //! `[N] ...` from production N or `S.S.S: ...` from that section's prose.
+//! `compose_fail` marks events that read but compose no representation.
 //! `note` says what else is worth knowing, such as what other readers do.
 //!
 //! `check` holds every case's citation to spec.md (yaml/yaml-spec's
 //! source of 1.2.2: its productions numbered in order and its sections as
 //! the published spec numbers them), then the case to this library: one
 //! marked `fail` must be refused, any other read to `tree`'s events, and
+//! then compose to its `json`, or be refused composing if `compose_fail`;
 //! the reader must agree with the parser. It exits 1 if any does not.
 //! `coverage` lists the productions no case exercises, those with a
 //! lookahead, a "followed by" note or a condition first: the spec's
@@ -37,6 +39,12 @@ const Case = struct {
     yaml: []const u8,
     tree: ?[]const u8 = null,
     fail: bool = false,
+    /// The documents composed with the core schema, as JSON, a value each,
+    /// as the yaml-test-suite's in.json: a mapping's order is not held.
+    json: ?[]const u8 = null,
+    /// The events read, to `tree`, but compose no representation, such as
+    /// an alias to no anchor before it.
+    compose_fail: bool = false,
     note: ?[]const u8 = null,
 };
 
@@ -162,11 +170,106 @@ fn run(arena: Allocator, case: Case) !?[]const u8 {
         const tree = case.tree orelse return "a case that reads needs its `tree`";
         // A tree may show a trailing space as `␣`, as a case's input does.
         if (try check.firstDifference(arena, try treeEvents(arena, try decodeMarkers(arena, tree)), got.written())) |difference| return difference;
+        if (try composes(arena, case, input)) |why| return why;
     }
     var safe: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
     const compared = try yaml.Reader.compare(safe.allocator(), arena, input);
     if (safe.deinit() > 0) return "the reader leaked memory (the allocator printed where it was allocated)";
     return compared.problem;
+}
+
+/// A case's `json` or `compose_fail` held to what this library composes
+/// of `input`: why not, or null.
+fn composes(arena: Allocator, case: Case, input: []const u8) !?[]const u8 {
+    if (case.json == null and !case.compose_fail) return null;
+    var diagnostic: yaml.Diagnostic = .{};
+    const parsed = yaml.parseDocuments(yaml.Value, arena, input, .{ .diagnostic = &diagnostic }) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return if (case.compose_fail) null else try arena.print("composing it failed: {f}", .{&diagnostic}),
+    };
+    if (case.compose_fail) return "composed, where the spec says it cannot be";
+    const want = try jsonValues(arena, case.json.?);
+    if (want.len != parsed.value.len) return try arena.print("composed {d} documents, where `json` has {d}", .{ parsed.value.len, want.len });
+    for (parsed.value, want, 1..) |value, w, n| {
+        const got = try toJson(arena, value) orelse return "a mapping's key is no string, which JSON cannot show: give no `json`";
+        if (!sameJson(got, w)) return try arena.print("document {d} composes to {f}, where `json` has {f}", .{ n, std.json.fmt(got, .{}), std.json.fmt(w, .{}) });
+    }
+    return null;
+}
+
+/// `text`'s JSON values, one after another, as the yaml-test-suite's
+/// in.json has a stream's documents.
+fn jsonValues(arena: Allocator, text: []const u8) ![]const std.json.Value {
+    var values: std.ArrayList(std.json.Value) = .empty;
+    var rest = std.mem.trim(u8, text, " \t\r\n");
+    while (rest.len > 0) {
+        var scanner: std.json.Scanner = .initCompleteInput(arena, rest);
+        try values.append(arena, try std.json.Value.jsonParse(arena, &scanner, .{ .max_value_len = rest.len }));
+        rest = std.mem.trimStart(u8, rest[scanner.cursor..], " \t\r\n");
+    }
+    return values.items;
+}
+
+/// A composed value as JSON; null if a mapping's key is no string.
+fn toJson(arena: Allocator, value: yaml.Value) !?std.json.Value {
+    switch (value) {
+        .null => return .null,
+        .bool => |b| return .{ .bool = b },
+        .integer => |n| return .{ .integer = n },
+        .float => |f| return .{ .float = f },
+        .number_string => |s| return .{ .number_string = s },
+        .string => |s| return .{ .string = s },
+        .sequence => |items| {
+            var array: std.json.Array = .init(arena);
+            for (items) |item| try array.append(try toJson(arena, item) orelse return null);
+            return .{ .array = array };
+        },
+        .mapping => |pairs| {
+            var object: std.json.ObjectMap = .empty;
+            for (pairs) |pair| {
+                if (pair.key != .string) return null;
+                try object.put(arena, pair.key.string, try toJson(arena, pair.value) orelse return null);
+            }
+            return .{ .object = object };
+        },
+    }
+}
+
+/// Whether two JSON values are the same, an object's order aside.
+fn sameJson(a: std.json.Value, b: std.json.Value) bool {
+    if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+    return switch (a) {
+        .null => true,
+        .bool => |x| x == b.bool,
+        .integer => |x| x == b.integer,
+        .float => |x| x == b.float,
+        .number_string => |x| std.mem.eql(u8, x, b.number_string),
+        .string => |x| std.mem.eql(u8, x, b.string),
+        .array => |x| x.items.len == b.array.items.len and for (x.items, b.array.items) |p, q| {
+            if (!sameJson(p, q)) break false;
+        } else true,
+        .object => |x| x.count() == b.object.count() and for (x.keys(), x.values()) |k, v| {
+            if (!sameJson(v, b.object.get(k) orelse break false)) break false;
+        } else true,
+    };
+}
+
+test "a case's json is its documents, a mapping's order aside" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const values = try jsonValues(arena, "{\"a\": [1, \"x\"], \"b\": null}\n\"two\"\n3\n");
+    try std.testing.expectEqual(3, values.len);
+    const both = try jsonValues(arena, "{\"b\": null, \"a\": [1, \"x\"]} {\"a\": [1, \"y\"], \"b\": null}");
+    try std.testing.expect(sameJson(values[0], both[0]));
+    try std.testing.expect(!sameJson(values[0], both[1]));
+    try std.testing.expect(!sameJson(values[1], values[2]));
+    const case: Case = .{ .name = "", .yaml = "", .spec = .{ .productions = &.{}, .quotes = &.{} }, .json = "{\"a\": \"x\", \"b\": \"x\"}" };
+    try std.testing.expectEqual(null, try composes(arena, case, "a: &x x\nb: *x\n"));
+    try std.testing.expect(try composes(arena, case, "a: &x x\nb: y\n") != null);
+    const unresolved: Case = .{ .name = "", .yaml = "", .spec = .{ .productions = &.{}, .quotes = &.{} }, .compose_fail = true };
+    try std.testing.expectEqual(null, try composes(arena, unresolved, "*x\n"));
+    try std.testing.expect(try composes(arena, unresolved, "&x x\n") != null);
 }
 
 /// A case's `yaml` with the source format's markers made the characters

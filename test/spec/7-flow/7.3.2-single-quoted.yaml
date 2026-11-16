@@ -1,0 +1,117 @@
+---
+- name: A quote within single quotes, repeated (Example 7.7)
+  spec:
+    productions: [117, 118]
+    quotes:
+    - "7.3.2: Therefore, within a single-quoted scalar, such characters need to be repeated."
+    - "[117] c-quoted-quote ::= \"''\""
+    - "[118] nb-single-char ::= c-quoted-quote | ( nb-json - c-single-quote # \"'\" )"
+  yaml: |
+    'here''s to "quotes"'
+  tree: |
+    +STR
+     +DOC
+      =VAL 'here's to "quotes"
+     -DOC
+    -STR
+
+- name: A '\' within single quotes is no escape, nor before a line break
+  spec:
+    productions: [117, 119]
+    quotes:
+    - "7.3.2: This is the only form of escaping performed in single-quoted scalars."
+    - '7.3.2: In particular, the “\” and “"” characters may be freely used.'
+    - "[117] c-quoted-quote"
+    - "[119] ns-single-char"
+  yaml: |
+    - 'a\nb—»"'
+    - 'a\
+      b'
+  tree: |
+    +STR
+     +DOC
+      +SEQ
+       =VAL 'a\\nb\t"
+       =VAL 'a\\ b
+      -SEQ
+     -DOC
+    -STR
+
+- name: A lone quote ends the scalar
+  spec:
+    productions: [118, 120]
+    quotes:
+    - "[118] nb-single-char ::= c-quoted-quote | ( nb-json - c-single-quote # \"'\" )"
+    - "[120] c-single-quoted"
+  fail: true
+  yaml: |
+    'a'b'
+
+- name: Single-quoted implicit keys, in a block and in a flow (Example 7.8)
+  spec:
+    productions: [120, 121, 122]
+    quotes:
+    - "7.3.2: Single-quoted scalars are restricted to a single line when contained inside a implicit key."
+    - "[120] c-single-quoted(n,c) ::= c-single-quote # \"'\" nb-single-text(n,c) c-single-quote # \"'\""
+    - "[121] nb-single-text"
+    - "[122] nb-single-one-line ::= nb-single-char*"
+  yaml: |
+    'implicit block key' : [
+      'implicit flow key' : value,
+     ]
+  tree: |
+    +STR
+     +DOC
+      +MAP
+       =VAL 'implicit block key
+       +SEQ []
+        +MAP {}
+         =VAL 'implicit flow key
+         =VAL :value
+        -MAP
+       -SEQ
+      -MAP
+     -DOC
+    -STR
+
+- name: A single-quoted implicit key of two lines
+  spec:
+    productions: [121]
+    quotes:
+    - "7.3.2: Single-quoted scalars are restricted to a single line when contained inside a implicit key."
+    - "[121] nb-single-text(BLOCK-KEY) ::= nb-single-one-line"
+  fail: true
+  yaml: |
+    'a
+    b': c
+
+- name: Single-quoted lines, their leading and trailing white space excluded (Example 7.9)
+  spec:
+    productions: [123, 124, 125]
+    quotes:
+    - "7.3.2: All leading and trailing white space characters are excluded from the content."
+    - "[123] nb-ns-single-in-line ::= ( s-white* ns-single-char )*"
+    - "[124] s-single-next-line(n) ::= s-flow-folded(n)"
+    - "[125] nb-single-multi-line"
+  yaml: |
+    '␣1st non-empty
+
+    ␣2nd non-empty␣
+    —»3rd non-empty␣'
+  tree: |
+    +STR
+     +DOC
+      =VAL ' 1st non-empty\n2nd non-empty 3rd non-empty␣
+     -DOC
+    -STR
+
+- name: A single-quoted scalar's next line needs the indentation of its block
+  spec:
+    productions: [124, 69]
+    quotes:
+    - "[124] s-single-next-line(n) ::= s-flow-folded(n)"
+    - "[69] s-flow-line-prefix(n) ::= s-indent(n) s-separate-in-line?"
+  fail: true
+  yaml: |
+    a: 'b
+    c'
