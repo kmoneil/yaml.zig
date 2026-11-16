@@ -34,7 +34,7 @@ const corpus = [_][]const u8{
 /// Pieces lines are built from, and edits insert.
 const pieces = [_][]const u8{
     "- ",  "? ",        ": ",       "key: ",     "k:",   "[",      "]",     "{",    "}",
-    ", ",  "&a ",       "*a",       "&b ",       "*b",   "!!str ", "!e!x ", "! ",   "!<v> ",
+    ", ",  "&a ",       "*a",       "&b ",       "*b",   "!!str ", "!e!x ", "! ",   "!<!v> ",
     "'q'", "'a''b'",    "\"d\\n\"", "\"\\x41\"", "|",    ">-",     "|+2",   "# c",  "---",
     "...", "%YAML 1.2", "true",     "~",         "null", "0x1F",   "1.5e3", ".inf", "plain text",
     "\t",  "",          "\"open",   "a#b",       "a #b", "-1",     "?x",    ":y",

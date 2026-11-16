@@ -530,7 +530,10 @@ fn resolveTag(p: *Parser, tag: Token.Tag, mark: Mark) Error![]const u8 {
     if (tag.suffix.len == 0) return "!";
     const prefix = p.tagPrefix(tag.handle) orelse defaultPrefix(tag.handle) orelse
         return p.fail(mark, "a tag's handle needs a %TAG directive for it in its document");
-    return std.mem.concat(p.scanner.arena.allocator(), u8, &.{ prefix, tag.suffix });
+    const whole = try std.mem.concat(p.scanner.arena.allocator(), u8, &.{ prefix, tag.suffix });
+    // A %TAG prefix with no scheme (`foo`) makes no tag (6.9.1, t93).
+    if (!Scanner.validTag(whole)) return p.fail(mark, "a tag's prefix and suffix must make a local tag or a URI, its scheme first");
+    return whole;
 }
 
 /// The prefix the current document's %TAG directive gives `handle`.

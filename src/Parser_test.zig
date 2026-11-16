@@ -452,11 +452,11 @@ test "a verbatim tag may end just before a value's ':', an empty key (t82)" {
     // parser: properties and an empty scalar make a node (7.3), so a
     // value's `:` may follow a verbatim tag at once. A `:` with no blank
     // after it is still no value's.
-    try expectEvents("!<v>: x\n", "+STR\n+DOC\n+MAP\n=VAL <v> :\n=VAL :x\n-MAP\n-DOC\n-STR");
-    try expectEvents("{!<v>: x}\n", "+STR\n+DOC\n+MAP {}\n=VAL <v> :\n=VAL :x\n-MAP\n-DOC\n-STR");
-    try expectEvents("[!<v>:]\n", "+STR\n+DOC\n+SEQ []\n+MAP {}\n=VAL <v> :\n=VAL :\n-MAP\n-SEQ\n-DOC\n-STR");
-    try expectEvents("- !<v>: x\n", "+STR\n+DOC\n+SEQ\n+MAP\n=VAL <v> :\n=VAL :x\n-MAP\n-SEQ\n-DOC\n-STR");
-    try expectEvents("{!<v>:x}\n", "+STR\n+DOC\n+MAP {}\nERROR 1:6 an anchor, alias or tag must be followed by whitespace");
+    try expectEvents("!<!v>: x\n", "+STR\n+DOC\n+MAP\n=VAL <!v> :\n=VAL :x\n-MAP\n-DOC\n-STR");
+    try expectEvents("{!<!v>: x}\n", "+STR\n+DOC\n+MAP {}\n=VAL <!v> :\n=VAL :x\n-MAP\n-DOC\n-STR");
+    try expectEvents("[!<!v>:]\n", "+STR\n+DOC\n+SEQ []\n+MAP {}\n=VAL <!v> :\n=VAL :\n-MAP\n-SEQ\n-DOC\n-STR");
+    try expectEvents("- !<!v>: x\n", "+STR\n+DOC\n+SEQ\n+MAP\n=VAL <!v> :\n=VAL :x\n-MAP\n-SEQ\n-DOC\n-STR");
+    try expectEvents("{!<!v>:x}\n", "+STR\n+DOC\n+MAP {}\nERROR 1:7 an anchor, alias or tag must be followed by whitespace");
 }
 
 test "a blank line with a tab before a scalar's column is no line of it (t82)" {
@@ -502,4 +502,20 @@ test "a tab cannot indent a flow collection in a block (t68)" {
     try expectEvents("c:\n \t[a]\n", "+STR\n+DOC\n+MAP\n=VAL :c\n+SEQ []\n=VAL :a\n-SEQ\n-MAP\n-DOC\n-STR");
     try expectEvents("\t[a]\n", "+STR\n+DOC\n+SEQ []\n=VAL :a\n-SEQ\n-DOC\n-STR");
     try expectEvents("- \t{a: b}\n", "+STR\n+DOC\n+SEQ\n+MAP {}\n=VAL :a\n=VAL :b\n-MAP\n-SEQ\n-DOC\n-STR");
+}
+
+test "a tag must be a local tag or a URI, its scheme first (t93)" {
+    // YAML 1.2.2, 6.9.1: "A verbatim tag must either begin with a “!” (a
+    // local tag) or be a valid URI (a global tag)", and so must a
+    // shorthand's prefix and suffix together. Example 6.25 has the first
+    // two as errors; the grammar lets them through. Found walking the spec
+    // for the spec suite (t89).
+    const verbatim = "a verbatim tag must be a local tag, `!` and more, or a URI, its scheme first";
+    try expectEvents("- !<!> foo\n", "+STR\n+DOC\n+SEQ\nERROR 1:3 " ++ verbatim);
+    try expectEvents("- !<$:?> bar\n", "+STR\n+DOC\n+SEQ\nERROR 1:3 " ++ verbatim);
+    try expectEvents("!<1a:b> x\n", "+STR\nERROR 1:1 " ++ verbatim);
+    try expectEvents("%TAG !e! foo\n--- !e!x a\n", "+STR\n+DOC ---\nERROR 2:5 a tag's prefix and suffix must make a local tag or a URI, its scheme first");
+    try expectEvents("!<!a> x\n", "+STR\n+DOC\n=VAL <!a> :x\n-DOC\n-STR");
+    try expectEvents("!<a+b-c.d:x> y\n", "+STR\n+DOC\n=VAL <a+b-c.d:x> :y\n-DOC\n-STR");
+    try expectEvents("%TAG !e! foo:\n--- !e!x a\n", "+STR\n+DOC ---\n=VAL <foo:x> :a\n-DOC\n-STR");
 }

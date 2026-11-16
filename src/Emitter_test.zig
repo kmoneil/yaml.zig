@@ -182,9 +182,11 @@ test "a %TAG prefix is escaped again, and may be long" {
         \\--- !e!x 1
         \\
     );
-    try expectEmits("%TAG !e! %5Bx]\n--- !e!y 1\n",
+    // A prefix beginning, decoded, with a flow indicator makes no tag (t93),
+    // but the directive is one, and written again its `[` is escaped again.
+    try expectEmits("%TAG !e! %5Bx]\n--- 1\n",
         \\%TAG !e! %5Bx]
-        \\--- !e!y 1
+        \\--- 1
         \\
     );
     const long = comptime "%TAG !e! tag:" ++ repeat("aaaaaaaaaa", 110) ++ "\n--- !e!x 1\n";

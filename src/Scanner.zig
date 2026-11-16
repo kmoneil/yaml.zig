@@ -696,7 +696,7 @@ pub fn expectPropertyEnd(s: *Scanner) Error!void {
     if (isBlankOrBreakOrEnd(c) or (s.flow_level > 0 and (c == ',' or c == ']' or c == '}'))) return;
     // A value's `:` too, the node then an empty key (properties and
     // e-scalar, 7.3). Only a verbatim tag can end just before one
-    // (`!<v>: x`): a shorthand tag, an anchor or an alias takes a `:` into
+    // (`!<!v>: x`): a shorthand tag, an anchor or an alias takes a `:` into
     // its name. Found by the differential campaign (t82).
     if (c == ':' and s.indicatorEnds()) return;
     return s.fail(s.mark, "an anchor, alias or tag must be followed by whitespace");
@@ -718,8 +718,25 @@ pub fn scanVerbatimTag(s: *Scanner) Error!Token.Tag {
     s.skipN(2);
     const uri = try s.scanUri(.uri);
     if (uri.len == 0 or s.ch(0) != '>') return s.fail(start, "a verbatim tag needs a URI and a '>' after it");
+    if (!validTag(uri)) return s.fail(start, "a verbatim tag must be a local tag, `!` and more, or a URI, its scheme first");
     s.skip();
     return .{ .handle = "", .suffix = uri };
+}
+
+/// Whether `tag`, a verbatim tag or a shorthand's expansion, is one: "must
+/// either begin with a “!” (a local tag) or be a valid URI (a global
+/// tag)" (6.9.1). A local tag is more than the `!`, the non-specific tag,
+/// which cannot be written verbatim (Example 6.25: `!<!>`); a URI begins
+/// with its scheme and a `:` (RFC 3986, 3.1), a letter first (`!<$:?>`
+/// is none). Found walking the spec for the spec suite (t93).
+pub fn validTag(tag: []const u8) bool {
+    if (tag.len > 0 and tag[0] == '!') return tag.len > 1;
+    if (tag.len == 0 or !std.ascii.isAlphabetic(tag[0])) return false;
+    for (tag[1..]) |c| {
+        if (c == ':') return true;
+        if (!std.ascii.isAlphanumeric(c) and c != '+' and c != '-' and c != '.') return false;
+    }
+    return false;
 }
 
 pub fn scanShorthandTag(s: *Scanner) Error!Token.Tag {

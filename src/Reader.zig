@@ -728,7 +728,10 @@ fn scanTag(r: *Reader) Error![]const u8 {
     if (tag.handle.len == 0) return tag.suffix;
     if (tag.suffix.len == 0) return "!";
     const prefix = r.tagPrefix(tag.handle) orelse defaultPrefix(tag.handle) orelse return error.Unsupported;
-    return std.mem.concat(r.s.arena.allocator(), u8, &.{ prefix, tag.suffix });
+    const whole = try std.mem.concat(r.s.arena.allocator(), u8, &.{ prefix, tag.suffix });
+    // One that is no tag is the parser's to refuse (t93).
+    if (!Scanner.validTag(whole)) return error.Unsupported;
+    return whole;
 }
 
 /// The prefix of `!` or `!!` with no %TAG directive for it.

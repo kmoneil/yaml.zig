@@ -1144,3 +1144,8 @@ test "flow: multi-line plain scalars fold, and end at flow indicators" {
         \\-STR
     );
 }
+
+test "a tag is a local tag, `!` and more, or a URI, its scheme first (t93)" {
+    for ([_][]const u8{ "!a", "!!", "tag:yaml.org,2002:str", "a:", "a+b-c.d:x", "Z9:" }) |tag| try testing.expect(Scanner.validTag(tag));
+    for ([_][]const u8{ "", "!", "$:?", "1a:b", "a", "ab", "a$:b", ":x" }) |tag| try testing.expect(!Scanner.validTag(tag));
+}

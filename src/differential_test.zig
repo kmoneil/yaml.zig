@@ -134,6 +134,16 @@ const libfyaml_lenient = [_]Lenient{
         .why = "yaml.zig gives a tag as UTF-8 text, its % escapes decoded, so escapes that spell none are refused, on purpose (t8, t44): libfyaml keeps them",
     },
     .{
+        .message = "a verbatim tag must be a local tag, `!` and more, or a URI, its scheme first",
+        .at = '!',
+        .why = "a verbatim tag must begin with `!` or be a URI (6.9.1, Example 6.25; t93): libfyaml reads `!<!>` and `!<$:?>`",
+    },
+    .{
+        .message = "a tag's prefix and suffix must make a local tag or a URI, its scheme first",
+        .at = '!',
+        .why = "a shorthand's prefix and suffix must make a local tag or a URI (6.9.1; t93): libfyaml reads `%TAG !e! foo` then `!e!x`",
+    },
+    .{
         // What yaml.zig says is of what comes after the line.
         .message = null,
         .at = null,
@@ -176,7 +186,7 @@ const Otherwise = struct {
 const libfyaml_otherwise = [_]Otherwise{
     .{
         .when = verbatimTagBeforeValue,
-        .why = "a verbatim tag ends at its `>`, and a value's `:` may follow it at once, the key empty (7.3): libfyaml refuses `!<v>: x`",
+        .why = "a verbatim tag ends at its `>`, and a value's `:` may follow it at once, the key empty (7.3): libfyaml refuses `!<!v>: x`",
     },
 };
 
@@ -283,7 +293,7 @@ test "libfyaml's readings the spec settles otherwise are known (t82)" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     // yaml.zig reads, as the spec says; libfyaml refuses.
-    for ([_][]const u8{ "!<v>: x\n", "{!<v>: x}\n" }) |input| {
+    for ([_][]const u8{ "!<!v>: x\n", "{!<!v>: x}\n" }) |input| {
         const a = try ours(arena, input);
         try testing.expect(!a.refused);
         try testing.expect(!agree(a, try theirs(arena, input)));

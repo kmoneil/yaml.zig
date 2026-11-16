@@ -127,7 +127,7 @@ test "directives, and tags resolved against them" {
     try expectWhole("%YAML 1.2\n---\na\n");
     try expectWhole("%TAG !e! tag:e.com,2000:\n%TAG ! !local-\n--- !e!x\n- !y 1\n- !!str 2\n");
     try expectWhole("%TAG !! tag:other:\n--- !!str a\n...\n--- !!str b\n");
-    try expectWhole("%FUTURE reserved # skipped\n%YAML 1.1\n---\n...\n%TAG !e! %5Bt%20%C3%A9:\n--- !e!x [!e!y a]\n");
+    try expectWhole("%FUTURE reserved # skipped\n%YAML 1.1\n---\n...\n%TAG !e! tag:%5Bt%20%C3%A9:\n--- !e!x [!e!y a]\n");
     try expectWhole("# c\n%YAML 1.2 # c\n\n---\n");
 }
 
@@ -233,5 +233,5 @@ test "what it hands over: forms it does not read yet, and errors" {
     try expectHandedOver("[[f] x : g]\n");
     // Found by the reader fuzz target: a verbatim tag's URI may hold a
     // bracket, which opens nothing.
-    try expectHandedOver("[!<v[> a, b]: c\n");
+    try expectHandedOver("[!<!v[> a, b]: c\n");
 }
