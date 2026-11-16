@@ -430,6 +430,26 @@ test "a flow value at once after its ':' only after a JSON-like key (t68)" {
     try expectEvents("{a:\"b\"}", "+STR\n+DOC\n+MAP {}\n=VAL :a:\"b\"\n=VAL :\n-MAP\n-DOC\n-STR");
 }
 
+test "an explicit key's ':' needs no blank after it before a compact entry (t82)" {
+    // Found by the differential campaign, held to the YAML reference
+    // parser and libfyaml: l-block-map-explicit-value (8.2.2) asks for no
+    // blank after its `:`, so a compact collection may begin at once.
+    try expectEvents("? a\n:b: c\n", "+STR\n+DOC\n+MAP\n=VAL :a\n+MAP\n=VAL :b\n=VAL :c\n-MAP\n-MAP\n-DOC\n-STR");
+    try expectEvents("?\n:b: c\n", "+STR\n+DOC\n+MAP\n=VAL :\n+MAP\n=VAL :b\n=VAL :c\n-MAP\n-MAP\n-DOC\n-STR");
+    try expectEvents("? a\n:- b\n", "+STR\n+DOC\n+MAP\n=VAL :a\n+SEQ\n=VAL :b\n-SEQ\n-MAP\n-DOC\n-STR");
+    try expectEvents("? a\n::x: y\n", "+STR\n+DOC\n+MAP\n=VAL :a\n+MAP\n=VAL ::x\n=VAL :y\n-MAP\n-MAP\n-DOC\n-STR");
+    try expectEvents("? a\n:\"q\": y\n", "+STR\n+DOC\n+MAP\n=VAL :a\n+MAP\n=VAL \"q\n=VAL :y\n-MAP\n-MAP\n-DOC\n-STR");
+    try expectEvents("? a\n:b: c\nd: e\n", "+STR\n+DOC\n+MAP\n=VAL :a\n+MAP\n=VAL :b\n=VAL :c\n-MAP\n=VAL :d\n=VAL :e\n-MAP\n-DOC\n-STR");
+    try expectEvents("- ? a\n  :b: c\n", "+STR\n+DOC\n+SEQ\n+MAP\n=VAL :a\n+MAP\n=VAL :b\n=VAL :c\n-MAP\n-MAP\n-SEQ\n-DOC\n-STR");
+    // With the key's value given already, or no explicit key, or no
+    // entry able to begin after the `:`, the line is a key beginning `:`.
+    // (On the last, the reference parser also prints an event of the
+    // reading it gave up.)
+    try expectEvents("? a\n: x\n:b: c\n", "+STR\n+DOC\n+MAP\n=VAL :a\n=VAL :x\n=VAL ::b\n=VAL :c\n-MAP\n-DOC\n-STR");
+    try expectEvents("a: 1\n:b: c\n", "+STR\n+DOC\n+MAP\n=VAL :a\n=VAL :1\n=VAL ::b\n=VAL :c\n-MAP\n-DOC\n-STR");
+    try expectEvents("? a\n:#x: y\n", "+STR\n+DOC\n+MAP\n=VAL :a\n=VAL :\n=VAL ::#x\n=VAL :y\n-MAP\n-DOC\n-STR");
+}
+
 test "a tab-led comment after a block scalar, where the document ends (t68)" {
     // Found by the differential campaign, held to the YAML reference
     // parser: with only comments and blank lines after it, to the end or
