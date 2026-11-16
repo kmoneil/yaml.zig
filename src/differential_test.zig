@@ -86,9 +86,9 @@ fn ours(arena: std.mem.Allocator, input: []const u8) !Outcome {
 
 /// A disagreement read against the spec and found libfyaml's (t68):
 /// yaml.zig refuses where libfyaml reads, as the spec says, known by
-/// yaml.zig's message and the byte its mark is at, and why.
+/// yaml.zig's message (or any) and the byte its mark is at, and why.
 const Lenient = struct {
-    message: []const u8,
+    message: ?[]const u8,
     /// The byte yaml.zig's mark is at, or any.
     at: ?u8,
     /// And what else must hold, if anything.
@@ -123,7 +123,102 @@ const libfyaml_lenient = [_]Lenient{
         .at = '%',
         .why = "a reserved directive after a document needs a `...` before it (9.2): libfyaml reads one without",
     },
+    .{
+        .message = "a %TAG prefix cannot start with a flow indicator",
+        .at = null,
+        .why = "a global tag prefix begins with ns-tag-char, which leaves out the flow indicators (6.8.2.2; t68): libfyaml reads `%TAG !e! ,x`",
+    },
+    .{
+        .message = "a tag's % escapes do not spell UTF-8",
+        .at = null,
+        .why = "yaml.zig gives a tag as UTF-8 text, its % escapes decoded, so escapes that spell none are refused, on purpose (t8, t44): libfyaml keeps them",
+    },
+    .{
+        // What yaml.zig says is of what comes after the line.
+        .message = null,
+        .at = null,
+        .when = tabLineBefore,
+        .why = "a blank line with a tab before a flow scalar's column is none of its lines (l-empty, 6.5; t82): libfyaml folds a plain scalar over it",
+    },
 };
+
+/// Whether a blank line with a tab in it is `at`'s line, or above it with
+/// only blank lines between.
+fn tabLineBefore(input: []const u8, at: usize) bool {
+    var start = lineStart(input, at);
+    var end = std.mem.findScalarPos(u8, input, at, '\n') orelse input.len;
+    var own = true;
+    while (true) : (own = false) {
+        const line = input[start..end];
+        const blank = std.mem.trim(u8, line, " \t\r").len == 0;
+        if (blank and std.mem.findScalar(u8, line, '\t') != null) return true;
+        // Above `at`'s own line, only blank lines may come between.
+        if ((!own and !blank) or start == 0) return false;
+        end = start - 1;
+        start = lineStart(input, end);
+    }
+}
+
+/// Where the line holding `i` begins.
+fn lineStart(input: []const u8, i: usize) usize {
+    return if (std.mem.findScalarLast(u8, input[0..i], '\n')) |nl| nl + 1 else 0;
+}
+
+/// A disagreement read against the spec and found libfyaml's the other
+/// way (t82): yaml.zig reads, as the spec and the YAML reference parser
+/// do, where libfyaml refuses or reads otherwise; known by what holds of
+/// the input, and why.
+const Otherwise = struct {
+    when: *const fn (input: []const u8) bool,
+    why: []const u8,
+};
+
+const libfyaml_otherwise = [_]Otherwise{
+    .{
+        .when = explicitValueWithNoBlank,
+        .why = "an explicit key's `:` asks for no blank after it, and a compact collection may follow it at once (l-block-map-explicit-value, 8.2.2): libfyaml reads `? a` then `:b: c` as the key `:b`, and refuses `:- b`",
+    },
+    .{
+        .when = verbatimTagBeforeValue,
+        .why = "a verbatim tag ends at its `>`, and a value's `:` may follow it at once, the key empty (7.3): libfyaml refuses `!<v>: x`",
+    },
+};
+
+/// Whether a line begins, past its indentation, with a `:` and something
+/// not blank after it, where the nearest line above reaching its column
+/// has a `?` there: an explicit key's value.
+fn explicitValueWithNoBlank(input: []const u8) bool {
+    var it = std.mem.splitScalar(u8, input, '\n');
+    var line_start: usize = 0;
+    while (it.next()) |line| : (line_start += line.len + 1) {
+        const k = std.mem.findNone(u8, line, " ") orelse continue;
+        if (k + 1 < line.len and line[k] == ':' and !std.ascii.isWhitespace(line[k + 1]) and keyAbove(input[0..line_start], k)) return true;
+    }
+    return false;
+}
+
+/// Whether the nearest line of `above` with anything on it at or left of
+/// `column` has a `?` at that column.
+fn keyAbove(above: []const u8, column: usize) bool {
+    var it = std.mem.splitBackwardsScalar(u8, above, '\n');
+    while (it.next()) |line| {
+        const j = std.mem.findNone(u8, line, " ") orelse continue;
+        if (j > column) continue;
+        return column < line.len and line[column] == '?';
+    }
+    return false;
+}
+
+/// Whether a verbatim tag (`!<...>`) has a `:` at once after it.
+fn verbatimTagBeforeValue(input: []const u8) bool {
+    var i: usize = 0;
+    while (std.mem.findPos(u8, input, i, "!<")) |at| {
+        const close = std.mem.findScalarPos(u8, input, at, '>') orelse return false;
+        if (close + 1 < input.len and input[close + 1] == ':') return true;
+        i = close + 1;
+    }
+    return false;
+}
 
 /// libfyaml's text for a scalar not UTF-8 when the input is (`compared`):
 /// its fault whatever yaml.zig made of it, as no reading of UTF-8 gives
@@ -138,9 +233,15 @@ const garbled_text: Lenient = .{
 /// they are one.
 fn known(input: []const u8, a: Outcome, b: Outcome) ?Lenient {
     if (b.garbled) return garbled_text;
-    if (!a.refused or b.refused or a.at >= input.len) return null;
+    if (!a.refused) {
+        for (libfyaml_otherwise) |k| {
+            if (k.when(input)) return .{ .message = null, .at = null, .why = k.why };
+        }
+        return null;
+    }
+    if (b.refused or a.at >= input.len) return null;
     for (libfyaml_lenient) |k| {
-        if (!std.mem.eql(u8, a.message, k.message)) continue;
+        if (k.message) |m| if (!std.mem.eql(u8, a.message, m)) continue;
         if (k.at) |byte| if (input[a.at] != byte) continue;
         if (k.when) |holds| if (!holds(input, a.at)) continue;
         return k;
@@ -204,6 +305,31 @@ test "libfyaml's text that is not UTF-8 is its fault, and no crash (t68)" {
     try testing.expect(b.garbled);
     try testing.expect(known(input, a, b) != null);
     try expectAgree(arena, input);
+}
+
+test "libfyaml's readings the spec settles otherwise are known (t82)" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    // yaml.zig reads, as the YAML reference parser does; libfyaml reads
+    // otherwise, or refuses. The seeded draw that found the first: run 8.
+    for ([_][]const u8{ "? - a\n  - b\n:- c\n", "? a\n:b: c\n", "- ? a\n  :b: c\n", "!<v>: x\n", "{!<v>: x}\n" }) |input| {
+        const a = try ours(arena, input);
+        try testing.expect(!a.refused);
+        try testing.expect(!agree(a, try theirs(arena, input)));
+        try expectAgree(arena, input);
+    }
+    // yaml.zig refuses, as the reference does; libfyaml folds over the line.
+    for ([_][]const u8{ "k: x\n\t\n y\n", "- x\n\t\n  y\n", "k: [a\n\t\n b]\n" }) |input| {
+        const a = try ours(arena, input);
+        try testing.expect(a.refused);
+        try testing.expect(!agree(a, try theirs(arena, input)));
+        try expectAgree(arena, input);
+    }
+    // Neither shape is any `:` or tab: these are still held to libfyaml.
+    try testing.expect(!explicitValueWithNoBlank("a: 1\n:b: c\n"));
+    try testing.expect(!explicitValueWithNoBlank("? a\n: b\n"));
+    try testing.expect(!tabLineBefore("k: x\n y\n", 6));
 }
 
 test "fuzz: differential: yaml.zig's events are libfyaml's" {
@@ -309,7 +435,19 @@ fn replay(io: std.Io, arena: std.mem.Allocator, path: []const u8) !void {
     const saved = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(1 << 24));
     var smith: std.testing.Smith = .{ .in = saved };
     var d: Draw = .{ .smith = &smith };
-    const input = try inputs.draw(&d, arena);
+    return report(arena, try inputs.draw(&d, arena));
+}
+
+/// `differential-suite file PATH`: a YAML file read by each reader, as
+/// `replay` prints a draw (t82).
+fn readFile(io: std.Io, arena: std.mem.Allocator, path: []const u8) !void {
+    return report(arena, try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(1 << 24)));
+}
+
+/// Prints `input`, then each reader's reading of it, each named before it
+/// reads, so a crash says whose it is; and the disagreement, if it is a
+/// known one.
+fn report(arena: std.mem.Allocator, input: []const u8) !void {
     std.debug.print("input, {d} bytes, compared {}: \"{f}\"\nyaml.zig reads it\n", .{ input.len, compared(input), std.zig.fmtString(input) });
     const a = try ours(arena, input);
     std.debug.print("{s}{s}\n{s}libfyaml reads it\n", .{ if (a.refused) "refused: " else "read", a.message, a.events });
@@ -327,6 +465,7 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(arena);
     if (std.mem.eql(u8, args[1], "triage")) return triage(init.gpa, try std.fmt.parseInt(usize, args[2], 10), null);
     if (std.mem.eql(u8, args[1], "replay")) return replay(io, arena, args[2]);
+    if (std.mem.eql(u8, args[1], "file")) return readFile(io, arena, args[2]);
     if (std.mem.eql(u8, args[1], "dump")) {
         var out = try std.Io.Dir.cwd().createDirPathOpen(io, args[3], .{});
         defer out.close(io);

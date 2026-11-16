@@ -432,8 +432,10 @@ test "a flow value at once after its ':' only after a JSON-like key (t68)" {
 
 test "an explicit key's ':' needs no blank after it before a compact entry (t82)" {
     // Found by the differential campaign, held to the YAML reference
-    // parser and libfyaml: l-block-map-explicit-value (8.2.2) asks for no
-    // blank after its `:`, so a compact collection may begin at once.
+    // parser: l-block-map-explicit-value (8.2.2) asks for no blank after
+    // its `:`, so a compact collection may begin at once. libfyaml reads
+    // `:b` as a key, as yaml.zig did, and refuses `:- b`
+    // (differential_test.zig's `libfyaml_otherwise`).
     try expectEvents("? a\n:b: c\n", "+STR\n+DOC\n+MAP\n=VAL :a\n+MAP\n=VAL :b\n=VAL :c\n-MAP\n-MAP\n-DOC\n-STR");
     try expectEvents("?\n:b: c\n", "+STR\n+DOC\n+MAP\n=VAL :\n+MAP\n=VAL :b\n=VAL :c\n-MAP\n-MAP\n-DOC\n-STR");
     try expectEvents("? a\n:- b\n", "+STR\n+DOC\n+MAP\n=VAL :a\n+SEQ\n=VAL :b\n-SEQ\n-MAP\n-DOC\n-STR");
