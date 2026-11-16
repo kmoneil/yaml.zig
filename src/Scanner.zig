@@ -830,6 +830,11 @@ pub fn expectPropertyEnd(s: *Scanner) Error!void {
     // node's content needs whitespace after its properties (c-ns-properties
     // s-separate, 7.3; found by the differential fuzz target, t68).
     if (isBlankOrBreakOrEnd(c) or (s.flow_level > 0 and (c == ',' or c == ']' or c == '}'))) return;
+    // A value's `:` too, the node then an empty key (properties and
+    // e-scalar, 7.3). Only a verbatim tag can end just before one
+    // (`!<v>: x`): a shorthand tag, an anchor or an alias takes a `:` into
+    // its name. Found by the differential campaign (t82).
+    if (c == ':' and s.indicatorEnds()) return;
     return s.fail(s.mark, "an anchor, alias or tag must be followed by whitespace");
 }
 

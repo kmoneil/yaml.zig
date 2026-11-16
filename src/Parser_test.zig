@@ -450,6 +450,18 @@ test "an explicit key's ':' needs no blank after it before a compact entry (t82)
     try expectEvents("? a\n:#x: y\n", "+STR\n+DOC\n+MAP\n=VAL :a\n=VAL :\n=VAL ::#x\n=VAL :y\n-MAP\n-DOC\n-STR");
 }
 
+test "a verbatim tag may end just before a value's ':', an empty key (t82)" {
+    // Found by the differential campaign, held to the YAML reference
+    // parser: properties and an empty scalar make a node (7.3), so a
+    // value's `:` may follow a verbatim tag at once. A `:` with no blank
+    // after it is still no value's.
+    try expectEvents("!<v>: x\n", "+STR\n+DOC\n+MAP\n=VAL <v> :\n=VAL :x\n-MAP\n-DOC\n-STR");
+    try expectEvents("{!<v>: x}\n", "+STR\n+DOC\n+MAP {}\n=VAL <v> :\n=VAL :x\n-MAP\n-DOC\n-STR");
+    try expectEvents("[!<v>:]\n", "+STR\n+DOC\n+SEQ []\n+MAP {}\n=VAL <v> :\n=VAL :\n-MAP\n-SEQ\n-DOC\n-STR");
+    try expectEvents("- !<v>: x\n", "+STR\n+DOC\n+SEQ\n+MAP\n=VAL <v> :\n=VAL :x\n-MAP\n-SEQ\n-DOC\n-STR");
+    try expectEvents("{!<v>:x}\n", "+STR\n+DOC\n+MAP {}\nERROR 1:6 an anchor, alias or tag must be followed by whitespace");
+}
+
 test "a blank line with a tab before a scalar's column is no line of it (t82)" {
     // Found by the differential campaign, held to the YAML reference
     // parser: a flow scalar's lines, blank ones too, take the column past
