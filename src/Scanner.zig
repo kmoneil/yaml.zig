@@ -1136,8 +1136,9 @@ pub fn scanPlainScalar(s: *Scanner) Error!Token {
             try s.scanPlainLine(&end);
             try appendFolded(arena, &folded, first_line, breaks, s.input[line_start..end.offset]);
         }
-        breaks = try s.skipPlainBreaks(&line_start);
-        if (breaks == 0 or !s.plainContinues()) break;
+        var cut = false;
+        breaks = try s.skipPlainBreaks(&line_start, &cut);
+        if (breaks == 0 or cut or !s.plainContinues()) break;
     }
     if (breaks > 0) s.simple_key_allowed = true;
     const value = if (folded.items.len > 0) folded.items else first_line;
@@ -1171,19 +1172,33 @@ fn plainEndsHere(s: *const Scanner) bool {
 /// Skips the line breaks after a plain scalar's line and the
 /// indentation after each, and returns how many; `line_start` is where
 /// the next line's content begins. Zero when the line did not end in a
-/// break.
-fn skipPlainBreaks(s: *Scanner, line_start: *usize) Error!usize {
+/// break. `cut`: a blank line among them is none of the scalar's, which
+/// ends before it.
+fn skipPlainBreaks(s: *Scanner, line_start: *usize, cut: *bool) Error!usize {
     var breaks: usize = 0;
     while (isBreak(s.ch(0))) {
         s.skipBreak();
         breaks += 1;
         while (s.ch(0) == ' ') s.skip();
+        const spaces = s.mark.column;
+        const tab = s.ch(0) == '\t';
         try s.skipTabInIndentation();
         while (isBlank(s.ch(0))) s.skip();
+        if (isBreakOrEnd(s.ch(0)) and s.tabBeforeContentColumn(spaces, tab)) cut.* = true;
         if (s.flow_level > 0 and !isBreakOrEnd(s.ch(0)) and s.ch(0) != '#') try s.checkFlowLineIndent();
     }
     line_start.* = s.mark.offset;
     return breaks;
+}
+
+/// Whether a blank line of `spaces` and then a tab (`tab`) has the tab
+/// before the column a flow scalar's lines must reach, one past the
+/// block's: no line of a scalar folded over it (l-empty, 6.5, takes the
+/// column's spaces, or fewer and the break at once). At the top level,
+/// where the column is 0, there is none. Found by the differential
+/// campaign (t82).
+fn tabBeforeContentColumn(s: *const Scanner, spaces: usize, tab: bool) bool {
+    return tab and @as(isize, @intCast(spaces)) <= s.indent;
 }
 
 /// Skips the blanks from a tab in a block's indentation, where only an
@@ -1401,9 +1416,13 @@ fn scanQuotedBlanks(s: *Scanner, arena: Allocator, value: *std.ArrayList(u8), es
 fn skipQuotedIndentation(s: *Scanner, start: Mark) Error!void {
     if (s.atDocumentMarkerLine()) return s.fail(s.mark, "a document marker cannot be inside a quoted scalar");
     while (s.ch(0) == ' ') s.skip();
-    const spaces: isize = @intCast(s.mark.column);
+    const spaces = s.mark.column;
+    const tab = s.ch(0) == '\t';
+    const after_spaces = s.mark;
     while (isBlank(s.ch(0))) s.skip();
-    if (isBreak(s.ch(0)) or spaces > s.indent) return;
+    // A blank line too, with a tab, must reach the column (`tabBeforeContentColumn`).
+    if (isBreak(s.ch(0)) and s.tabBeforeContentColumn(spaces, tab)) return s.fail(after_spaces, "a quoted scalar's lines must be indented past its block's, with spaces");
+    if (isBreak(s.ch(0)) or @as(isize, @intCast(spaces)) > s.indent) return;
     if (s.mark.offset >= s.input.len) return s.fail(start, "found the end of the input inside a quoted scalar");
     return s.fail(s.mark, "a quoted scalar's lines must be indented past its block's, with spaces");
 }

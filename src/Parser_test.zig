@@ -450,6 +450,24 @@ test "an explicit key's ':' needs no blank after it before a compact entry (t82)
     try expectEvents("? a\n:#x: y\n", "+STR\n+DOC\n+MAP\n=VAL :a\n=VAL :\n=VAL ::#x\n=VAL :y\n-MAP\n-DOC\n-STR");
 }
 
+test "a blank line with a tab before a scalar's column is no line of it (t82)" {
+    // Found by the differential campaign, held to the YAML reference
+    // parser: a flow scalar's lines, blank ones too, take the column past
+    // the block's in spaces, or fewer spaces and the break at once
+    // (l-empty, 6.5). A plain scalar ends before such a line, a quoted one
+    // cannot.
+    try expectEvents("k: x\n\t\n y\n", "+STR\n+DOC\n+MAP\n=VAL :k\n=VAL :x\nERROR 3:2 a block mapping's entries each need a key");
+    try expectEvents("- x\n\t\n  y\n", "+STR\n+DOC\n+SEQ\n=VAL :x\nERROR 3:3 a block sequence's entries each need a '-' before them");
+    try expectEvents("k: [a\n\t\n b]\n", "+STR\n+DOC\n+MAP\n=VAL :k\n+SEQ []\n=VAL :a\nERROR 3:2 a flow sequence's entries need a ',' between them, and a ']' after");
+    try expectEvents("k: \"a\n\t\n b\"\n", "+STR\n+DOC\n+MAP\n=VAL :k\nERROR 2:1 a quoted scalar's lines must be indented past its block's, with spaces");
+    // The column reached first, or no scalar to fold, or the top level,
+    // where the column is 0.
+    try expectEvents("k: x\n \t\n y\n", "+STR\n+DOC\n+MAP\n=VAL :k\n=VAL :x\\ny\n-MAP\n-DOC\n-STR");
+    try expectEvents("k: x\n\t\nj: y\n", "+STR\n+DOC\n+MAP\n=VAL :k\n=VAL :x\n=VAL :j\n=VAL :y\n-MAP\n-DOC\n-STR");
+    try expectEvents("x\n\t\ny\n", "+STR\n+DOC\n=VAL :x\\ny\n-DOC\n-STR");
+    try expectEvents("\"a\n\t\n b\"\n", "+STR\n+DOC\n=VAL \"a\\nb\n-DOC\n-STR");
+}
+
 test "a tab-led comment after a block scalar, where the document ends (t68)" {
     // Found by the differential campaign, held to the YAML reference
     // parser: with only comments and blank lines after it, to the end or
