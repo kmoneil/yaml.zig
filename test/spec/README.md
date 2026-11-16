@@ -66,8 +66,11 @@ holds a list of cases in the yaml-test-suite's own source format, with a
 
 A case's reading comes from the quoted text, not from what any reader
 does, this one included. Where yaml.zig reads otherwise, the case stands
-and yaml.zig is fixed. Where the spec is silent or ambiguous, the case
-says so in its `note`, with the call made and by whom.
+and yaml.zig is fixed. Where the spec is silent, ambiguous, or at odds with
+itself (a production against its own prose, or an example against its
+productions), the case follows the yaml-test-suite, and its `note` says
+so: the text that conflicts, quoted or cited, the suite's case that
+decides it, and whose call it was.
 
 ## The spec's text
 

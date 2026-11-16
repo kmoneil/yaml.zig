@@ -222,10 +222,15 @@
     - "[165] b-chomped-last(CLIP) ::= b-as-line-feed | <end-of-input>"
     - "8.1.1.2: In this case, the final line break character is preserved in the scalar’s content."
   note: >-
-    The text leaves open what <end-of-input> gives in place of the final
-    line break. The call (2026-11-16): a line feed, as the yaml-test-suite
-    reads it (L24T/01, `foo: |`, `  x`, then spaces with no line break, is
-    "x\n \n"), and the YAML reference parser and libfyaml with it.
+    The spec conflicts with itself here. [165] lets the scalar end at
+    <end-of-input> in place of b-as-line-feed, so by the productions there
+    is no final line break, and the content is "x"; 8.1.1.2 says clipping
+    preserves "the final line break character" in the content, and says
+    nothing of a scalar with none. yaml.zig follows the yaml-test-suite,
+    which reads a line feed there (L24T/01: `foo: |`, `  x`, then three
+    spaces and no line break, is "x\n \n"), as the YAML reference parser
+    and libfyaml do too: one reading across the readers outweighs the
+    gap in the text. Kevin's call, 2026-11-16 (karte t90).
   yaml: |
     a: |
       x∎
@@ -244,7 +249,15 @@
     productions: [165]
     quotes:
     - "[165] b-chomped-last(KEEP) ::= b-as-line-feed | <end-of-input>"
-  note: As for clipping, the call made (2026-11-16) with the yaml-test-suite.
+    - "8.1.1.2: In this case, the final line break and any trailing empty lines are considered to be part of the scalar’s content."
+  note: >-
+    The same conflict as clipping's. [165] lets the scalar end at
+    <end-of-input> with no final line break, giving "x"; 8.1.1.2 says
+    keeping makes "the final line break" part of the content. yaml.zig
+    follows the yaml-test-suite, which reads a line feed at the end of the
+    input (JEF9/02: `- |+`, then three spaces and no line break, is "\n"),
+    as the YAML reference parser and libfyaml do too. Kevin's call,
+    2026-11-16 (karte t90).
   yaml: |
     a: |+
       x∎
